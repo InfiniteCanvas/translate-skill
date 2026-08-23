@@ -790,17 +790,31 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
 
         if failed_stage is None and start_idx <= _STAGE_IDX["BALANCE"]:
             advance("BALANCE")
-            # ---------------- BALANCE ----------------
+            # ---------------- BALANCE (mostly advisory) ----------------
+            # Only the zero-rendering drift signal is retry-worthy; the
+            # usage floor and over-count ceiling are counting heuristics
+            # too noisy to fail a chapter on (shared renderings, generic
+            # English words, noun-frequency mismatch) — they surface as
+            # console warnings and trace-log entries for the human instead.
             try:
-                _ok, issues = balance.check(
+                failures, warnings, over_count = balance.check(
                     pairs,
                     body_for_counts,
                     lines,
                     _cfg_value(cfg, "min_term_coverage"),
                     _cfg_value(cfg, "fuzzy_max_distance"),
                 )
-                if issues:
-                    state["feedback"].extend(str(issue) for issue in issues)
+                if warnings or over_count:
+                    logger.log_event(project_dir, {
+                        "event": "balance_advisory", "chapter": file,
+                        "warnings": warnings, "over_count": over_count,
+                    })
+                    for warning in warnings[:5]:
+                        print(f"{tag} [warn] balance advisory: {warning}")
+                    if len(warnings) > 5:
+                        print(f"{tag} [warn] ... and {len(warnings) - 5} more (see logs)")
+                if failures:
+                    state["feedback"].extend(str(f) for f in failures)
                     failed_stage = "BALANCE"
             except PipelineError:
                 raise

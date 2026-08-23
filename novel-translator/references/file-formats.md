@@ -66,7 +66,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
     "profile":     { "...same shape, temperature 0.3" }   // style-profile generation
   },
   "seed_min_count": 3,           // catalogue term must appear >= N times in source/ to seed
-  "min_term_coverage": 0.25,     // usage floor: canonical rendering must appear >= ceil(coverage*src) times; 0 with src>=2 still fails; extras tolerated up to max(2, src)
+  "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; only 0 renderings with src>=2 hard-fails
   "fuzzy_max_distance": 2,       // Levenshtein tolerance when matching translated glossary terms
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "max_attempts": 3,             // translation attempts before needs-review
@@ -159,13 +159,15 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
   and `translation`+`alt_translations` occurrences in the translated text
   (stemmed, case-insensitive word/phrase matching with Levenshtein tolerance 2
   for words ≥ 5 letters; exact substring match for CJK targets). The gate is
-  a USAGE FLOOR, not a parity check: natural English names a protagonist far
-  less often than Chinese repeats the name, so the canonical rendering only
-  must appear `ceil(min_term_coverage × src)` times (default 25%). Zero
-  occurrences with src ≥ 2 still hard-fails (that is the drift/omission
-  signal the gate exists for), and extra occurrences are tolerated up to
-  `max(2, src)` (English often needs the glossary noun where the source uses
-  a compound).
+  MOSTLY ADVISORY — the count is a heuristic poisoned by shared renderings
+  ("Senior" inside "Senior Brother"), generic English words, and
+  noun-frequency mismatch between the languages. Only one condition
+  hard-fails (retry + needs-review): the canonical rendering appears ZERO
+  times while the term occurs `src >= 2` times — the reliable drift/omission
+  signal. Falling below the usage floor `ceil(min_term_coverage × src)`
+  (default 25%) is a console warning, and exceeding `src + max(2, src)` is
+  logged only; both land in the trace log as `balance_advisory` events
+  (`warnings` / `over_count` arrays) for human review.
 - Hand-editing entries between runs is safe and encouraged — the file is read
   fresh before every chapter. Hand-added entries need at least `source` and
   `translation`.

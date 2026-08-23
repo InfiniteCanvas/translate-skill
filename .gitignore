@@ -14,3 +14,4 @@ __pycache__/
 *.epub
 export/
 tests/a-b/
+tests/advisory-live/

@@ -85,33 +85,52 @@ def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
 
 def check(pairs: list[tuple[dict, int]], source_body: str,
           translated_lines: list[str], min_coverage: float = 0.25,
-          fuzzy_max: int = 2) -> tuple[bool, list[str]]:
+          fuzzy_max: int = 2) -> tuple[list[str], list[str], list[str]]:
     """Compare source-side counts (pairs from glossary.contextual()) against
     target-side counts. source_body is accepted for interface symmetry (the
-    source counts arrive via pairs). Returns (ok, issues).
+    source counts arrive via pairs).
 
-    Usage-floor semantics: the gate exists to catch DRIFT (a term rendered
-    inconsistently or not at all), not to police pronoun usage — natural
-    English names a protagonist far less often than Chinese prose repeats
-    the name. So the canonical rendering must appear at least
-    ceil(min_coverage * src) times (never zero when src >= 2), and EXTRA
-    occurrences are tolerated up to max(2, src_count) (English often needs
-    the glossary noun where the source uses a compound: 筑基丹 ->
-    "Foundation Establishment Pills").
+    Three-tier, mostly-advisory semantics. The gate exists to catch DRIFT (a
+    term rendered not at all); everything else is a counting heuristic too
+    noisy to fail a chapter on (shared-rendering contamination: "Senior"
+    inside "Senior Brother"; generic English words: "plot", "system";
+    noun-frequency mismatch between Chinese and English).
+
+    Returns (failures, warnings, info):
+    - failures (hard, retry-worthy): canonical rendering absent entirely
+      while the term appears src >= 2 times — the reliable drift/omission
+      signal.
+    - warnings (advisory, console + trace log): canonical rendering below
+      the usage floor ceil(min_coverage * src) — possible under-use, but
+      natural English legitimately repeats nouns less than Chinese.
+    - info (trace log only): target count above src + max(2, src) — the
+      most false-positive-prone direction; recorded for the human, never
+      blocking.
     """
-    issues: list[str] = []
+    failures: list[str] = []
+    warnings: list[str] = []
+    info: list[str] = []
     for entry, src_count in pairs:
         tgt_count = count_in_target(entry, translated_lines, fuzzy_max)
         floor = max(1, math.ceil(src_count * min_coverage))
         extra = tgt_count - src_count
-        if (
-            (src_count >= 2 and tgt_count == 0)
-            or tgt_count < floor
-            or extra > max(2, src_count)
-        ):
-            issues.append(
-                f"Glossary term '{entry['source']}' (expected '{entry['translation']}'): "
-                f"source has {src_count} occurrence(s), translation has {tgt_count} "
-                f"(canonical rendering must appear at least {floor}x to rule out drift)."
+        term = entry['source']
+        expected = entry['translation']
+        if src_count >= 2 and tgt_count == 0:
+            failures.append(
+                f"Glossary term '{term}' (expected '{expected}'): source has "
+                f"{src_count} occurrence(s), translation has 0 — canonical "
+                "rendering never used (drift or omission)."
             )
-    return len(issues) == 0, issues
+        elif tgt_count < floor:
+            warnings.append(
+                f"'{term}' rendered {tgt_count}/{src_count} times "
+                f"(floor {floor}) — possible under-use."
+            )
+        elif extra > max(2, src_count):
+            info.append(
+                f"'{term}' rendered {tgt_count}/{src_count} times "
+                f"(ceiling {src_count + max(2, src_count)}) — possible count "
+                "contamination from shared renderings or generic words."
+            )
+    return failures, warnings, info

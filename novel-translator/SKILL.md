@@ -90,7 +90,10 @@ rerun the same command):
 3. **VALIDATE** — line count must match the source exactly; empty lines stay
    empty. Structural violations go back as feedback.
 4. **BALANCE** — for every contextual glossary term: count occurrences in
-   source vs translation (fuzzy, Levenshtein ≤ 2). Deviations become feedback.
+   source vs translation (fuzzy, Levenshtein ≤ 2). Mostly advisory: only a
+   term rendered ZERO times (with ≥2 source occurrences) hard-fails as
+   drift; under-use warns on the console and over-use is logged (both as
+   `balance_advisory` trace events for human review).
 5. **GLOSSARY_EXPAND** — the model proposes new drift-prone terms (names,
    places, skills, orgs...); identical duplicates are skipped, conflicting
    ones are merged by the model into the existing entry.
