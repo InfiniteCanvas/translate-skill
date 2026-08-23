@@ -121,7 +121,9 @@ book into `export/`.
   endpoint (e.g. put `reviewer` on GLM via `base_url`/`model`) with
   `api_key_env` (name of an environment variable holding the key --
   preferred) or `api_key` (inline) for `Authorization: Bearer` auth. The
-  key never appears in trace logs.
+  key never appears in trace logs. `base_url` handling: bare origins get
+  `/v1` appended; a base with a real path (e.g.
+  `https://api.z.ai/api/paas/v4`) is trusted exactly as written.
 - Thresholds: `min_term_coverage (advisory usage floor; only zero renderings hard-fail)`, `tn_gap_chapters`, `max_attempts`,
   `translate_max_output_tokens`, `style_sample_chapters` / `style_sample_chars`
   (only used by `--style auto`), `contextual_glossary_cap`.

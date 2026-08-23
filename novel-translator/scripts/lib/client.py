@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 from typing import Callable
+from urllib.parse import urlparse
 
 _MODELS_TIMEOUT = 30
 _CHAT_TIMEOUT = 600
@@ -28,11 +29,17 @@ _THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 
 
 def _v1_url(base_url: str) -> str:
-    """Normalize a base URL to end with /v1."""
+    """Normalize a base URL for OpenAI-compatible routing.
+
+    A bare origin (no path, e.g. http://host:8888) gets /v1 appended;
+    anything with a real path is trusted as-is - hosted providers version
+    their routes differently (https://api.z.ai/api/paas/v4, an explicit
+    .../v1, ...) and must not gain a /v1."""
     base = base_url.rstrip("/")
-    if base.endswith("/v1"):
-        return base
-    return base + "/v1"
+    parsed = urlparse(base)
+    if not parsed.path or parsed.path == "/":
+        return base + "/v1"
+    return base
 
 
 def resolve_model(base_url: str) -> str:
