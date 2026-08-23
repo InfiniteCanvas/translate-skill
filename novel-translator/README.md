@@ -22,6 +22,12 @@ All commands look like this:
 `--project` defaults to the current directory and may also be given before
 the subcommand.
 
+On Linux you can put it on your PATH instead (the script's shebang runs it
+through uv automatically):
+
+    ln -s <path-to>/novel-translator/scripts/translate.py ~/.local/bin/novel-translate
+    novel-translate status --project <dir>
+
 ## One-time setup
 
 1. Make a project directory and put source chapters in `source/` named
