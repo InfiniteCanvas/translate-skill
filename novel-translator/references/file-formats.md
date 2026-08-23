@@ -73,7 +73,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "contextual_glossary_cap": 200, // safety valve only — every glossary term present in the chapter goes in
   "max_new_terms_per_chapter": 15,
   "max_notes_per_chapter": 10,
-  "translate_chunk_max_tokens": 20000, // chapters estimated above this translate in balanced parts; smaller ones go whole
+  "translate_max_output_tokens": 8192, // per-call OUTPUT cap (card recommends 4k-8k) + chunk threshold: expected output above this splits the chapter; input context is never limited
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation
   "style_sample_chars": 12000    // rough source-character budget for the sample
 }
@@ -256,14 +256,14 @@ style-profile summary; `background_section` renders the trained
 `[Background Information]` frame (novel background always, plus the previous
 chunk's final lines for chunks 2+; empty for unprofiled projects).
 
-**Whole-chapter translation**: chapters estimated under
-`translate_chunk_max_tokens` tokens (default 20000) are translated in ONE
-call — the model sees the chapter's full context. Larger chapters split into
-balanced parts with the previous part's final lines as background. The
-translate call's output cap is dynamic (~1.6x estimated input, clamped to
-2048..32768): normal chapters sit near the model card's recommended range,
-and model repetition rambles terminate quickly. `chunk_info` is empty for
-single-call chapters.
+**Whole-chapter translation**: only the OUTPUT is constrained. Each translate
+call sends `max_tokens = translate_max_output_tokens` (default 8192, the model
+card's recommended range); chapters whose EXPECTED output fits that cap are
+translated in ONE call — the model sees the chapter's full context (input is
+never limited by this). Longer chapters split into balanced parts sized so
+each part's expected output fits the cap, with style background and the
+previous part's final lines included as input context. `chunk_info` is empty
+for single-call chapters.
 
 ## Model response schemas
 

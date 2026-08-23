@@ -81,11 +81,12 @@ rerun the same command):
    *contextual glossary* (only glossary terms actually appearing in this
    chapter, capped at 80, sorted by frequency).
 2. **TRANSLATE** — fill `templates/translation.md`, call the `translator`
-   provider with the WHOLE chapter (maximum context; only chapters estimated
-   above `translate_chunk_max_tokens`, default 20k, split into balanced
-   parts). The numbered-line protocol plus the corrective retry keep the
-   one-line-in/one-line-out contract intact. Output caps are dynamic per
-   call (~1.6x estimated input).
+   provider with the WHOLE chapter when its expected output fits
+   `translate_max_output_tokens` (default 8k, the model card's recommended
+   output range); longer chapters split into parts sized to that output cap,
+   each still carrying style background and the previous part's tail as
+   input context. The numbered-line protocol plus the corrective retry keep
+   the one-line-in/one-line-out contract intact.
 3. **VALIDATE** — line count must match the source exactly; empty lines stay
    empty. Structural violations go back as feedback.
 4. **BALANCE** — for every contextual glossary term: count occurrences in

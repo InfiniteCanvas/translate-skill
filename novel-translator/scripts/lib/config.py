@@ -18,9 +18,11 @@ DEFAULTS: dict = {
     "contextual_glossary_cap": 200,
     "max_new_terms_per_chapter": 15,
     "max_notes_per_chapter": 10,
-    # Chapters estimated above this many tokens split into balanced parts;
-    # smaller ones translate whole (full context beats fragmenting it).
-    "translate_chunk_max_tokens": 20000,
+    # Per-call OUTPUT cap for translation (model card recommends 4k-8k) and
+    # the chunking threshold: chapters whose expected output exceeds it split
+    # into balanced parts; smaller ones translate whole. Input context is
+    # never limited by this.
+    "translate_max_output_tokens": 8192,
     # Style-profile generation at init: how many chapters to sample and
     # roughly how many source characters to include in the prompt.
     "style_sample_chapters": 4,

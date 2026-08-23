@@ -425,11 +425,17 @@ def _apply_glossary_proposal(
     glossary.upsert(g, updated)  # defensive: existing entry was not found in the list
 
 
-def _estimate_tokens(lines: list[str]) -> int:
-    """Conservative token estimate for mixed CJK/Latin text."""
+def _estimate_output_tokens(lines: list[str]) -> int:
+    """Conservative estimate of the TRANSLATED output size in tokens.
+
+    The English rendering of CJK text runs roughly 0.7 tokens per character;
+    1.0/char plus the numbered-JSON wrapper (~10 tokens per line) keeps the
+    estimate safely above reality, so chunk boundaries only trigger when the
+    output genuinely cannot fit the per-call cap.
+    """
     text = "\n".join(lines)
     cjk = len(re.findall(r"[\u3000-\u9fff\uff00-\uffef]", text))
-    return int(cjk * 1.2 + (len(text) - cjk) / 3.5) + 64
+    return int(cjk * 1.0 + (len(text) - cjk) / 4) + len(lines) * 10 + 256
 
 
 def _chat(project_dir: Path, cfg: dict, job: str, prompt: str,
@@ -612,13 +618,15 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 logger.log_event(project_dir, {"event": "attempt", "chapter": file,
                                     "attempt": state["attempt"] + 1})
                 # Whole-chapter translation by default: the model sees the
-                # novel's full context, which beats fragmenting it. Only
-                # chapters estimated above translate_chunk_max_tokens are
-                # split into balanced parts (the numbered-line protocol and
+                # novel's full context, which beats fragmenting it. Only the
+                # OUTPUT is constrained: when the expected translated output
+                # exceeds translate_max_output_tokens, the chapter splits into
+                # balanced parts (each still carrying style background and
+                # the previous part's tail; the numbered-line protocol and
                 # the corrective retry keep the line contract either way).
-                threshold = int(_cfg_value(cfg, "translate_chunk_max_tokens"))
-                est_total = _estimate_tokens(source_lines)
-                n_chunks = 1 if est_total <= threshold else (est_total + threshold - 1) // threshold
+                max_out = int(_cfg_value(cfg, "translate_max_output_tokens"))
+                est_out = _estimate_output_tokens(source_lines)
+                n_chunks = 1 if est_out <= max_out else (est_out + max_out - 1) // max_out
                 src_total = len(source_lines)
                 base, extra = divmod(src_total, n_chunks)
                 title: str | None = None
@@ -631,11 +639,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     expected = list(range(lo + 1, hi + 1))
                     if n_chunks > 1:
                         print(f"{tag} [init] translating part {k + 1}/{n_chunks} (lines {lo + 1}-{hi})")
-                    # Dynamic output cap: ~1.6x the estimated input keeps the
-                    # cap near the model card's recommended range for normal
-                    # chapters (repetition rambles die fast) while never
-                    # truncating a legitimate full-chapter response.
-                    call_max_tokens = max(2048, min(32768, int(_estimate_tokens(chunk) * 1.6) + 1024))
+                    # Fixed output cap in the model card's recommended range;
+                    # rambles terminate fast, and the chunk sizing above
+                    # guarantees legitimate output always fits.
+                    call_max_tokens = max_out
                     numbered = [{"i": lo + j + 1, "t": ln} for j, ln in enumerate(chunk)]
                     if k == 0 or not tlines:
                         chunk_background = background_section()

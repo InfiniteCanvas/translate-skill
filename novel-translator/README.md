@@ -100,7 +100,7 @@ book into `export/`.
   temperature 0.7 and `top_p` 1.0 per the Hy-MT2 model card -- tune to
   taste.
 - Thresholds: `min_term_coverage`, `tn_gap_chapters`, `max_attempts`,
-  `translate_chunk_max_tokens`, `style_sample_chapters` / `style_sample_chars`,
+  `translate_max_output_tokens`, `style_sample_chapters` / `style_sample_chars`,
   `contextual_glossary_cap`.
 
 Every file schema (manifest, chapter state, glossary, notes, novel_info)
