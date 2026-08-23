@@ -1,0 +1,2 @@
+# The scripts write files with explicit "\n"; keep the repo consistent.
+* text=auto eol=lf

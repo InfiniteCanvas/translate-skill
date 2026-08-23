@@ -1,0 +1,143 @@
+"""Mock OpenAI-compatible server for offline pipeline tests.
+
+Serves:
+  GET  /v1/models            -> one model, id "mock-model"
+  POST /v1/chat/completions  -> canned responses, sniffed from prompt content:
+       - asks for a "verdict"      -> faithfulness check (SUCCESS)
+       - asks for "notes"          -> one translation note (term 测试)
+       - merge prompt ("Merge")    -> merged glossary entry
+       - asks for "terms"          -> no new glossary terms
+       - otherwise                 -> translation: fake lines matching the
+                                      source array found in the prompt
+  GET  /novel                -> HTML page with og:image pointing at /cover.jpg
+  GET  /cover.jpg            -> tiny PNG (tests the scrape + PIL re-encode path)
+
+Run: python tests/mock_server.py [port]   (default 8901)
+"""
+import base64
+import json
+import re
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _balanced_arrays(text: str):
+    """Yield every balanced [...] span's parsed value (any element type)."""
+    for i, ch in enumerate(text):
+        if ch != "[":
+            continue
+        depth = 0
+        in_str = esc = False
+        for j in range(i, len(text)):
+            c = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                continue
+            if c == '"':
+                in_str = True
+            elif c in "[{":
+                depth += 1
+            elif c in "]}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        val = json.loads(text[i : j + 1])
+                    except Exception:
+                        break
+                    if isinstance(val, list):
+                        yield val
+                    break
+
+
+def mock_reply(prompt: str) -> str:
+    if "verdict" in prompt:
+        return json.dumps({"verdict": "SUCCESS", "reasons": []})
+    if '"notes"' in prompt or '"note"' in prompt:
+        return json.dumps(
+            {"notes": [{"line": 1, "term": "测试", "note": "A test note about 测试."}]}
+        )
+    if "Merge" in prompt[:400] or "merge" in prompt[:400]:
+        return json.dumps(
+            {
+                "source": "测试",
+                "translation": "Test",
+                "definition": "Merged definition.",
+                "category": "other",
+            }
+        )
+    if '"terms"' in prompt:
+        return json.dumps({"terms": []})
+    # translation: mirror the last line array in the prompt — numbered
+    # objects ({"i", "t"}) under the numbered-line protocol, or plain strings
+    for arr in reversed(list(_balanced_arrays(prompt))):
+        if arr and all(
+            isinstance(x, dict) and isinstance(x.get("i"), int) and isinstance(x.get("t"), str)
+            for x in arr
+        ):
+            lines = [
+                {"i": x["i"], "t": ("Translated line %d." % x["i"]) if x["t"].strip() else ""}
+                for x in arr
+            ]
+            return json.dumps({"title": "Mock Chapter Title", "lines": lines}, ensure_ascii=False)
+        if arr and all(isinstance(x, str) for x in arr):
+            out = ["Translated line %d." % i if ln.strip() else "" for i, ln in enumerate(arr)]
+            return json.dumps({"title": "Mock Chapter Title", "lines": out}, ensure_ascii=False)
+    return json.dumps({"title": "Mock Chapter Title", "lines": []})
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):  # quiet
+        pass
+
+    def _send(self, code: int, body: bytes, ctype: str):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/v1/models":
+            payload = {"object": "list", "data": [{"id": "mock-model", "object": "model"}]}
+            self._send(200, json.dumps(payload).encode(), "application/json")
+        elif self.path == "/novel":
+            html = (
+                '<html><head><meta property="og:image" content="http://127.0.0.1:%d/cover.jpg">'
+                "</head><body>mock novel page</body></html>" % PORT
+            )
+            self._send(200, html.encode(), "text/html")
+        elif self.path == "/cover.jpg":
+            self._send(200, PNG_1X1, "image/png")
+        else:
+            self._send(404, b"not found", "text/plain")
+
+    def do_POST(self):
+        if self.path != "/v1/chat/completions":
+            self._send(404, b"not found", "text/plain")
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        req = json.loads(self.rfile.read(length) or b"{}")
+        prompt = ""
+        for msg in req.get("messages", []):
+            prompt += str(msg.get("content", ""))
+        content = mock_reply(prompt)
+        payload = {
+            "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": content}}],
+        }
+        self._send(200, json.dumps(payload, ensure_ascii=False).encode(), "application/json")
+
+
+if __name__ == "__main__":
+    PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8901
+    print("mock server on http://127.0.0.1:%d/v1" % PORT, flush=True)
+    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

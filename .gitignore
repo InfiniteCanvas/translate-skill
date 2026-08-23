@@ -1,0 +1,15 @@
+# Generated translation test projects (fixtures are recreated by
+# tests/make_fixture.py; the others contain copied novel chapters and
+# generated artifacts that do not belong in version control)
+tests/fixture-project/
+tests/realtest-project/
+tests/sotn-project/
+tests/scratch_epub/
+
+# Python
+__pycache__/
+*.pyc
+
+# Build artifacts
+*.epub
+export/
