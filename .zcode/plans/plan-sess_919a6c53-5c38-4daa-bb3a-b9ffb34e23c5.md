@@ -1,79 +1,40 @@
-# Preset style guides instead of model-discovered style
+# Auto-build the epub after each finalized chapter (parallel subprocess)
 
-Replace the init-time style-profile LLM call with a library of preset style guides chosen at scaffold time. Presets become the default (init makes **zero LLM calls** by default); the existing model-generated profile stays as `--style auto`. Downstream plumbing (`{{style}}` bracket frame, `[Background Information]` frame) is untouched — only the *source* of the text changes.
+After every chapter that finishes with status `translated`, fire a background `build-epub` subprocess so `export/` always holds a current, epubcheck-validated book while translation continues. Covers both `translate` and `retry` (both delegate to `pipeline.run_range`).
 
-## 1. New: `assets/styles/` — 4 preset guides (the core deliverable)
+## 1. New: `scripts/lib/autobuild.py` — build scheduler
 
-File format (name = filename stem; body goes verbatim into the translation prompt's `[{{style}}]` frame — multi-line bracket content is fine per Hy-MT2's style-frame usage; bodies must not contain `{{...}}` since `pipeline.fill` raises on those):
+A small class managing **one build at a time** (epub writes `export/<slug>.epub` non-atomically to a fixed path — overlapping builds would corrupt it):
 
-```
-description: <one line, shown by the `styles` subcommand>
----
-<guide body>
-```
+- `trigger(reason)` — mark a build pending (`reason` = chapter file, used in the log marker).
+- `poll()` — non-blocking: reap a finished child (report `[epub-auto] build ok` / `[warn] epub-auto build failed - see logs/epub-build.log`), then spawn a new child if pending and idle.
+- `finalize()` — end of the batch: wait for any running child, then if a build is still pending (or was skipped because one was running), run **one final synchronous build** so the last chapters are guaranteed in the final epub. Failures warn; translation exit codes are unchanged.
+- `abort()` — KeyboardInterrupt path: kill a running child, don't start another, re-raise continues.
 
-**Shared prose-economy block** (in all four, your preference baked in):
-- Leanest natural word form: *unease* not *uneasiness* or *uneasy feelings*; "she hesitated" not "she felt a moment of hesitation".
-- Cut webnovel filler ("couldn't help but", "a trace of", "slightly") when it adds nothing — but **never omit content**: every line stays a line, every beat a beat. Compression is word choice, not omission.
-- Strong verbs over adverb+verb pairs.
+Spawn: `[sys.executable, "<skill>/scripts/translate.py", "build-epub", "--project", <dir>]` — full build *with* epubcheck (the docker call runs inside the child; it never blocks translation). Child stdout+stderr append to `logs/epub-build.log` with `=== build after Chapter_NNNN, <timestamp> ===` separators; the handle is closed on reap. Safe by ordering: `run_chapter` flips the manifest to `translated` before returning, so a spawned build always sees the finished chapter.
 
-**classic.md** (the default) — measured, concise literary English; slightly formal cadence for elder/sect dialogue; no fake-archaic pastiche (no thee/thou/'tis) unless the source itself is archaic; combat = concrete verbs, short sentences; honorifics/titles strictly per glossary.
+## 2. `scripts/lib/pipeline.py` — `run_range` integration
 
-**transmigration.md** — a register map with three voices:
-- Protagonist (transmigrator's inner monologue **and** dialogue): modern casual English — contractions, contemporary idiom, internet-meme phrasing.
-- World characters (sect elders, cultivators, mortals): the classic register.
-- Narration: follows whoever/whatever it describes.
-- CN internet memes/slang → nearest living English internet equivalent (keeps the joke, no footnote); if none exists, translate the meaning in light casual phrasing; footnote only when the joke depends on untranslatable specifics (aligns with the existing TN `threshold` field).
-- The archaic-vs-modern contrast is deliberate comedy — never smooth one voice into the other.
+After `outcome == "translated"` (the single success point, ~line 997): `scheduler.trigger(file); scheduler.poll()`. The loop gets a `try/except KeyboardInterrupt: scheduler.abort(); raise` and a normal-path `scheduler.finalize()` before returning results. Scheduler is created only when `cfg["auto_build_epub"]` is true and the batch is non-empty.
 
-**modern.md** — contemporary natural English throughout; dialogue-forward pacing; slang → current English slang; clean unadorned narration.
+## 3. `scripts/lib/project.py` — harden `atomic_write_text` for the parallel reader
 
-**literary.md** — imagery-forward epic register, longer cadence allowed, but the same word-level economy: richer imagery, never redundancy; preserve the source's restrained metaphors.
+On Windows, `os.replace` can raise `PermissionError` if the child has `chapters.json` open for reading at that instant — today that would mark a *successfully translated* chapter needs-review. Retry the replace ~5× (100ms apart) on `PermissionError`. Benefits every atomic write, costs 4 lines.
 
-## 2. New: `scripts/lib/styles.py`
+## 4. `scripts/lib/config.py` — `auto_build_epub: true` default
 
-- `list_styles(project_dir)` → [(name, description)]: skill `assets/styles/*.md` merged with project `styles/*.md` (project wins on name collision), sorted. Project dir gives humans/agents a place to add their own presets.
-- `load_style(project_dir, name)` → body string (everything after the `---` line; whole file if no header). Raises `StyleError` listing available names if not found. Resolution: project `styles/` first, then skill assets.
-- Assets-dir location reuses the same logic translate.py already uses to find `assets/templates` for its init glob.
-
-## 3. `scripts/translate.py`
-
-- `init --style NAME|PATH|auto` (default `classic`):
-  - NAME → copy preset body to `project/style.md`, record `"style": NAME` in novel_info.json. No LLM call.
-  - PATH (existing .md file) → copy it, record the stem as the style name. Lets you keep personal guides outside the skill.
-  - `auto` → the existing `generate_profile` path unchanged (novel_info.style_profile).
-- `init --background "text"` → writes top-level `novel_info.background` (2–4 sentences; the scaffolding agent can also fill this later from the novel's synopsis/source page — SKILL.md will say so).
-- `--skip-profile` kept as a deprecated no-op alias (default behavior is now already LLM-free); help text updated.
-- New `styles` subcommand: prints the name + description table (project overrides included).
-- `profile` subcommand: unchanged (auto regeneration).
-- `status`: prints the active style (novel_info.style name / "auto profile" / legacy fallback).
-- Init output prints the available style names when the default was used, so manual users discover the list.
-
-## 4. `scripts/lib/pipeline.py` — resolution order only (~lines 546–561)
-
-- `{{style}}`: `project/style.md` content (header stripped if present) → legacy `novel_info.style_profile.style_summary` → `DEFAULT_STYLE_SUMMARY`. Old fixture projects (sotn, fixture, advisory-live) keep working with zero migration.
-- Background: `novel_info.background` (new) → legacy `style_profile.background` → empty.
-- No template changes; `{{style}}` still receives a plain string.
+Comment: rebuild the epub in a parallel subprocess after each translated chapter; set false to build only via the `build-epub` command. Existing projects get it via config merging.
 
 ## 5. Docs
 
-- **SKILL.md**: init section rewritten — presets table, instruction for the agent to *choose deliberately* (transmigration detection: modern-Earth protagonist, system/isekai tropes, meme usage in the source), `--style`/`--background` flags, `styles` subcommand, project `style.md` hand-editability, `auto` fallback.
-- **README.md**: init step, `styles` in the cheat sheet, note that `style_sample_*` config keys now only apply to `--style auto`.
-- **references/file-formats.md**: novel_info schema gains `style` + `background`; document `style.md` and the project `styles/` override dir; mark `style_profile.md` template as auto-only.
+- **SKILL.md**: pipeline/operating notes — epub auto-rebuilds in the background per chapter (serialized), guaranteed final build, log at `logs/epub-build.log`, `auto_build_epub` off-switch.
+- **README.md**: workflow note (the epub stays current during long batches; final build guaranteed at the end) + tuning line.
+- **references/file-formats.md**: config key + the new log file.
 
-## 6. Tests / fixtures
+## 6. Verification
 
-- `mock_server.py` style branch: keep (auto path still exists).
-- Existing fixture projects: untouched (legacy fallback).
-- Mock regression: fresh init with `--style transmigration` + `--background` → translate → epubcheck green, proving preset mode end-to-end; one `--style auto` init to prove the fallback path still works.
-
-## 7. Verification & ship
-
-1. Unit checks (`python -c`): list/load, override precedence, header parsing, missing-name error lists available styles.
-2. Live spot-check: translate one real sotn chapter with a preset; eyeball the rendered prompt + response in `logs/llm-*.jsonl`.
-3. Sync installed copy `~/.zcode/skills/novel-translator`.
-4. Commit to main, push to origin.
-
-Implementation per your global workflow: dispatch parallel subagents per file group (styles lib + presets / translate.py / pipeline / docs), then QA with the Claude code-reviewer agent only (no Kimi/OpenCode — they're broken).
-
-Out of scope: catalogues, balance matching, temperature tuning.
+1. Offline mock regression: init → `translate --chapters 1-3` — expect background builds (log separators in order, none overlapping), guaranteed final epub present, epubcheck passed, exit 0 unchanged.
+2. `auto_build_epub: false` run — no spawns, no log.
+3. Interrupt behavior: Ctrl-C mid-batch kills the child (spot-check by code review of the abort path; no live test needed).
+4. Live sanity: `retry` one sotn chapter — build fires after it, parallel to nothing (last chapter → finalize path).
+5. Sync installed copy, commit, push.

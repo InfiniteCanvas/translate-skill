@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,14 +66,24 @@ def atomic_write_text(path: Path, text: str, newline: str | None = None) -> None
     Writes to a temporary file in the same directory and os.replace()s it into
     place, so an interrupt or crash mid-write can never leave a truncated or
     half-written destination file. newline semantics match Path.write_text
-    (None = universal-newline translation).
+    (None = universal-newline translation). On Windows, os.replace can raise
+    PermissionError while another process holds the destination open (e.g. a
+    parallel epub-build child reading chapters.json); the replace is retried
+    briefly before the error surfaces.
     """
     path = Path(path)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         with tmp.open("w", encoding="utf-8", newline=newline) as fh:
             fh.write(text)
-        os.replace(tmp, path)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.1)
     finally:
         tmp.unlink(missing_ok=True)
 

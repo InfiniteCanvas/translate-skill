@@ -33,6 +33,10 @@ DEFAULTS: dict = {
     "style_sample_chars": 12000,
     # Full request/response trace to logs/llm-YYYYMMDD.jsonl.
     "log_llm": True,
+    # Rebuild the epub in a parallel subprocess after every chapter that
+    # finishes translation (serialized; one final build at batch end
+    # guarantees completeness). Set false to build only via build-epub.
+    "auto_build_epub": True,
 }
 
 _DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"

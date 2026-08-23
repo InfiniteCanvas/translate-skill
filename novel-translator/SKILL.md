@@ -176,6 +176,21 @@ manually from Git Bash:
 MSYS_NO_PATHCONV=1 docker run --rm -v "C:\path\to\export:/data" epubcheck /data/book.epub
 ```
 
+**Auto-build**: during `translate`/`retry` the epub is rebuilt
+automatically — each chapter that reaches `translated` fires a background
+`build-epub` subprocess (builds run one at a time; triggers arriving
+mid-build coalesce into the next build), and a final synchronous build at
+batch end guarantees the finished epub includes every chapter. `export/`
+thus always holds a current, epubcheck-validated epub — no manual builds
+during long batches. Child build output (incl. epubcheck results) appends
+to `logs/epub-build.log` with
+`=== epub build after Chapter_NNNN | timestamp ===` separators; the console
+prints `[epub-auto] build ok (after Chapter_NNNN)`. Failures are warnings
+only and never change the translate/retry exit code (which still reflects
+translation status). Set `auto_build_epub: false` (default true) in
+`config.json` to build only via the command above; Ctrl-C kills a running
+background build too.
+
 ## Operating notes
 
 - **The tool is fully manual-runnable** — every operation is one of the

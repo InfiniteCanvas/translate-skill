@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from lib import assemble, balance, client, config, glossary, logger, project, styles, tn
+from lib import assemble, autobuild, balance, client, config, glossary, logger, project, styles, tn
 
 STAGES = (
     "PREP",
@@ -977,22 +977,38 @@ def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = Fals
     A chapter whose run raises (e.g. ValueError from malformed YAML frontmatter
     in its source file) is reported, marked needs-review, and skipped so the
     remaining chapters still run. KeyboardInterrupt always propagates (it
-    derives from BaseException, not Exception).
+    derives from BaseException, not Exception). When auto_build_epub is
+    enabled, a serialized background epub build runs after each translated
+    chapter and finalize() guarantees a complete final epub.
     """
+    scheduler = (
+        autobuild.AutoBuildScheduler(project_dir)
+        if files and _cfg_value(cfg, "auto_build_epub") else None
+    )
     results: dict[str, list[str]] = {"translated": [], "needs-review": [], "skipped": []}
-    for file in files:
-        try:
-            outcome = run_chapter(project_dir, file, cfg, force=force)
-        except Exception as exc:  # noqa: BLE001 - one bad chapter must not abort the batch
-            reason = str(exc).strip() or type(exc).__name__
-            print(f"[FAIL] {file}: {reason.splitlines()[0]}")
+    try:
+        for file in files:
             try:
-                manifest = project.load_manifest(project_dir)
-                project.set_status(manifest, file, "needs-review")
-                project.save_manifest(project_dir, manifest)
-            except Exception:  # noqa: BLE001 - manifest marking is best-effort
-                print(f"[FAIL] {file}: could not mark needs-review in the manifest")
-            results.setdefault("needs-review", []).append(file)
-            continue
-        results.setdefault(outcome, []).append(file)
+                outcome = run_chapter(project_dir, file, cfg, force=force)
+            except Exception as exc:  # noqa: BLE001 - one bad chapter must not abort the batch
+                reason = str(exc).strip() or type(exc).__name__
+                print(f"[FAIL] {file}: {reason.splitlines()[0]}")
+                try:
+                    manifest = project.load_manifest(project_dir)
+                    project.set_status(manifest, file, "needs-review")
+                    project.save_manifest(project_dir, manifest)
+                except Exception:  # noqa: BLE001 - manifest marking is best-effort
+                    print(f"[FAIL] {file}: could not mark needs-review in the manifest")
+                results.setdefault("needs-review", []).append(file)
+                continue
+            results.setdefault(outcome, []).append(file)
+            if outcome == "translated" and scheduler is not None:
+                scheduler.trigger(file)
+                scheduler.poll()
+    except KeyboardInterrupt:
+        if scheduler is not None:
+            scheduler.abort()
+        raise
+    if scheduler is not None:
+        scheduler.finalize()
     return results

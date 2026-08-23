@@ -21,7 +21,8 @@ hand-fix.
 ├── covers/cover.jpg     scraped or generated cover
 ├── templates/           per-project copies of the prompt templates (editable)
 ├── styles/              optional per-project style presets (add/override .md files)
-└── export/              built epubs
+├── export/              built epubs
+└── logs/                llm-YYYYMMDD.jsonl (LLM trace); epub-build.log (background epub-build output)
 ```
 
 Chapter file names must match `Chapter_NNNN.md` (4-digit zero-padded number),
@@ -78,6 +79,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "fuzzy_max_distance": 2,       // Levenshtein tolerance when matching translated glossary terms
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "tn_keep_low_confidence": false, // keep threshold:"low" notes instead of dropping them (default drops)
+  "auto_build_epub": true,      // rebuild the epub in the background after every translated chapter (serialized; final build at batch end); false = manual `build-epub` only
   "max_attempts": 3,             // translation attempts before needs-review
   "contextual_glossary_cap": 200, // safety valve only — every glossary term present in the chapter goes in
   "max_new_terms_per_chapter": 15,
@@ -247,6 +249,12 @@ One translated paragraph per line, same count as the source.[^1]
   chapters have one fewer body line than their source file.
 - The `## Translator's Notes` section is always last if present.
 - TOC label = `title` (falls back to `chapter_title`).
+
+During `translate`/`retry`, `build-epub` also runs automatically after every
+chapter reaches `translated`: per-chapter rebuilds are serialized (with a
+guaranteed final build at batch end) and failures are warnings only (output
+in `logs/epub-build.log`), so `export/` always holds a current epub;
+disable with `auto_build_epub: false`.
 
 ## Prompt templates (`templates/`)
 

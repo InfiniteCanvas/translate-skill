@@ -10,8 +10,9 @@ validated epub3.
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) -- runs the CLI with its inline dependencies
-- Docker with an `epubcheck` image available (EPUB validation; only needed
-  by `build-epub`, or pass `--skip-check`)
+- Docker with an `epubcheck` image available (EPUB validation; used by
+  `build-epub`, including the automatic background rebuilds, or pass
+  `--skip-check`)
 - A running sglang endpoint serving an OpenAI-compatible `/v1` API
 
 All commands look like this:
@@ -104,7 +105,13 @@ seeding:
     uv run scripts/translate.py build-epub --project .
 
 Validates with epubcheck via Docker (`--skip-check` to skip) and writes the
-book into `export/`.
+book into `export/`. During `translate`/`retry` batches the epub also
+refreshes automatically: a background build runs after every translated
+chapter (serialized; triggers arriving mid-build coalesce) and a final
+build at batch end guarantees the finished epub includes every chapter --
+`export/` always holds a current, validated epub, so the manual command is
+only needed for one-off builds. Auto-build failures are warnings only;
+details land in `logs/epub-build.log`.
 
 ## Tuning (config.json)
 
@@ -129,6 +136,10 @@ book into `export/`.
 - `tn_keep_low_confidence` (default false) — keep notes the annotator
   self-assessed as `threshold: "low"` instead of dropping them.
   (only used by `--style auto`), `contextual_glossary_cap`.
+- `auto_build_epub` (default true) -- rebuild the epub in the background
+  after every translated chapter during `translate`/`retry` (serialized,
+  coalescing), with a guaranteed final build at batch end; set false to
+  build only via `build-epub`.
 
 Every file schema (manifest, chapter state, glossary, notes, novel_info)
 is documented in `references/file-formats.md`.
@@ -140,4 +151,8 @@ line (raw response, finish_reason, usage, timing), paired by `call_id`.
 Pipeline attempts and balance advisories are interleaved in the same
 stream. The console is a summary, the log is truth. Disable the LLM lines
 with `log_llm: false` in config.json.
+
+Background epub builds append their output (including epubcheck results) to
+`logs/epub-build.log`, with `=== epub build after Chapter_NNNN | timestamp ===`
+separators between builds.
 
