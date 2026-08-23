@@ -147,11 +147,14 @@ details land in `logs/epub-build.log`.
   key never appears in trace logs. `base_url` handling: bare origins get
   `/v1` appended; a base with a real path (e.g.
   `https://api.z.ai/api/paas/v4`) is trusted exactly as written.
+  `extra_body` on a provider block merges provider-specific parameters
+  verbatim into the request body (after the known knobs, before
+  `response_format`; not sent by ping's minimal probe).
 - Thresholds: `min_term_coverage (advisory usage floor; only zero renderings hard-fail)`, `tn_gap_chapters`, `max_attempts`,
   `translate_max_output_tokens`, `style_sample_chapters` / `style_sample_chars`
+  (only used by `--style auto`), `contextual_glossary_cap`.
 - `tn_keep_low_confidence` (default false) — keep notes the annotator
   self-assessed as `threshold: "low"` instead of dropping them.
-  (only used by `--style auto`), `contextual_glossary_cap`.
 - `auto_build_epub` (default true) -- rebuild the epub in the background
   after every translated chapter during `translate`/`retry` (serialized,
   coalescing), with a guaranteed final build at batch end; set false to

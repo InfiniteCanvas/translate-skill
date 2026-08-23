@@ -70,6 +70,9 @@ count. This is the anti-hallucination backbone of the whole pipeline.
                      // OpenAI-compatible endpoint with Bearer auth
                      // "base_url": "https://api.z.ai/api/paas/v4", "model": "glm-5.3",
                      // "api_key_env": "ZAI_API_KEY" },   // or "api_key": "sk-..." inline
+                     // optional "extra_body": { "thinking": { "type": "disabled" } }
+                     // merges provider-specific params verbatim into the request body
+                     // (after the known knobs, before response_format; ping's probe never sends it)
                    },
     "annotator":   { "...same shape, temperature 0.2" },
     "profile":     { "...same shape, temperature 0.3" }   // style-profile generation (--style auto / `profile` only)

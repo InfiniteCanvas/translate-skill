@@ -156,29 +156,38 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     # output budget on the answer instead of a reasoning chain.
     if provider_cfg.get("thinking") is not None:
         body["chat_template_kwargs"] = {"enable_thinking": bool(provider_cfg["thinking"])}
+    # Escape hatch for provider-specific parameters: merged verbatim into the
+    # request body after the known knobs (so it can override them) and before
+    # response_format (guided JSON stays pipeline-controlled). Not applied to
+    # probe() - the ping probe deliberately sends a minimal body.
+    extra = provider_cfg.get("extra_body")
+    if extra is not None:
+        if not isinstance(extra, dict):
+            raise LLMError("providers.<job>.extra_body must be a JSON object")
+        body.update(extra)
     if json_schema is not None:
         body["response_format"] = {
             "type": "json_schema",
             "json_schema": {"name": "response", "schema": json_schema},
         }
 
-    # Optional auth for hosted providers; local sglang needs neither.
-    api_key = provider_cfg.get("api_key")
-    if not api_key and provider_cfg.get("api_key_env"):
-        api_key = os.environ.get(str(provider_cfg["api_key_env"]))
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+    # Optional auth for hosted providers; local sglang needs none.
+    headers = auth_headers(provider_cfg)
 
     call_id = uuid.uuid4().hex[:12]
 
     def _request_meta() -> dict[str, Any]:
+        params: dict[str, Any] = {k: body[k] for k in
+                                  ("temperature", "max_tokens", "top_p", "top_k",
+                                   "repetition_penalty", "chat_template_kwargs") if k in body}
+        if isinstance(extra, dict) and extra:
+            params["extra_body"] = extra
         return {
             "event": "llm_request",
             "call_id": call_id,
             "url": url,
             "model": model,
-            "params": {k: body[k] for k in
-                       ("temperature", "max_tokens", "top_p", "top_k",
-                        "repetition_penalty", "chat_template_kwargs") if k in body},
+            "params": params,
             "guided_json": "response_format" in body,
             "prompt": prompt,
         }
