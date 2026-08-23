@@ -81,6 +81,10 @@ rerun resumes where it stopped. Chapters in `needs-review` are skipped by
 
       uv run scripts/translate.py retry --chapters 7 --project .
 
+  or retry every failed chapter at once:
+
+      uv run scripts/translate.py retry --failed --project .
+
 - To see why a chapter is stuck:
 
       uv run scripts/translate.py status --why --project .

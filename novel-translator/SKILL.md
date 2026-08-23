@@ -150,7 +150,9 @@ Read the feedback, then choose:
 - **Fix the cause and retry**: adjust `glossary.json` (e.g., a term whose
   English translation is awkward to use verbatim — add an `alt_translations`
   entry), or tweak `templates/`, then
-  `uv run "$SCRIPT" retry --project . --chapters 7`.
+  `uv run "$SCRIPT" retry --project . --chapters 7` — or
+  `retry --failed` to retry every needs-review chapter at once (selection is
+  by status, so hand-marked chapters are included).
 - **Translate by hand**: write the final chapter to
   `translated/Chapter_0007.md` following the translated-chapter format
   (frontmatter + one paragraph per line + `[^N]` markers + TN section), then

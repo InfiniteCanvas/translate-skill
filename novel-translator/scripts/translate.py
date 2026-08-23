@@ -537,7 +537,17 @@ def cmd_retry(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     manifest = _load_manifest(project_dir)
     _probe_glossary(project_dir)
-    files = pipeline.parse_range(args.chapters, manifest)
+    if args.failed:
+        files = [
+            e["file"]
+            for e in sorted(manifest, key=lambda e: int(e.get("order", 0)))
+            if e.get("status") == "needs-review"
+        ]
+        if not files:
+            print("[ok] no needs-review chapters to retry")
+            return 0
+    else:
+        files = pipeline.parse_range(args.chapters, manifest)
     paths = project.paths(project_dir)
 
     for file in files:
@@ -680,7 +690,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_translate)
 
     p = sub.add_parser("retry", parents=[common], help="wipe chapter artifacts and translate from scratch")
-    p.add_argument("--chapters", metavar="SPEC", required=True, help="chapter spec")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--chapters", metavar="SPEC",
+                   help="chapter spec, e.g. 1,3-5,Chapter_0007.zh.md")
+    g.add_argument("--failed", action="store_true",
+                   help="retry every needs-review chapter (max attempts reached)")
     p.set_defaults(func=cmd_retry)
 
     p = sub.add_parser("mark", parents=[common], help="force a chapter status")
