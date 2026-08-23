@@ -194,7 +194,9 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "C:\path\to\export:/data" epubcheck /data/
   card — quality across temperatures is subjective; the user tunes this).
   A per-provider `thinking` flag defaults to false (sglang
   `chat_template_kwargs.enable_thinking`) so hybrid-thinking models spend
-  the output budget on the answer.
+  the output budget on the answer. Hosted providers authenticate with
+  `api_key_env` (environment variable name) or `api_key` on the provider
+  block.
 - **Templates are per project** (`templates/`). Tuning a prompt for a
   specific novel is normal — edit, then `retry` the affected chapters.
 - **Glossary upkeep**: hand-fix bad entries any time; the balance check reads

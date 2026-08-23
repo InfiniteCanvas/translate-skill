@@ -117,6 +117,11 @@ book into `export/`.
   `chat_template_kwargs.enable_thinking`; set true per job for
   hybrid-thinking experiments. Symptom of thinking-on: ~minutes-long
   calls returning empty content.
+- Hosted providers: any job can point at a 3rd-party OpenAI-compatible
+  endpoint (e.g. put `reviewer` on GLM via `base_url`/`model`) with
+  `api_key_env` (name of an environment variable holding the key --
+  preferred) or `api_key` (inline) for `Authorization: Bearer` auth. The
+  key never appears in trace logs.
 - Thresholds: `min_term_coverage (advisory usage floor; only zero renderings hard-fail)`, `tn_gap_chapters`, `max_attempts`,
   `translate_max_output_tokens`, `style_sample_chapters` / `style_sample_chars`
   (only used by `--style auto`), `contextual_glossary_cap`.

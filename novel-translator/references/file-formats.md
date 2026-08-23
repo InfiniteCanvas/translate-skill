@@ -64,7 +64,12 @@ count. This is the anti-hallucination backbone of the whole pipeline.
                     "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384,
                     "thinking": false },   // sglang chat_template_kwargs.enable_thinking; false = output budget spent on the answer, not a reasoning chain
     "glossary":    { "...same shape, temperature 0.2" },
-    "reviewer":    { "...same shape, temperature 0.0" },
+    "reviewer":    { "...same shape, temperature 0.0",
+                     // hosted-provider example: any job can call a 3rd-party
+                     // OpenAI-compatible endpoint with Bearer auth
+                     // "base_url": "https://api.z.ai/api/paas/v4", "model": "glm-5.3",
+                     // "api_key_env": "ZAI_API_KEY" },   // or "api_key": "sk-..." inline
+                   },
     "annotator":   { "...same shape, temperature 0.2" },
     "profile":     { "...same shape, temperature 0.3" }   // style-profile generation (--style auto / `profile` only)
   },

@@ -2,6 +2,7 @@
 JSON extraction from model replies."""
 
 import json
+import os
 import re
 import time
 import uuid
@@ -66,6 +67,11 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     """One chat completion against an OpenAI-compatible server; returns
     choices[0].message.content.strip().
 
+    Auth for hosted providers: the provider block may carry "api_key"
+    directly or "api_key_env" naming an environment variable (preferred -
+    keeps keys out of config.json); either sends "Authorization: Bearer ...".
+    The header is never included in trace-log metadata.
+
     Retries up to 4 attempts total (backoff 2s/4s/8s) on connection errors,
     HTTP >= 500, and 429. A 400 while response_format is set triggers one
     immediate retry WITHOUT response_format (the server may not support
@@ -107,6 +113,12 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             "json_schema": {"name": "response", "schema": json_schema},
         }
 
+    # Optional auth for hosted providers; local sglang needs neither.
+    api_key = provider_cfg.get("api_key")
+    if not api_key and provider_cfg.get("api_key_env"):
+        api_key = os.environ.get(str(provider_cfg["api_key_env"]))
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+
     call_id = uuid.uuid4().hex[:12]
 
     def _request_meta() -> dict[str, Any]:
@@ -143,7 +155,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     failures = 0  # retryable failures so far (network error, 5xx, 429)
     while True:
         try:
-            resp = requests.post(url, json=body, timeout=_CHAT_TIMEOUT)
+            resp = requests.post(url, json=body, headers=headers, timeout=_CHAT_TIMEOUT)
         except requests.RequestException as exc:
             failures += 1
             if failures >= _MAX_ATTEMPTS:
