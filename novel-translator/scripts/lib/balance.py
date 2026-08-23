@@ -1,5 +1,6 @@
 """Glossary balance checking between source text and its translation."""
 
+import math
 import re
 
 CJK_RE = re.compile(r"[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]")
@@ -83,30 +84,34 @@ def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
 
 
 def check(pairs: list[tuple[dict, int]], source_body: str,
-          translated_lines: list[str], tolerance: float = 0.2,
+          translated_lines: list[str], min_coverage: float = 0.25,
           fuzzy_max: int = 2) -> tuple[bool, list[str]]:
     """Compare source-side counts (pairs from glossary.contextual()) against
     target-side counts. source_body is accepted for interface symmetry (the
     source counts arrive via pairs). Returns (ok, issues).
 
-    Asymmetric tolerance: MISSING occurrences are the drift risk the gate
-    exists for (allowed: max(1, tolerance * src)). EXTRA occurrences are
-    usually legitimate — English often needs the glossary noun where the
-    source uses a compound (筑基丹 -> "Foundation Establishment Pills") — so
-    they are tolerated up to max(2, src_count).
+    Usage-floor semantics: the gate exists to catch DRIFT (a term rendered
+    inconsistently or not at all), not to police pronoun usage — natural
+    English names a protagonist far less often than Chinese prose repeats
+    the name. So the canonical rendering must appear at least
+    ceil(min_coverage * src) times (never zero when src >= 2), and EXTRA
+    occurrences are tolerated up to max(2, src_count) (English often needs
+    the glossary noun where the source uses a compound: 筑基丹 ->
+    "Foundation Establishment Pills").
     """
     issues: list[str] = []
     for entry, src_count in pairs:
         tgt_count = count_in_target(entry, translated_lines, fuzzy_max)
-        missing = src_count - tgt_count
+        floor = max(1, math.ceil(src_count * min_coverage))
         extra = tgt_count - src_count
         if (
             (src_count >= 2 and tgt_count == 0)
-            or missing > max(1, int(tolerance * src_count))
+            or tgt_count < floor
             or extra > max(2, src_count)
         ):
             issues.append(
                 f"Glossary term '{entry['source']}' (expected '{entry['translation']}'): "
-                f"source has {src_count} occurrence(s), translation has {tgt_count}."
+                f"source has {src_count} occurrence(s), translation has {tgt_count} "
+                f"(canonical rendering must appear at least {floor}x to rule out drift)."
             )
     return len(issues) == 0, issues

@@ -7,7 +7,9 @@ PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "profile")
 
 DEFAULTS: dict = {
     "seed_min_count": 3,
-    "balance_tolerance": 0.2,
+    # Canonical glossary rendering must appear >= ceil(coverage*src) times;
+    # zero occurrences with src >= 2 still hard-fails (drift/omission).
+    "min_term_coverage": 0.25,
     "fuzzy_max_distance": 2,
     "tn_gap_chapters": 10,
     "max_attempts": 3,
@@ -16,13 +18,15 @@ DEFAULTS: dict = {
     "contextual_glossary_cap": 200,
     "max_new_terms_per_chapter": 15,
     "max_notes_per_chapter": 10,
-    # Chapters longer than this many lines are translated in balanced chunks;
-    # models cannot hold an exact line count over 100+ lines in one pass.
-    "translate_chunk_size": 40,
+    # Chapters estimated above this many tokens split into balanced parts;
+    # smaller ones translate whole (full context beats fragmenting it).
+    "translate_chunk_max_tokens": 20000,
     # Style-profile generation at init: how many chapters to sample and
     # roughly how many source characters to include in the prompt.
     "style_sample_chapters": 4,
     "style_sample_chars": 12000,
+    # Full request/response trace to logs/llm-YYYYMMDD.jsonl.
+    "log_llm": True,
 }
 
 _DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"

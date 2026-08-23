@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 import requests
+from typing import Callable
 
 _MODELS_TIMEOUT = 30
 _CHAT_TIMEOUT = 600
@@ -58,7 +59,8 @@ def resolve_model(base_url: str) -> str:
 
 
 def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
-         temperature: float | None = None, max_tokens: int | None = None) -> str:
+         temperature: float | None = None, max_tokens: int | None = None,
+         meta_hook: Callable[[dict], None] | None = None) -> str:
     """One chat completion against an OpenAI-compatible server; returns
     choices[0].message.content.strip().
 
@@ -67,6 +69,10 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     immediate retry WITHOUT response_format (the server may not support
     guided JSON). Other 4xx raise LLMError with the status code and the
     first 400 chars of the response text.
+
+    meta_hook, when given, is invoked once with the full call metadata
+    (prompt, raw response, finish_reason, usage, params, elapsed, error) —
+    on success AND on the final failure — for request/response trace logs.
     """
     base_url = _v1_url(str(provider_cfg["base_url"]))
     url = base_url + "/chat/completions"
@@ -92,6 +98,25 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             "json_schema": {"name": "response", "schema": json_schema},
         }
 
+    def _meta(response: str | None = None, finish_reason: object = None,
+              usage: object = None, elapsed: float = 0.0,
+              error: str | None = None) -> dict[str, Any]:
+        return {
+            "url": url,
+            "model": model,
+            "params": {k: body[k] for k in
+                       ("temperature", "max_tokens", "top_p", "top_k",
+                        "repetition_penalty") if k in body},
+            "guided_json": "response_format" in body,
+            "prompt": prompt,
+            "response": response,
+            "finish_reason": finish_reason,
+            "usage": usage,
+            "elapsed_s": round(elapsed, 2),
+            "error": error,
+        }
+
+    started = time.monotonic()
     failures = 0  # retryable failures so far (network error, 5xx, 429)
     while True:
         try:
@@ -99,7 +124,10 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
         except requests.RequestException as exc:
             failures += 1
             if failures >= _MAX_ATTEMPTS:
-                raise LLMError(f"request to {url} failed after {failures} attempts: {exc}") from exc
+                err = f"request to {url} failed after {failures} attempts: {exc}"
+                if meta_hook:
+                    meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+                raise LLMError(err) from exc
             time.sleep(_BACKOFF[failures - 1])
             continue
 
@@ -110,25 +138,47 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
         if resp.status_code == 429 or resp.status_code >= 500:
             failures += 1
             if failures >= _MAX_ATTEMPTS:
-                raise LLMError(
-                    f"HTTP {resp.status_code} from {url} after {failures} attempts: {resp.text[:400]}"
-                )
+                err = f"HTTP {resp.status_code} from {url} after {failures} attempts: {resp.text[:400]}"
+                if meta_hook:
+                    meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+                raise LLMError(err)
             time.sleep(_BACKOFF[failures - 1])
             continue
 
         if resp.status_code >= 400:
-            raise LLMError(f"HTTP {resp.status_code} from {url}: {resp.text[:400]}")
+            err = f"HTTP {resp.status_code} from {url}: {resp.text[:400]}"
+            if meta_hook:
+                meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+            raise LLMError(err)
 
         try:
             payload = resp.json()
         except ValueError as exc:
-            raise LLMError(f"non-JSON response from {url}: {resp.text[:400]}") from exc
+            err = f"non-JSON response from {url}: {resp.text[:400]}"
+            if meta_hook:
+                meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+            raise LLMError(err) from exc
         try:
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError(f"unexpected response payload from {url}: {str(payload)[:400]}") from exc
+            err = f"unexpected response payload from {url}: {str(payload)[:400]}"
+            if meta_hook:
+                meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+            raise LLMError(err) from exc
         if not isinstance(content, str) or not content.strip():
-            raise LLMError(f"empty completion content from {url}")
+            err = f"empty completion content from {url}"
+            if meta_hook:
+                meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+            raise LLMError(err)
+
+        if meta_hook:
+            meta_hook(_meta(
+                response=content,
+                finish_reason=choice.get("finish_reason"),
+                usage=payload.get("usage"),
+                elapsed=time.monotonic() - started,
+            ))
         return content.strip()
 
 

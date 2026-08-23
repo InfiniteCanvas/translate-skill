@@ -66,14 +66,14 @@ count. This is the anti-hallucination backbone of the whole pipeline.
     "profile":     { "...same shape, temperature 0.3" }   // style-profile generation
   },
   "seed_min_count": 3,           // catalogue term must appear >= N times in source/ to seed
-  "balance_tolerance": 0.2,      // missing glossary hits may exceed max(1, tol*src); extras get max(2, src)
+  "min_term_coverage": 0.25,     // usage floor: canonical rendering must appear >= ceil(coverage*src) times; 0 with src>=2 still fails; extras tolerated up to max(2, src)
   "fuzzy_max_distance": 2,       // Levenshtein tolerance when matching translated glossary terms
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "max_attempts": 3,             // translation attempts before needs-review
   "contextual_glossary_cap": 200, // safety valve only — every glossary term present in the chapter goes in
   "max_new_terms_per_chapter": 15,
   "max_notes_per_chapter": 10,
-  "translate_chunk_size": 40,    // chapters longer than this are translated in balanced chunks
+  "translate_chunk_max_tokens": 20000, // chapters estimated above this translate in balanced parts; smaller ones go whole
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation
   "style_sample_chars": 12000    // rough source-character budget for the sample
 }
@@ -159,9 +159,13 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
   and `translation`+`alt_translations` occurrences in the translated text
   (stemmed, case-insensitive word/phrase matching with Levenshtein tolerance 2
   for words ≥ 5 letters; exact substring match for CJK targets). The gate is
-  asymmetric: missing occurrences are only allowed `max(1, balance_tolerance ×
-  src)` slack, extra occurrences get `max(2, src)` slack (English often needs
-  the glossary noun where the source uses a compound).
+  a USAGE FLOOR, not a parity check: natural English names a protagonist far
+  less often than Chinese repeats the name, so the canonical rendering only
+  must appear `ceil(min_term_coverage × src)` times (default 25%). Zero
+  occurrences with src ≥ 2 still hard-fails (that is the drift/omission
+  signal the gate exists for), and extra occurrences are tolerated up to
+  `max(2, src)` (English often needs the glossary noun where the source uses
+  a compound).
 - Hand-editing entries between runs is safe and encouraged — the file is read
   fresh before every chapter. Hand-added entries need at least `source` and
   `translation`.
@@ -252,11 +256,14 @@ style-profile summary; `background_section` renders the trained
 `[Background Information]` frame (novel background always, plus the previous
 chunk's final lines for chunks 2+; empty for unprofiled projects).
 
-**Chunked translation**: chapters longer than `translate_chunk_size` lines
-(default 40) are split into balanced chunks; each chunk is translated with its
-own exact line-count requirement and one corrective retry, then concatenated.
-The chapter title comes from the first chunk. `chunk_info` is empty for
-single-chunk chapters and describes the part position otherwise.
+**Whole-chapter translation**: chapters estimated under
+`translate_chunk_max_tokens` tokens (default 20000) are translated in ONE
+call — the model sees the chapter's full context. Larger chapters split into
+balanced parts with the previous part's final lines as background. The
+translate call's output cap is dynamic (~1.6x estimated input, clamped to
+2048..32768): normal chapters sit near the model card's recommended range,
+and model repetition rambles terminate quickly. `chunk_info` is empty for
+single-call chapters.
 
 ## Model response schemas
 

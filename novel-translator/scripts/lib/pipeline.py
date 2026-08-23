@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from lib import assemble, balance, client, config, glossary, project, tn
+from lib import assemble, balance, client, config, glossary, logger, project, tn
 
 STAGES = (
     "PREP",
@@ -37,18 +37,20 @@ TRANSLATION_SCHEMA: dict[str, Any] = {
         # Numbered line protocol: each translated line echoes the 1-based
         # index of its source line. Explicit indices make dropped/merged
         # lines structurally detectable instead of off-by-one guesswork.
+        # Deliberately NO nested "additionalProperties": false — the strict
+        # grammar intermittently truncates sglang's guided decoding on
+        # longer generations (verified empirically); the pipeline validates
+        # shape and index coverage itself.
         "lines": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {"i": {"type": "integer"}, "t": {"type": "string"}},
                 "required": ["i", "t"],
-                "additionalProperties": False,
             },
         },
     },
     "required": ["title", "lines"],
-    "additionalProperties": False,
 }
 
 TERMS_SCHEMA: dict[str, Any] = {
@@ -316,7 +318,8 @@ def _load_template(templates_dir: Path, name: str) -> str:
 
 
 def _apply_glossary_proposal(
-    g: dict, proposal: Any, chapter_order: int, cfg: dict, merge_template: str, tag: str
+    g: dict, proposal: Any, chapter_order: int, cfg: dict, merge_template: str,
+    tag: str, project_dir: Path,
 ) -> None:
     """Apply one glossary proposal: add, merge, or silently skip.
 
@@ -401,7 +404,7 @@ def _apply_glossary_proposal(
         },
         "glossary_merge.md",
     )
-    resp = client.chat(config.provider(cfg, "glossary"), prompt, json_schema=MERGE_SCHEMA)
+    resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=MERGE_SCHEMA)
     merged = client.extract_json(resp)
     if not isinstance(merged, dict):
         raise ValueError("merge response is not a JSON object")
@@ -420,6 +423,28 @@ def _apply_glossary_proposal(
             print(f"{tag} [ok] glossary ~ '{src}' -> '{updated.get('translation', '')}'")
             return
     glossary.upsert(g, updated)  # defensive: existing entry was not found in the list
+
+
+def _estimate_tokens(lines: list[str]) -> int:
+    """Conservative token estimate for mixed CJK/Latin text."""
+    text = "\n".join(lines)
+    cjk = len(re.findall(r"[\u3000-\u9fff\uff00-\uffef]", text))
+    return int(cjk * 1.2 + (len(text) - cjk) / 3.5) + 64
+
+
+def _chat(project_dir: Path, cfg: dict, job: str, prompt: str,
+          json_schema: dict | None = None,
+          max_tokens: int | None = None) -> str:
+    """client.chat with per-project trace logging of the full exchange."""
+    enabled = bool(cfg.get("log_llm", True))
+
+    def hook(meta: dict) -> None:
+        if enabled:
+            logger.log_event(project_dir, {"event": "llm_call", "job": job, **meta})
+
+    return client.chat(config.provider(cfg, job), prompt,
+                       json_schema=json_schema, meta_hook=hook,
+                       max_tokens=max_tokens)
 
 
 # --------------------------------------------------------------------------
@@ -584,13 +609,17 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         if start_idx <= _STAGE_IDX["TRANSLATE"]:
             try:
                 print(f"{tag} [init] TRANSLATE (attempt {state['attempt'] + 1})")
-                # Long chapters are translated in balanced chunks: models
-                # cannot hold an exact line count over 100+ lines, and the
-                # line-for-line mapping is the backbone of the whole pipeline
-                # (validation, balance check, TN line indices).
-                chunk_size = int(_cfg_value(cfg, "translate_chunk_size"))
+                logger.log_event(project_dir, {"event": "attempt", "chapter": file,
+                                    "attempt": state["attempt"] + 1})
+                # Whole-chapter translation by default: the model sees the
+                # novel's full context, which beats fragmenting it. Only
+                # chapters estimated above translate_chunk_max_tokens are
+                # split into balanced parts (the numbered-line protocol and
+                # the corrective retry keep the line contract either way).
+                threshold = int(_cfg_value(cfg, "translate_chunk_max_tokens"))
+                est_total = _estimate_tokens(source_lines)
+                n_chunks = 1 if est_total <= threshold else (est_total + threshold - 1) // threshold
                 src_total = len(source_lines)
-                n_chunks = max(1, (src_total + chunk_size - 1) // chunk_size)
                 base, extra = divmod(src_total, n_chunks)
                 title: str | None = None
                 tlines: list[str] = []
@@ -602,6 +631,11 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     expected = list(range(lo + 1, hi + 1))
                     if n_chunks > 1:
                         print(f"{tag} [init] translating part {k + 1}/{n_chunks} (lines {lo + 1}-{hi})")
+                    # Dynamic output cap: ~1.6x the estimated input keeps the
+                    # cap near the model card's recommended range for normal
+                    # chapters (repetition rambles die fast) while never
+                    # truncating a legitimate full-chapter response.
+                    call_max_tokens = max(2048, min(32768, int(_estimate_tokens(chunk) * 1.6) + 1024))
                     numbered = [{"i": lo + j + 1, "t": ln} for j, ln in enumerate(chunk)]
                     if k == 0 or not tlines:
                         chunk_background = background_section()
@@ -633,9 +667,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     prompt = fill(tpl_translation, chunk_ctx, "translation.md")
                     clines: list[str] | None = None
                     for chunk_attempt in (1, 2):  # one corrective retry per chunk
-                        resp = client.chat(
-                            config.provider(cfg, "translator"), prompt,
+                        resp = _chat(
+                            project_dir, cfg, "translator", prompt,
                             json_schema=TRANSLATION_SCHEMA,
+                            max_tokens=call_max_tokens,
                         )
                         parse_note = ""
                         try:
@@ -754,7 +789,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     pairs,
                     body_for_counts,
                     lines,
-                    _cfg_value(cfg, "balance_tolerance"),
+                    _cfg_value(cfg, "min_term_coverage"),
                     _cfg_value(cfg, "fuzzy_max_distance"),
                 )
                 if issues:
@@ -777,16 +812,14 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     "glossary_expand.md",
                 )
                 print(f"{tag} [init] GLOSSARY_EXPAND")
-                resp = client.chat(
-                    config.provider(cfg, "glossary"), prompt, json_schema=TERMS_SCHEMA
-                )
+                resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=TERMS_SCHEMA)
                 data = client.extract_json(resp)
                 raw_terms = data.get("terms") if isinstance(data, dict) else None
                 if not isinstance(raw_terms, list):
                     raise ValueError("expected a 'terms' array")
                 for proposal in raw_terms[:max_terms]:
                     try:
-                        _apply_glossary_proposal(g, proposal, chapter_order, cfg, tpl_glossary_merge, tag)
+                        _apply_glossary_proposal(g, proposal, chapter_order, cfg, tpl_glossary_merge, tag, project_dir)
                     except PipelineError:
                         raise
                     except Exception as exc:  # noqa: BLE001 - skip this proposal only
@@ -803,9 +836,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             try:
                 prompt = fill(tpl_faithfulness, build_ctx(lines), "faithfulness.md")
                 print(f"{tag} [init] FAITH")
-                resp = client.chat(
-                    config.provider(cfg, "reviewer"), prompt, json_schema=VERDICT_SCHEMA
-                )
+                resp = _chat(project_dir, cfg, "reviewer", prompt, json_schema=VERDICT_SCHEMA)
                 data = client.extract_json(resp)
                 verdict = data.get("verdict") if isinstance(data, dict) else None
                 reasons = data.get("reasons") if isinstance(data, dict) else None
@@ -836,9 +867,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     "tn_generate.md",
                 )
                 print(f"{tag} [init] TN_GENERATE")
-                resp = client.chat(
-                    config.provider(cfg, "annotator"), prompt, json_schema=NOTES_SCHEMA
-                )
+                resp = _chat(project_dir, cfg, "annotator", prompt, json_schema=NOTES_SCHEMA)
                 data = client.extract_json(resp)
                 raw_notes = data.get("notes") if isinstance(data, dict) else None
                 if not isinstance(raw_notes, list):
@@ -890,6 +919,9 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         # rejected lines and burn attempts without ever re-translating.
         state["stage"] = "TRANSLATE"
         save_state(paths["draft"], file, state)
+        logger.log_event(project_dir, {"event": "attempt_failed", "chapter": file,
+                                    "attempt": state["attempt"], "stage": failed_stage,
+                                    "feedback": list(state["feedback"][-3:])})
         print(f"{tag} [FAIL] {failed_stage} failed (attempt {state['attempt']}/{max_attempts})")
         if int(state["attempt"]) >= max_attempts:
             project.set_status(manifest, file, "needs-review")
