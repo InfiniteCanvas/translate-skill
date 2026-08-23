@@ -42,10 +42,12 @@ def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
 
     Targets are the deduped translation + alt_translations. If any target
     contains CJK characters, count exact substrings. Otherwise: multi-word
-    targets count as case-insensitive, whitespace-flexible word-boundary
-    phrases (glossary phrases are supposed to be rendered verbatim);
-    single-word targets count as tokens equal to the (lowercased) target or
-    within levenshtein distance fuzzy_max of a target of length >= 5.
+    targets count as case-insensitive phrases whose words may be joined by
+    whitespace OR a hyphen (glossary phrases are supposed to be rendered
+    verbatim, but English hyphenates attributive compounds: "outer sect"
+    also matches "outer-sect disciple"); single-word targets count as
+    tokens equal to the (lowercased) target or within levenshtein distance
+    fuzzy_max of a target of length >= 5.
     """
     targets: list[str] = []
     for target in [entry.get("translation", "")] + list(entry.get("alt_translations") or []):
@@ -60,15 +62,22 @@ def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
     tokens = _TOKEN_RE.findall(low)
     total = 0
     for target in targets:
-        words = target.lower().split()
+        # Hyphens are normalization-level: split them into words so a
+        # hyphenated target ("outer-sect") also matches spaced text and,
+        # via the [\s-]+ joiner below, a spaced target matches hyphenated
+        # attributive text ("outer-sect disciple").
+        words = target.lower().replace("-", " ").split()
         if not words:
             continue
         if len(words) > 1:
-            # Phrase match with word boundaries; the final word may take a
-            # natural inflection ("spirit stone" also matches "spirit stones").
-            head = r"\s+".join(re.escape(w) for w in words[:-1])
+            # Phrase match with word boundaries; words may be joined by
+            # whitespace OR a hyphen ("outer sect" also matches the natural
+            # attributive "outer-sect disciple"), and the final word may take
+            # a natural inflection ("spirit stone(s)").
+            joiner = r"[\s-]+"
+            head = joiner.join(re.escape(w) for w in words[:-1])
             tail = re.escape(words[-1]) + r"(?:es|s|ed|ing)?"
-            pattern = r"\b" + (head + r"\s+" if head else "") + tail + r"\b"
+            pattern = r"\b" + (head + joiner if head else "") + tail + r"\b"
             total += len(re.findall(pattern, low))
             continue
         word = words[0]
@@ -125,9 +134,11 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
                 "src_count": src_count,
                 "tgt_count": tgt_count,
                 "message": (
-                    f"Glossary term '{term}' (expected '{expected}'): source has "
-                    f"{src_count} occurrence(s), translation has 0 — canonical "
-                    "rendering never used (drift or omission)."
+                    f"Glossary term '{term}' must be rendered verbatim as "
+                    f"\"{expected}\" (source has {src_count} occurrence(s), "
+                    "translation has 0) — use the exact canonical rendering "
+                    "wherever the term appears; do not paraphrase, hyphenate, "
+                    "or vary it."
                 ),
             })
         elif tgt_count < floor:

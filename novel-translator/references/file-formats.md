@@ -79,7 +79,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   },
   "seed_min_count": 3,           // catalogue term must appear >= N times in source/ to seed
   "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; only 0 renderings with src>=2 hard-fails
-  "fuzzy_max_distance": 2,       // Levenshtein tolerance when matching translated glossary terms
+  "fuzzy_max_distance": 2,       // Levenshtein tolerance for single-word targets (phrases match verbatim; hyphens/space are equivalent on both sides)
   "glossary_auto_cleanup": true, // balance hard-failures: retire mundane terms via a cleanup judgment instead of retrying on them; false = strict retry-only
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "tn_keep_low_confidence": false, // keep threshold:"low" notes instead of dropping them (default drops)
