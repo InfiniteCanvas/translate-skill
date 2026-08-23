@@ -15,3 +15,5 @@ __pycache__/
 export/
 tests/a-b/
 tests/advisory-live/
+tests/style-mock/
+tests/style-auto/

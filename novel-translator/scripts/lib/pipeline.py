@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from lib import assemble, balance, client, config, glossary, logger, project, tn
+from lib import assemble, balance, client, config, glossary, logger, project, styles, tn
 
 STAGES = (
     "PREP",
@@ -543,8 +543,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     max_attempts = int(_cfg_value(cfg, "max_attempts"))
     g = glossary.load(project_dir)
 
-    # Novel-level context: the generated style profile (novel_info.json),
-    # hand-editable; falls back to defaults for old/unprofiled projects.
+    # Novel-level context: the project's style.md (copied from a preset at
+    # init, hand-editable) wins; the legacy style_profile from --style auto
+    # follows; generic default last. Background likewise prefers the
+    # top-level novel_info field over the legacy profile field.
     novel_info: dict = {}
     if paths["novel_info"].is_file():
         try:
@@ -555,10 +557,23 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             novel_info = {}
     style_profile = novel_info.get("style_profile")
     style_profile = style_profile if isinstance(style_profile, dict) else {}
-    style_summary = str(
-        style_profile.get("style_summary") or DEFAULT_STYLE_SUMMARY
+    style_summary = ""
+    style_path = project_dir / "style.md"
+    if style_path.is_file():
+        try:
+            _, style_summary = styles.parse_style_file(
+                style_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):  # ValueError covers UnicodeDecodeError
+            style_summary = ""
+    style_summary = style_summary.strip()
+    if not style_summary:
+        style_summary = str(
+            style_profile.get("style_summary") or DEFAULT_STYLE_SUMMARY
+        ).strip()
+    novel_background = str(
+        novel_info.get("background") or style_profile.get("background") or ""
     ).strip()
-    novel_background = str(style_profile.get("background") or "").strip()
 
     def background_section(extra: str = "") -> str:
         """Render the Hy-MT2 [Background Information] frame; empty when there

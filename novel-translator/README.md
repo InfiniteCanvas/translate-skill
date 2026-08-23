@@ -35,11 +35,25 @@ the subcommand.
            --source-url "<url>" --source-lang zh --target-lang en
 
    This writes `config.json`, `novel_info.json`, an empty `glossary.json`
-   and `tn_history.json`, copies prompt templates into `templates/`, seeds
-   the glossary from any matching asset catalogues, generates a style
-   profile from the opening chapters, and prepares a cover.
-   Pass `--skip-profile` to skip the style-profile LLM call at init, and
-   run `profile` later to (re)generate it.
+   and `tn_history.json`, copies prompt templates into `templates/`,
+   copies a style guide to `style.md`, seeds the glossary from any
+   matching asset catalogues, and prepares a cover.
+
+   Style is preset-based -- zero LLM calls at init. Pick with
+   `--style <name|path>`: `classic` (default; standard xianxia/wuxia
+   register), `transmigration` (modern protagonist voice + internet
+   memes against a classic cultivation world), `modern` (contemporary
+   settings), `literary` (elevated epic register), or a path to your own
+   .md file. `style.md` is hand-editable (picked up on the next
+   translate); drop .md files into the project's `styles/` to add or
+   override presets. `styles` lists the presets (name + description):
+
+       uv run scripts/translate.py styles --project .
+
+   `--background "<2-4 sentences>"` records novel context for the
+   translator's background frame. `--style auto` keeps the legacy
+   model-generated profile (one LLM call over sampled chapters; the
+   `profile` command regenerates it later).
 
 3. Verify the endpoint answers for every job:
 
@@ -99,9 +113,13 @@ book into `export/`.
 - Temperature and `top_p` per provider. The translator defaults to
   temperature 0.7 and `top_p` 1.0 per the Hy-MT2 model card -- tune to
   taste.
+- `thinking` per provider (default false) maps to sglang
+  `chat_template_kwargs.enable_thinking`; set true per job for
+  hybrid-thinking experiments. Symptom of thinking-on: ~minutes-long
+  calls returning empty content.
 - Thresholds: `min_term_coverage (advisory usage floor; only zero renderings hard-fail)`, `tn_gap_chapters`, `max_attempts`,
-  `translate_max_output_tokens`, `style_sample_chapters` / `style_sample_chars`,
-  `contextual_glossary_cap`.
+  `translate_max_output_tokens`, `style_sample_chapters` / `style_sample_chars`
+  (only used by `--style auto`), `contextual_glossary_cap`.
 
 Every file schema (manifest, chapter state, glossary, notes, novel_info)
 is documented in `references/file-formats.md`.

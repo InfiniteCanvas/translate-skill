@@ -4,7 +4,7 @@
 # ///
 """novel-translator: staged, resumable CJK novel translation CLI.
 
-Subcommands: init, ping, seed, profile, status, translate, retry, mark, build-epub.
+Subcommands: init, ping, seed, profile, styles, status, translate, retry, mark, build-epub.
 Exit codes: 0 ok, 1 chapter needs-review / epubcheck failed, 2 usage or setup error.
 """
 
@@ -33,6 +33,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from lib import client, config, cover, epub, glossary, pipeline, project, tn  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
+from lib import styles as styles_mod  # noqa: E402
 
 SKILL_ROOT = SCRIPT_DIR.parent
 ASSETS_DIR = SKILL_ROOT / "assets"
@@ -105,6 +106,29 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         )
     print(f"[init] found {len(chapters)} source chapter(s)")
 
+    # Resolve the style guide before anything is created so a bad name fails
+    # fast instead of leaving a half-initialized project.
+    style_name: str | None = None
+    style_body: str | None = None
+    if args.style != "auto":
+        style_path = Path(args.style)
+        if style_path.is_file():
+            style_name = style_path.stem
+            try:
+                text = style_path.read_text(encoding="utf-8")
+            except (OSError, ValueError) as exc:  # ValueError covers UnicodeDecodeError
+                raise CliError(f"cannot read style file {style_path}: {exc}") from exc
+            _description, parsed_body = styles_mod.parse_style_file(text)
+            if not parsed_body.strip():
+                raise CliError(f"style file {style_path} has an empty body")
+            style_body = parsed_body
+        else:
+            style_name = args.style
+            try:
+                style_body = styles_mod.load_style(project_dir, args.style)
+            except styles_mod.StyleError as exc:
+                raise CliError(str(exc)) from exc
+
     if not TEMPLATES_SRC_DIR.is_dir():
         raise CliError(f"skill templates not found: {TEMPLATES_SRC_DIR}")
 
@@ -112,8 +136,22 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         paths[key].mkdir(parents=True, exist_ok=True)
     print("[init] created directories: draft translated export covers templates")
 
+    if style_name is not None:
+        (project_dir / "style.md").write_text(
+            (style_body or "").rstrip("\n") + "\n", encoding="utf-8", newline="\n"
+        )
+        print(f"[init] style: {style_name} -> style.md")
+        names = [name for name, _desc in styles_mod.list_styles(project_dir)]
+        print(f"[init] available styles: {', '.join(names)} (or --style auto)")
+    else:
+        # --style auto: remove any style.md left by a previous preset init -
+        # the pipeline treats style.md as tier 1, so a stale copy would
+        # silently override the regenerated profile.
+        (project_dir / "style.md").unlink(missing_ok=True)
+
     providers = {
-        job: {"base_url": args.api_base, "model": None, "temperature": temperature, "max_tokens": 16384}
+        job: {"base_url": args.api_base, "model": None, "temperature": temperature,
+              "max_tokens": 16384, "thinking": False}
         for job, temperature in (
             ("translator", 0.7),
             ("glossary", 0.2),
@@ -143,7 +181,10 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         "target_lang": args.target_lang,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "cover": "covers/cover.jpg",
+        "style": style_name if style_name is not None else "auto",
     }
+    if args.background:
+        novel_info["background"] = args.background
     paths["novel_info"].write_text(
         json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -217,10 +258,12 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         f"({total_skipped} skipped as duplicates)"
     )
 
-    # Style profile: sample the opening chapters and have the model describe
-    # the narrative voice; stored in novel_info.json and used by later
-    # prompts. Failures only warn -- init must survive a missing profile.
-    if not args.skip_profile:
+    # Style profile (legacy '--style auto' path): sample the opening chapters
+    # and have the model describe the narrative voice; stored as
+    # novel_info.json:style_profile and used by later prompts. Preset styles
+    # read project style.md instead and skip this LLM call. Failures only
+    # warn -- init must survive a missing profile.
+    if args.style == "auto" and not args.skip_profile:
         try:
             prof = profile_mod.generate_profile(
                 project_dir, cfg,
@@ -246,9 +289,11 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"     title:    {args.title}")
     print(f"     author:   {args.author}")
     print(f"     chapters: {len(manifest)} ({args.source_lang} -> {args.target_lang})")
+    if novel_info.get("style") and novel_info["style"] != "auto":
+        print(f"     style:    {novel_info['style']}")
     prof = novel_info.get("style_profile")
     if isinstance(prof, dict):
-        print(f"     style:    {str(prof.get('style_summary', ''))[:60]}")
+        print(f"     style:    auto profile ({str(prof.get('style_summary', ''))[:60]})")
     print("next step: translate --next N   (e.g. 'translate --next 3')")
     return 0
 
@@ -347,8 +392,22 @@ def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
         json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print("[ok] style profile written to novel_info.json")
+    if (project_dir / "style.md").is_file():
+        print("[warn] style.md exists and takes precedence over the profile - delete it to activate the profile")
     print(f"style_summary: {prof.get('style_summary', '')}")
     print(f"background: {prof.get('background', '')}")
+    return 0
+
+
+def cmd_styles(args: argparse.Namespace, project_dir: Path) -> int:
+    rows = styles_mod.list_styles(project_dir)
+    if not rows:
+        print("(no style presets found)")
+        return 0
+    width = max(len(name) for name, _ in rows)
+    for name, desc in rows:
+        print(f"{name:<{width}}  {desc}")
+    print("\nuse: init --style NAME   (or --style auto for a model-generated profile)")
     return 0
 
 
@@ -387,6 +446,31 @@ def cmd_status(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"{'glossary':>13}: {len(g.get('terms', []))} terms")
     history = tn.load_history(project_dir)
     print(f"{'tn_history':>13}: {len(history)} terms")
+
+    if paths["novel_info"].is_file():
+        try:
+            novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            novel_info = {}
+        # Mirror the pipeline's style resolution: style.md (tier 1, only when
+        # it has a non-empty body) -> style_profile.style_summary -> default.
+        style_body = ""
+        if (project_dir / "style.md").is_file():
+            try:
+                _desc, style_body = styles_mod.parse_style_file(
+                    (project_dir / "style.md").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                style_body = ""
+        if style_body.strip():
+            name = novel_info["style"] if isinstance(novel_info.get("style"), str) else "custom"
+            print(f"{'style':>13}: {name} (style.md)")
+        elif isinstance(novel_info.get("style_profile"), dict) and str(
+            novel_info["style_profile"].get("style_summary") or ""
+        ).strip():
+            print(f"{'style':>13}: auto profile")
+        else:
+            print(f"{'style':>13}: default fallback")
 
     if args.why:
         for entry in entries:
@@ -553,8 +637,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tags", default="", help="comma-separated tag list")
     p.add_argument("--api-base", default=DEFAULT_API_BASE, help="OpenAI-compatible API base URL")
     p.add_argument("--cover-url", default=None, help="URL to download the cover image from")
+    p.add_argument("--style", default="classic", metavar="NAME|PATH|auto",
+                   help="style guide: a preset name, a path to a .md file, or 'auto' for a model-generated profile (default: classic)")
+    p.add_argument("--background", default=None,
+                   help="2-4 sentences of novel background for the translator's context frame")
     p.add_argument("--skip-profile", action="store_true",
-                   help="skip the style-profile LLM call (run 'profile' later to generate it)")
+                   help="deprecated no-op for preset styles; still skips the LLM call for --style auto")
     p.add_argument("--force", action="store_true", help="reinitialize even if config.json exists")
     p.set_defaults(func=cmd_init)
 
@@ -574,6 +662,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--chars", type=int, default=None, metavar="N",
                    help="approx. source characters to include (default: config style_sample_chars)")
     p.set_defaults(func=cmd_profile)
+
+    p = sub.add_parser("styles", parents=[common], help="list available translation style presets")
+    p.set_defaults(func=cmd_styles)
 
     p = sub.add_parser("status", parents=[common], help="show per-chapter pipeline status")
     p.add_argument("--why", action="store_true",

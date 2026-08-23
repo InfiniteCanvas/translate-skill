@@ -13,6 +13,13 @@ Serves:
   GET  /novel                -> HTML page with og:image pointing at /cover.jpg
   GET  /cover.jpg            -> tiny PNG (tests the scrape + PIL re-encode path)
 
+Thinking simulation: a chat/completions request WITHOUT
+chat_template_kwargs.enable_thinking=false mimics a hybrid-thinking model
+whose reasoning eats the output budget -- content comes back empty with the
+reasoning parked in reasoning_content and finish_reason "stop" (the failure
+mode the client's per-provider `thinking` toggle guards against). Requests
+that disable thinking get the normal canned behavior above.
+
 Run: python tests/mock_server.py [port]   (default 8901)
 """
 import base64
@@ -97,6 +104,25 @@ def mock_reply(prompt: str) -> str:
     return json.dumps({"title": "Mock Chapter Title", "lines": []})
 
 
+def mock_message(body: dict) -> dict:
+    """Assistant message for a parsed /v1/chat/completions request body.
+
+    Unless the request disables thinking via
+    chat_template_kwargs.enable_thinking=false, simulate the hybrid-thinking
+    failure mode: empty content with the reasoning in reasoning_content.
+    """
+    if body.get("chat_template_kwargs", {}).get("enable_thinking") is False:
+        prompt = ""
+        for msg in body.get("messages", []):
+            prompt += str(msg.get("content", ""))
+        return {"role": "assistant", "content": mock_reply(prompt)}
+    return {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "<think>mock reasoning</think>",
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # quiet
         pass
@@ -129,13 +155,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length) or b"{}")
-        prompt = ""
-        for msg in req.get("messages", []):
-            prompt += str(msg.get("content", ""))
-        content = mock_reply(prompt)
         payload = {
             "object": "chat.completion",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": content}}],
+            "choices": [
+                {"index": 0, "message": mock_message(req), "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
         }
         self._send(200, json.dumps(payload, ensure_ascii=False).encode(), "application/json")
 

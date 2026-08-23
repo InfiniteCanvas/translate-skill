@@ -23,6 +23,7 @@ class LLMError(Exception):
 _MODEL_CACHE: dict[str, str] = {}
 _PAIRS = {"{": "}", "[": "]"}
 _FENCE_RE = re.compile(r"^```[\w+-]*[ \t]*\n?(.*?)\n?[ \t]*```$", re.DOTALL)
+_THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 
 
 def _v1_url(base_url: str) -> str:
@@ -96,6 +97,10 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
         body["top_k"] = int(provider_cfg["top_k"])
     if provider_cfg.get("repetition_penalty") is not None:
         body["repetition_penalty"] = float(provider_cfg["repetition_penalty"])
+    # Hybrid-thinking models (sglang chat_template_kwargs): false spends the
+    # output budget on the answer instead of a reasoning chain.
+    if provider_cfg.get("thinking") is not None:
+        body["chat_template_kwargs"] = {"enable_thinking": bool(provider_cfg["thinking"])}
     if json_schema is not None:
         body["response_format"] = {
             "type": "json_schema",
@@ -112,7 +117,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             "model": model,
             "params": {k: body[k] for k in
                        ("temperature", "max_tokens", "top_p", "top_k",
-                        "repetition_penalty") if k in body},
+                        "repetition_penalty", "chat_template_kwargs") if k in body},
             "guided_json": "response_format" in body,
             "prompt": prompt,
         }
@@ -184,10 +189,24 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             if meta_hook:
                 meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
             raise LLMError(err) from exc
+        # Servers without a reasoning parser may inline a leading <think>
+        # block into content; strip it before the empty-content check.
+        if isinstance(content, str):
+            content = _THINK_BLOCK_RE.sub("", content, count=1)
         if not isinstance(content, str) or not content.strip():
-            err = f"empty completion content from {url}"
+            message = choice["message"]
+            reasoning = message.get("reasoning_content") if isinstance(message, dict) else None
+            hint = (" (reasoning_content present - set providers.<job>.thinking=false so the "
+                    "output budget goes to the answer)") if reasoning else ""
+            err = f"empty completion content from {url}{hint}"
             if meta_hook:
-                meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
+                meta_hook(_response_meta(
+                    response=content if isinstance(content, str) else None,
+                    finish_reason=choice.get("finish_reason"),
+                    usage=payload.get("usage"),
+                    elapsed=time.monotonic() - started,
+                    error=err,
+                ))
             raise LLMError(err)
 
         if meta_hook:

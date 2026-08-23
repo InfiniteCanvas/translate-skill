@@ -53,15 +53,41 @@ Creates the folder structure, `config.json`, `novel_info.json`,
 `chapters.json`, empty `glossary.json`/`tn_history.json`, copies the prompt
 templates into `templates/`, backfills frontmatter on bare source chapters,
 scrapes a cover from the source URL (`og:image`) or generates one (title on a
-gradient background) into `covers/cover.jpg`, generates a **style profile**
-(one model call over a random sample of source chapters →
-`novel_info.json:style_profile`, feeds every later prompt; skip with
-`--skip-profile`, regenerate with `profile`), and seeds the glossary from the
+gradient background) into `covers/cover.jpg`, copies the chosen **style
+guide** to `style.md` (preset-based, zero LLM calls; see below), and seeds
+the glossary from the
 skill's catalogues: every catalogue term appearing ≥ `seed_min_count`
 (default 3) times across all source chapters is added. Refuses to overwrite
 an existing project unless `--force`.
 
 Optional: `--cover-url` to point at a cover image directly.
+
+**Style selection** (`--style NAME|PATH|auto`, default `classic`): a preset
+name copies that guide from the skill's `assets/styles/` to
+`<project>/style.md` and records `"style": NAME` in `novel_info.json` —
+zero LLM calls. Presets: `classic` (measured, concise literary English for
+standard xianxia/wuxia), `transmigration` (modern protagonist voice +
+internet memes against a classic cultivation world), `modern`
+(contemporary settings, dialogue-forward English), `literary` (elevated
+epic register). A filesystem path to a .md file does the same with the file
+stem as the name; a project can override/add presets by dropping .md files
+into `<project>/styles/`; the `styles` subcommand lists presets (name +
+description). **Choose the style deliberately after skimming a few source
+chapters**: `transmigration` when the protagonist is from modern Earth
+(isekai/transmigration tropes, system prompts, meme usage in the source),
+`classic` for standard xianxia/wuxia, `literary` for deliberately lush
+prose, `modern` for contemporary settings; when unsure after skimming,
+`classic`. `--background "..."` records 2-4 sentences of novel context as
+`novel_info.json:background` (fed to every prompt's
+`[Background Information]` frame) — if it wasn't set at init, fill it from
+the novel's synopsis/source page by editing `novel_info.json` before
+translating. `style.md` is hand-editable; edits apply on the next
+translate without re-init. `--style auto` is the legacy model-generated
+profile path (`novel_info.json:style_profile`, one LLM call over a random
+sample of source chapters; regenerate with the `profile` subcommand) for
+novels that fit no preset; `--skip-profile` is a no-op for preset styles,
+and with `--style auto` it skips the profile LLM call.
+`status` prints the active style line.
 
 ### 3. Translate chapters (`translate`)
 
@@ -156,15 +182,19 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "C:\path\to\export:/data" epubcheck /data/
 - **Prompts follow the Hy-MT2 model card conventions**: full language names,
   `X translates to "Y"` terminology pairs, structured-data preservation
   rules for the numbered-line protocol, `[Background Information]` context
-  frames (novel style profile + previous-chunk tail), and the cultural-
+  frames (novel background + previous-chunk tail), and the cultural-
   adaptation threshold pattern for translation notes. Keep new template
   edits aligned with those patterns.
 - **Providers are per job** in `config.json` (`translator`, `glossary`,
-  `reviewer`, `annotator`, `profile`). Start with one endpoint doing
+  `reviewer`, `annotator`, `profile`; the `profile` job only serves
+  `--style auto`). Start with one endpoint doing
   everything; later point `reviewer` at a stronger model without touching
   the rest. `ping` shows what each job resolves to. Temperature and top_p
   are per-provider passthroughs (translator defaults 0.7/1.0 per the model
   card — quality across temperatures is subjective; the user tunes this).
+  A per-provider `thinking` flag defaults to false (sglang
+  `chat_template_kwargs.enable_thinking`) so hybrid-thinking models spend
+  the output budget on the answer.
 - **Templates are per project** (`templates/`). Tuning a prompt for a
   specific novel is normal — edit, then `retry` the affected chapters.
 - **Glossary upkeep**: hand-fix bad entries any time; the balance check reads
