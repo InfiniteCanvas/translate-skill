@@ -13,3 +13,4 @@ __pycache__/
 # Build artifacts
 *.epub
 export/
+tests/a-b/

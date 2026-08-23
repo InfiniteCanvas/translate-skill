@@ -1,9 +1,10 @@
 """Translator's-note deduplication and cross-chapter history.
 
-The pipeline generates candidate notes per chapter; this module drops invalid
-entries, collapses within-chapter duplicates, and suppresses notes for terms
-that were already explained recently (the gap rule), maintaining a persistent
-tn_history.json at the project root.
+The pipeline generates candidate notes per chapter; this module first drops
+the model's self-assessed low-comprehension notes (threshold "low"), then
+drops invalid entries, collapses within-chapter duplicates, and suppresses
+notes for terms that were already explained recently (the gap rule),
+maintaining a persistent tn_history.json at the project root.
 """
 
 from __future__ import annotations
@@ -46,8 +47,14 @@ def process(
 ) -> tuple[list[dict], dict, list[str]]:
     """Filter generated notes for one chapter.
 
-    notes: [{"line": int (0-based), "term": str, "note": str}] from the model.
+    notes: [{"line": int (0-based), "term": str, "note": str,
+    "threshold": str (optional)}] from the model.
 
+    - Comprehension gate (first, before any other validation or dedup): drop
+      every note whose "threshold" is "low" (case-insensitive), silently.
+      This is the model's self-assessed comprehension-threshold gate --
+      low-threshold notes are discarded by design. Notes missing the
+      "threshold" key or carrying any other value are kept.
     - Drop invalid entries (line outside [0, line_count), empty term/note,
       wrong types) with a warning string.
     - Key = term.strip(). Within-chapter duplicates by key: keep the first
@@ -69,6 +76,19 @@ def process(
     kept: list[dict] = []
     seen: set[str] = set()
     updated = dict(history)
+
+    # Comprehension gate (Hy-MT2 convention), before any other validation or
+    # dedup: notes the model marked threshold="low" (case-insensitive) are
+    # discarded silently, by design. Notes missing "threshold" or with any
+    # other value are kept.
+    notes = [
+        entry for entry in notes
+        if not (
+            isinstance(entry, dict)
+            and isinstance(entry.get("threshold"), str)
+            and entry["threshold"].lower() == "low"
+        )
+    ]
 
     for idx, entry in enumerate(notes):
         position = f"note #{idx + 1}"

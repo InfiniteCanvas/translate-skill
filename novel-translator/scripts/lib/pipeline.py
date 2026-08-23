@@ -95,6 +95,10 @@ NOTES_SCHEMA: dict[str, Any] = {
                     "line": {"type": "integer"},
                     "term": {"type": "string"},
                     "note": {"type": "string"},
+                    # Optional self-assessed comprehension threshold
+                    # (Hy-MT2's cultural-adaptation pattern); tn.process
+                    # discards "low" entries. Missing = keep.
+                    "threshold": {"type": "string", "enum": ["high", "low"]},
                 },
                 "required": ["line", "term", "note"],
                 "additionalProperties": False,
@@ -120,6 +124,29 @@ MERGE_SCHEMA: dict[str, Any] = {
 _STAGE_IDX = {name: i for i, name in enumerate(STAGES)}
 _KEY_RE = re.compile(r"\{\{([^{}]+)\}\}")
 _RANGE_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+
+# Language codes -> full names. Hy-MT2's model card: prompts must use full
+# language names ("Chinese"/"English"), never raw codes ("zh"/"en"). Codes
+# outside the table pass through unchanged.
+LANG_NAMES: dict[str, str] = {
+    "zh": "Chinese", "en": "English", "yue": "Cantonese", "ja": "Japanese",
+    "ko": "Korean", "es": "Spanish", "fr": "French", "de": "German",
+    "ru": "Russian", "pt": "Portuguese", "it": "Italian", "ar": "Arabic",
+    "hi": "Hindi", "id": "Indonesian", "vi": "Vietnamese", "th": "Thai",
+    "tr": "Turkish", "ms": "Malay", "km": "Khmer", "lo": "Lao", "my": "Burmese",
+    "tl": "Tagalog", "nl": "Dutch", "pl": "Polish", "uk": "Ukrainian",
+    "sv": "Swedish", "da": "Danish", "fi": "Finnish", "no": "Norwegian",
+    "cs": "Czech", "el": "Greek", "he": "Hebrew", "hu": "Hungarian",
+    "ro": "Romanian", "bg": "Bulgarian", "sr": "Serbian", "hr": "Croatian",
+    "sk": "Slovak", "sl": "Slovenian",
+}
+
+# Fallback for projects without a generated style profile.
+DEFAULT_STYLE_SUMMARY = "a faithful literary translation that preserves the original's tone and register"
+
+
+def _lang_name(code: object) -> str:
+    return LANG_NAMES.get(str(code).strip().lower(), str(code))
 
 
 class PipelineError(Exception):
@@ -485,6 +512,31 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     max_attempts = int(_cfg_value(cfg, "max_attempts"))
     g = glossary.load(project_dir)
 
+    # Novel-level context: the generated style profile (novel_info.json),
+    # hand-editable; falls back to defaults for old/unprofiled projects.
+    novel_info: dict = {}
+    if paths["novel_info"].is_file():
+        try:
+            loaded = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                novel_info = loaded
+        except (ValueError, OSError):
+            novel_info = {}
+    style_profile = novel_info.get("style_profile")
+    style_profile = style_profile if isinstance(style_profile, dict) else {}
+    style_summary = str(
+        style_profile.get("style_summary") or DEFAULT_STYLE_SUMMARY
+    ).strip()
+    novel_background = str(style_profile.get("background") or "").strip()
+
+    def background_section(extra: str = "") -> str:
+        """Render the Hy-MT2 [Background Information] frame; empty when there
+        is nothing to say (keeps templates clean for unprofiled projects)."""
+        parts = [p for p in (novel_background, extra.strip()) if p]
+        if not parts:
+            return ""
+        return "[Background Information]\n" + "\n".join(parts) + "\n"
+
     def advance(next_stage: str) -> None:
         state["stage"] = next_stage
         save_state(paths["draft"], file, state)
@@ -501,8 +553,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     def build_ctx(translation_lines: list[str], feedback: str = "",
                   extra: dict[str, str] | None = None) -> dict[str, str]:
         ctx: dict[str, str] = {
-            "source_lang": str(cfg.get("source_lang", "")),
-            "target_lang": str(cfg.get("target_lang", "")),
+            "source_lang": _lang_name(cfg.get("source_lang", "")),
+            "target_lang": _lang_name(cfg.get("target_lang", "")),
             "chapter_title": str(fm.get("chapter_title", "")),
             "chapter_file": file,
             "line_count": str(len(source_lines)),
@@ -510,6 +562,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             "translation_lines": json.dumps(translation_lines, ensure_ascii=False),
             "glossary": glossary_str,
             "feedback_section": feedback,
+            "style": style_summary,
+            "background_section": background_section(),
         }
         if extra:
             ctx.update(extra)
@@ -549,12 +603,23 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     if n_chunks > 1:
                         print(f"{tag} [init] translating part {k + 1}/{n_chunks} (lines {lo + 1}-{hi})")
                     numbered = [{"i": lo + j + 1, "t": ln} for j, ln in enumerate(chunk)]
+                    if k == 0 or not tlines:
+                        chunk_background = background_section()
+                    else:
+                        tail = [ln for ln in tlines if ln.strip()][-2:]
+                        continuity = (
+                            "The final lines of the previous part, already translated "
+                            "(for continuity only - do NOT retranslate them):\n"
+                            + "\n".join(tail)
+                        )
+                        chunk_background = background_section(continuity)
                     chunk_ctx = build_ctx(
                         [],
                         feedback=feedback_section(),
                         extra={
                             "source_lines": json.dumps(numbered, ensure_ascii=False),
                             "line_count": str(len(chunk)),
+                            "background_section": chunk_background,
                             "chunk_info": (
                                 f"You are translating part {k + 1} of {n_chunks} of one chapter "
                                 f"(source lines {lo + 1}-{hi} of {src_total}). Other parts are "

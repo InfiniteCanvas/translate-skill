@@ -77,6 +77,15 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
         "temperature": temperature if temperature is not None else provider_cfg.get("temperature", 0.2),
         "max_tokens": max_tokens or provider_cfg.get("max_tokens", 16384),
     }
+    # Optional sampling knobs: a key is sent only when the provider block
+    # carries it with a non-None value (top_k may legitimately be -1,
+    # meaning "disabled").
+    if provider_cfg.get("top_p") is not None:
+        body["top_p"] = float(provider_cfg["top_p"])
+    if provider_cfg.get("top_k") is not None:
+        body["top_k"] = int(provider_cfg["top_k"])
+    if provider_cfg.get("repetition_penalty") is not None:
+        body["repetition_penalty"] = float(provider_cfg["repetition_penalty"])
     if json_schema is not None:
         body["response_format"] = {
             "type": "json_schema",

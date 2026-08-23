@@ -112,18 +112,18 @@ def contextual(g: dict, body: str, cap: int) -> list[tuple[dict, int]]:
 
 
 def render_contextual(pairs: list[tuple[dict, int]]) -> str:
-    """Render contextual pairs as one line per entry (or a placeholder)."""
+    """Render contextual pairs as one line per entry (or a placeholder).
+
+    Uses the Hy-MT2 trained terminology pattern: one line per entry, exactly
+    '<source> translates to "<translation>"'. No categories, definitions, or
+    counts here -- they stay in the JSON data for the other stages.
+    """
     if not pairs:
         return "(no glossary terms appear in this chapter)"
-    lines = []
-    for entry, _count in pairs:
-        # The translation is quoted and the category parenthesized so models
-        # can't mistake the bracketed metadata for part of the term.
-        line = f"{entry.get('source', '')} = \"{entry.get('translation', '')}\" ({entry.get('category', 'other')})"
-        if entry.get("definition"):
-            line += f" — {entry['definition']}"
-        lines.append(line)
-    return "\n".join(lines)
+    return "\n".join(
+        f"{entry.get('source', '')} translates to \"{entry.get('translation', '')}\""
+        for entry, _count in pairs
+    )
 
 
 def load_catalogue(path: Path) -> dict:

@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator")
+PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "profile")
 
 DEFAULTS: dict = {
     "seed_min_count": 3,
@@ -11,22 +11,32 @@ DEFAULTS: dict = {
     "fuzzy_max_distance": 2,
     "tn_gap_chapters": 10,
     "max_attempts": 3,
-    "contextual_glossary_cap": 80,
+    # Runaway safety valve only: every glossary term present in the chapter
+    # goes into the prompt; this caps the rendered list if it ever explodes.
+    "contextual_glossary_cap": 200,
     "max_new_terms_per_chapter": 15,
     "max_notes_per_chapter": 10,
     # Chapters longer than this many lines are translated in balanced chunks;
     # models cannot hold an exact line count over 100+ lines in one pass.
     "translate_chunk_size": 40,
+    # Style-profile generation at init: how many chapters to sample and
+    # roughly how many source characters to include in the prompt.
+    "style_sample_chapters": 4,
+    "style_sample_chars": 12000,
 }
 
 _DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"
 _DEFAULT_MAX_TOKENS = 16384
 
+# translator temperature/top_p follow the Hy-MT2 model card recommendation
+# (0.7 / 1.0); every other job keeps the server default for its sampling
+# knobs (no top_p key sent).
 PROVIDER_DEFAULTS: dict[str, dict] = {
-    "translator": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.3, "max_tokens": _DEFAULT_MAX_TOKENS},
+    "translator": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.7, "top_p": 1.0, "max_tokens": _DEFAULT_MAX_TOKENS},
     "glossary": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": _DEFAULT_MAX_TOKENS},
     "reviewer": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.0, "max_tokens": _DEFAULT_MAX_TOKENS},
     "annotator": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": _DEFAULT_MAX_TOKENS},
+    "profile": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.3, "max_tokens": _DEFAULT_MAX_TOKENS},
 }
 
 
@@ -42,7 +52,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _normalize_providers(providers: dict) -> dict:
-    """Guarantee all four PROVIDER_JOBS exist with every default key filled.
+    """Guarantee every job in PROVIDER_JOBS exists with every default key filled.
 
     A missing job inherits the "translator" block if present; any key still
     missing is filled from PROVIDER_DEFAULTS[job]. Unknown extra jobs are
@@ -66,7 +76,7 @@ def _normalize_providers(providers: dict) -> dict:
 
 def load_config(project_dir: Path) -> dict:
     """Read <project_dir>/config.json, deep-merge onto DEFAULTS, and
-    guarantee cfg["providers"] contains all four PROVIDER_JOBS.
+    guarantee cfg["providers"] contains every job in PROVIDER_JOBS.
 
     Raises FileNotFoundError with a clear message if config.json is absent.
     """

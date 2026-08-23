@@ -51,11 +51,15 @@ uv run "$SCRIPT" init --project . \
 
 Creates the folder structure, `config.json`, `novel_info.json`,
 `chapters.json`, empty `glossary.json`/`tn_history.json`, copies the prompt
-templates into `templates/`, scrapes a cover from the source URL (`og:image`)
-or generates one (title on a gradient background) into `covers/cover.jpg`,
-and seeds the glossary from the skill's catalogues: every catalogue term
-appearing ≥ `seed_min_count` (default 3) times across all source chapters is
-added. Refuses to overwrite an existing project unless `--force`.
+templates into `templates/`, backfills frontmatter on bare source chapters,
+scrapes a cover from the source URL (`og:image`) or generates one (title on a
+gradient background) into `covers/cover.jpg`, generates a **style profile**
+(one model call over a random sample of source chapters →
+`novel_info.json:style_profile`, feeds every later prompt; skip with
+`--skip-profile`, regenerate with `profile`), and seeds the glossary from the
+skill's catalogues: every catalogue term appearing ≥ `seed_min_count`
+(default 3) times across all source chapters is added. Refuses to overwrite
+an existing project unless `--force`.
 
 Optional: `--cover-url` to point at a cover image directly.
 
@@ -105,7 +109,8 @@ hand if any turns up later.
 
 ```bash
 uv run "$SCRIPT" status --project .                # see statuses + attempt counts
-cat draft/Chapter_0007.state.json                  # accumulated gate feedback is in here
+uv run "$SCRIPT" status --why --project .          # + why each needs-review chapter is stuck
+cat draft/Chapter_0007.state.json                  # full accumulated gate feedback
 ```
 
 Read the feedback, then choose:
@@ -140,10 +145,21 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "C:\path\to\export:/data" epubcheck /data/
 
 ## Operating notes
 
+- **The tool is fully manual-runnable** — every operation is one of the
+  commands above; the agent only saves typing. `README.md` in this skill is
+  the human-facing cheat sheet.
+- **Prompts follow the Hy-MT2 model card conventions**: full language names,
+  `X translates to "Y"` terminology pairs, structured-data preservation
+  rules for the numbered-line protocol, `[Background Information]` context
+  frames (novel style profile + previous-chunk tail), and the cultural-
+  adaptation threshold pattern for translation notes. Keep new template
+  edits aligned with those patterns.
 - **Providers are per job** in `config.json` (`translator`, `glossary`,
-  `reviewer`, `annotator`). Start with one endpoint doing everything; later
-  point `reviewer` at a stronger model without touching the rest. `ping`
-  shows what each job resolves to.
+  `reviewer`, `annotator`, `profile`). Start with one endpoint doing
+  everything; later point `reviewer` at a stronger model without touching
+  the rest. `ping` shows what each job resolves to. Temperature and top_p
+  are per-provider passthroughs (translator defaults 0.7/1.0 per the model
+  card — quality across temperatures is subjective; the user tunes this).
 - **Templates are per project** (`templates/`). Tuning a prompt for a
   specific novel is normal — edit, then `retry` the affected chapters.
 - **Glossary upkeep**: hand-fix bad entries any time; the balance check reads

@@ -6,6 +6,7 @@ Serves:
        - asks for a "verdict"      -> faithfulness check (SUCCESS)
        - asks for "notes"          -> one translation note (term 测试)
        - merge prompt ("Merge")    -> merged glossary entry
+       - asks for "style_summary"  -> mock style profile (summary + background)
        - asks for "terms"          -> no new glossary terms
        - otherwise                 -> translation: fake lines matching the
                                       source array found in the prompt
@@ -74,6 +75,8 @@ def mock_reply(prompt: str) -> str:
                 "category": "other",
             }
         )
+    if "style_summary" in prompt:
+        return json.dumps({"style_summary": "A mock literary style.", "background": "A mock novel background."})
     if '"terms"' in prompt:
         return json.dumps({"terms": []})
     # translation: mirror the last line array in the prompt — numbered

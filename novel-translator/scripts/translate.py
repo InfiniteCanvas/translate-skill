@@ -4,7 +4,7 @@
 # ///
 """novel-translator: staged, resumable CJK novel translation CLI.
 
-Subcommands: init, ping, seed, status, translate, retry, mark, build-epub.
+Subcommands: init, ping, seed, profile, status, translate, retry, mark, build-epub.
 Exit codes: 0 ok, 1 chapter needs-review / epubcheck failed, 2 usage or setup error.
 """
 
@@ -32,6 +32,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from lib import client, config, cover, epub, glossary, pipeline, project, tn  # noqa: E402
+from lib import profile as profile_mod  # noqa: E402
 
 SKILL_ROOT = SCRIPT_DIR.parent
 ASSETS_DIR = SKILL_ROOT / "assets"
@@ -114,12 +115,15 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     providers = {
         job: {"base_url": args.api_base, "model": None, "temperature": temperature, "max_tokens": 16384}
         for job, temperature in (
-            ("translator", 0.3),
+            ("translator", 0.7),
             ("glossary", 0.2),
             ("reviewer", 0.0),
             ("annotator", 0.2),
+            ("profile", 0.3),
         )
     }
+    # Hy-MT2 model card: translation sampling is temperature 0.7, top_p 1.0.
+    providers["translator"]["top_p"] = 1.0
     cfg: dict[str, Any] = {
         "source_lang": args.source_lang,
         "target_lang": args.target_lang,
@@ -213,6 +217,25 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         f"({total_skipped} skipped as duplicates)"
     )
 
+    # Style profile: sample the opening chapters and have the model describe
+    # the narrative voice; stored in novel_info.json and used by later
+    # prompts. Failures only warn -- init must survive a missing profile.
+    if not args.skip_profile:
+        try:
+            prof = profile_mod.generate_profile(
+                project_dir, cfg,
+                int(cfg.get("style_sample_chapters", 4)),
+                int(cfg.get("style_sample_chars", 12000)),
+            )
+            novel_info["style_profile"] = prof
+            # Rewrite novel_info.json (same pretty format as written earlier in init).
+            paths["novel_info"].write_text(
+                json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            print(f"[init] style profile: {prof.get('style_summary', '')[:100]}")
+        except Exception as exc:  # noqa: BLE001 - profile problems must not abort init
+            print(f"[warn] style profile generation failed: {exc}")
+
     try:
         cover_path = cover.ensure_cover(project_dir, novel_info, args.cover_url)
         print(f"[ok] cover ready: {cover_path}")
@@ -223,6 +246,9 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"     title:    {args.title}")
     print(f"     author:   {args.author}")
     print(f"     chapters: {len(manifest)} ({args.source_lang} -> {args.target_lang})")
+    prof = novel_info.get("style_profile")
+    if isinstance(prof, dict):
+        print(f"     style:    {str(prof.get('style_summary', ''))[:60]}")
     print("next step: translate --next N   (e.g. 'translate --next 3')")
     return 0
 
@@ -294,6 +320,38 @@ def cmd_seed(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
+    cfg = _load_config(project_dir)
+    paths = project.paths(project_dir)
+    if not paths["novel_info"].is_file():
+        raise CliError(f"{paths['novel_info']} not found - run 'init' first")
+    novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+
+    sample_chapters = (
+        int(args.chapters) if args.chapters is not None
+        else int(cfg.get("style_sample_chapters", 4))
+    )
+    sample_chars = (
+        int(args.chars) if args.chars is not None
+        else int(cfg.get("style_sample_chars", 12000))
+    )
+
+    try:
+        prof = profile_mod.generate_profile(project_dir, cfg, sample_chapters, sample_chars)
+    except Exception as exc:  # noqa: BLE001 - any generation failure is exit 1
+        _fail(f"style profile generation failed: {type(exc).__name__}: {exc}")
+        return 1
+
+    novel_info["style_profile"] = prof
+    paths["novel_info"].write_text(
+        json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print("[ok] style profile written to novel_info.json")
+    print(f"style_summary: {prof.get('style_summary', '')}")
+    print(f"background: {prof.get('background', '')}")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace, project_dir: Path) -> int:
     manifest = _load_manifest(project_dir)
     paths = project.paths(project_dir)
@@ -329,6 +387,27 @@ def cmd_status(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"{'glossary':>13}: {len(g.get('terms', []))} terms")
     history = tn.load_history(project_dir)
     print(f"{'tn_history':>13}: {len(history)} terms")
+
+    if args.why:
+        for entry in entries:
+            if entry.get("status") != "needs-review":
+                continue
+            file = entry["file"]
+            state = pipeline.load_state(paths["draft"], file)
+            if state is None:
+                print(f"\n{file} (attempt -):\n    (no state file)")
+                continue
+            print(f"\n{file} (attempt {state.get('attempt', 0)}):")
+            feedback = state.get("feedback")
+            recent = [
+                fb for fb in (feedback if isinstance(feedback, list) else [])
+                if isinstance(fb, str)
+            ][-3:]
+            if recent:
+                for fb in recent:
+                    print(f"    {fb[:200]}")
+            else:
+                print("    (no feedback)")
     return 0
 
 
@@ -474,6 +553,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tags", default="", help="comma-separated tag list")
     p.add_argument("--api-base", default=DEFAULT_API_BASE, help="OpenAI-compatible API base URL")
     p.add_argument("--cover-url", default=None, help="URL to download the cover image from")
+    p.add_argument("--skip-profile", action="store_true",
+                   help="skip the style-profile LLM call (run 'profile' later to generate it)")
     p.add_argument("--force", action="store_true", help="reinitialize even if config.json exists")
     p.set_defaults(func=cmd_init)
 
@@ -486,7 +567,17 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="explicit catalogue path (repeatable; bypasses language filter)")
     p.set_defaults(func=cmd_seed)
 
+    p = sub.add_parser("profile", parents=[common],
+                       help="regenerate the style profile for an initialized project")
+    p.add_argument("--chapters", type=int, default=None, metavar="N",
+                   help="chapters to sample (default: config style_sample_chapters)")
+    p.add_argument("--chars", type=int, default=None, metavar="N",
+                   help="approx. source characters to include (default: config style_sample_chars)")
+    p.set_defaults(func=cmd_profile)
+
     p = sub.add_parser("status", parents=[common], help="show per-chapter pipeline status")
+    p.add_argument("--why", action="store_true",
+                   help="show recent feedback for every needs-review chapter")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("translate", parents=[common], help="run the translation pipeline on chapters")
