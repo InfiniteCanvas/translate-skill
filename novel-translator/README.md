@@ -96,6 +96,13 @@ rerun resumes where it stopped. Chapters in `needs-review` are skipped by
 
       uv run scripts/translate.py mark --chapters 7 --status translated --project .
 
+- Balance hard-failures trigger automatic pruning of mundane glossary
+  terms (console: `[glossary] retired mundane term '...'`); a chapter
+  whose failures were all mundane proceeds without a retry. The
+  `glossary_cleanup` trace events in `logs/llm-YYYYMMDD.jsonl` show each
+  removal (source + reason) and the kept terms; disable the pruning with
+  `glossary_auto_cleanup: false`.
+
 ## Glossary and notes upkeep between batches
 
 `glossary.json` and `tn_history.json` are plain JSON -- edit them freely;
@@ -144,6 +151,10 @@ details land in `logs/epub-build.log`.
   after every translated chapter during `translate`/`retry` (serialized,
   coalescing), with a guaranteed final build at batch end; set false to
   build only via `build-epub`.
+- `glossary_auto_cleanup` (default true) -- when the balance gate
+  hard-fails on a term, one glossary-model call judges it: mundane terms
+  are retired from `glossary.json` (never re-added) instead of triggering
+  retries; set false for strict retry-only behavior.
 
 Every file schema (manifest, chapter state, glossary, notes, novel_info)
 is documented in `references/file-formats.md`.
@@ -152,8 +163,8 @@ is documented in `references/file-formats.md`.
 Every LLM call is TWO lines in `logs/llm-YYYYMMDD.jsonl`: an `llm_request`
 line (params + full prompt, written before the call) and an `llm_response`
 line (raw response, finish_reason, usage, timing), paired by `call_id`.
-Pipeline attempts and balance advisories are interleaved in the same
-stream. The console is a summary, the log is truth. Disable the LLM lines
+Pipeline attempts, balance advisories, and `glossary_cleanup` events are
+interleaved in the same stream. The console is a summary, the log is truth. Disable the LLM lines
 with `log_llm: false` in config.json.
 
 Background epub builds append their output (including epubcheck results) to

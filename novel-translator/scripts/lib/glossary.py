@@ -59,6 +59,41 @@ def find(g: dict, source: str) -> dict | None:
     return None
 
 
+def retired_sources(g: dict) -> set[str]:
+    """Sources retired from the glossary (mundane terms that must never be
+    re-added by seeding or expansion)."""
+    return set(g.get("retired") or [])
+
+
+def retire(project_dir: Path, sources: list[str]) -> list[str]:
+    """Remove the entries matching sources from glossary.json and record each
+    removed source in its "retired" list (deduped, order-preserving).
+
+    Matching uses find() (source OR variants). Returns only the sources that
+    actually removed an entry; sources with no matching entry are silently
+    ignored (and not added to "retired").
+    """
+    g = load(project_dir)
+    retired = [s for s in (g.get("retired") or []) if isinstance(s, str)]
+    removed: list[str] = []
+    for source in sources:
+        entry = find(g, source)
+        if entry is None:
+            continue
+        terms = g.setdefault("terms", [])
+        for idx, item in enumerate(terms):
+            if item is entry:
+                del terms[idx]
+                break
+        if source not in retired:
+            retired.append(source)
+        removed.append(source)
+    if removed:
+        g["retired"] = retired
+        save(project_dir, g)
+    return removed
+
+
 def upsert(g: dict, entry: dict) -> bool:
     """Normalize and insert/replace an entry; True if an existing entry was
     replaced in place, False if appended."""
@@ -138,8 +173,9 @@ def load_catalogue(path: Path) -> dict:
 def seed(project_dir: Path, catalogue: dict, min_count: int) -> tuple[int, int]:
     """Seed the glossary from a catalogue against the source corpus.
 
-    Returns (added, skipped): existing terms are skipped; terms whose corpus
-    count >= min_count are upserted with origin="seeded" and
+    Returns (added, skipped): existing terms are skipped; retired sources
+    (see retire()) are skipped so mundane terms never come back; terms whose
+    corpus count >= min_count are upserted with origin="seeded" and
     first_seen_chapter=None; terms below the threshold are ignored. Saves
     only when something was added.
     """
@@ -149,11 +185,15 @@ def seed(project_dir: Path, catalogue: dict, min_count: int) -> tuple[int, int]:
         parts.append(body)
     corpus = "\n".join(parts)
     g = load(project_dir)
+    retired = retired_sources(g)
     added = 0
     skipped = 0
     for term in catalogue.get("terms", []):
         source = term.get("source")
         if not source:
+            continue
+        if source in retired:
+            skipped += 1
             continue
         if find(g, source) is not None:
             skipped += 1

@@ -37,6 +37,10 @@ DEFAULTS: dict = {
     # finishes translation (serialized; one final build at batch end
     # guarantees completeness). Set false to build only via build-epub.
     "auto_build_epub": True,
+    # After balance hard-failures, one glossary-job call judges whether each
+    # failing term truly belongs in the glossary; mundane terms are removed
+    # and retired (never re-added). Set false for strict retry-only behavior.
+    "glossary_auto_cleanup": True,
 }
 
 _DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"

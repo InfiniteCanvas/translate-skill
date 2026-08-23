@@ -7,6 +7,7 @@ Serves:
        - asks for "notes"          -> one translation note (term 测试)
        - merge prompt ("Merge")    -> merged glossary entry
        - asks for "style_summary"  -> mock style profile (summary + background)
+       - "Flagged Terms" prompt     -> glossary cleanup: remove every flagged term
        - asks for "terms"          -> no new glossary terms
        - otherwise                 -> translation: fake lines matching the
                                       source array found in the prompt
@@ -84,6 +85,12 @@ def mock_reply(prompt: str) -> str:
         )
     if "style_summary" in prompt:
         return json.dumps({"style_summary": "A mock literary style.", "background": "A mock novel background."})
+    if "Flagged Terms" in prompt:
+        # glossary cleanup after a balance failure: remove every flagged term
+        terms = re.findall(r"- (\S+) translates to", prompt)
+        return json.dumps(
+            {"decisions": [{"source": t, "keep": False, "reason": "mundane mock term"} for t in terms]}
+        )
     if '"terms"' in prompt:
         return json.dumps({"terms": []})
     # translation: mirror the last line array in the prompt — numbered

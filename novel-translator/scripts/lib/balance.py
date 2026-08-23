@@ -85,7 +85,7 @@ def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
 
 def check(pairs: list[tuple[dict, int]], source_body: str,
           translated_lines: list[str], min_coverage: float = 0.25,
-          fuzzy_max: int = 2) -> tuple[list[str], list[str], list[str]]:
+          fuzzy_max: int = 2) -> tuple[list[dict], list[str], list[str]]:
     """Compare source-side counts (pairs from glossary.contextual()) against
     target-side counts. source_body is accepted for interface symmetry (the
     source counts arrive via pairs).
@@ -97,9 +97,11 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
     noun-frequency mismatch between Chinese and English).
 
     Returns (failures, warnings, info):
-    - failures (hard, retry-worthy): canonical rendering absent entirely
-      while the term appears src >= 2 times — the reliable drift/omission
-      signal.
+    - failures (hard, retry-worthy): one dict per term whose canonical
+      rendering is absent entirely while the term appears src >= 2 times —
+      the reliable drift/omission signal. Dict keys: "source", "translation",
+      "src_count", "tgt_count", and "message" (the human-readable line used
+      for feedback/console output).
     - warnings (advisory, console + trace log): canonical rendering below
       the usage floor ceil(min_coverage * src) — possible under-use, but
       natural English legitimately repeats nouns less than Chinese.
@@ -107,7 +109,7 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
       most false-positive-prone direction; recorded for the human, never
       blocking.
     """
-    failures: list[str] = []
+    failures: list[dict] = []
     warnings: list[str] = []
     info: list[str] = []
     for entry, src_count in pairs:
@@ -117,11 +119,17 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
         term = entry['source']
         expected = entry['translation']
         if src_count >= 2 and tgt_count == 0:
-            failures.append(
-                f"Glossary term '{term}' (expected '{expected}'): source has "
-                f"{src_count} occurrence(s), translation has 0 — canonical "
-                "rendering never used (drift or omission)."
-            )
+            failures.append({
+                "source": term,
+                "translation": expected,
+                "src_count": src_count,
+                "tgt_count": tgt_count,
+                "message": (
+                    f"Glossary term '{term}' (expected '{expected}'): source has "
+                    f"{src_count} occurrence(s), translation has 0 — canonical "
+                    "rendering never used (drift or omission)."
+                ),
+            })
         elif tgt_count < floor:
             warnings.append(
                 f"'{term}' rendered {tgt_count}/{src_count} times "

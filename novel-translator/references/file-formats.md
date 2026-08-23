@@ -77,6 +77,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "seed_min_count": 3,           // catalogue term must appear >= N times in source/ to seed
   "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; only 0 renderings with src>=2 hard-fails
   "fuzzy_max_distance": 2,       // Levenshtein tolerance when matching translated glossary terms
+  "glossary_auto_cleanup": true, // balance hard-failures: retire mundane terms via a cleanup judgment instead of retrying on them; false = strict retry-only
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "tn_keep_low_confidence": false, // keep threshold:"low" notes instead of dropping them (default drops)
   "auto_build_epub": true,      // rebuild the epub in the background after every translated chapter (serialized; final build at batch end); false = manual `build-epub` only
@@ -166,7 +167,8 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
       "origin": "seeded",                // seeded (catalogue) | model (proposed during translation)
       "first_seen_chapter": 12           // order index where a model-proposed term first appeared
     }
-  ]
+  ],
+  "retired": ["灵气"]                    // optional; sources removed by balance auto-cleanup — seed and glossary expansion skip them, delete a source here to allow re-adding
 }
 ```
 
@@ -177,12 +179,20 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
   MOSTLY ADVISORY — the count is a heuristic poisoned by shared renderings
   ("Senior" inside "Senior Brother"), generic English words, and
   noun-frequency mismatch between the languages. Only one condition
-  hard-fails (retry + needs-review): the canonical rendering appears ZERO
+  hard-fails: the canonical rendering appears ZERO
   times while the term occurs `src >= 2` times — the reliable drift/omission
-  signal. Falling below the usage floor `ceil(min_term_coverage × src)`
+  signal. The failure path runs the cleanup judgment before retrying (one
+  `glossary`-provider call, `templates/glossary_cleanup.md`; disable with
+  `glossary_auto_cleanup: false`): mundane terms are removed into `retired`,
+  and a chapter whose failures are all cleaned proceeds WITHOUT a retry —
+  the translation was fine; the gate tripped on a term that shouldn't have
+  been enforced. Kept failures retry (toward needs-review) as before.
+  Falling below the usage floor `ceil(min_term_coverage × src)`
   (default 25%) is a console warning, and exceeding `src + max(2, src)` is
   logged only; both land in the trace log as `balance_advisory` events
-  (`warnings` / `over_count` arrays) for human review.
+  (`warnings` / `over_count` arrays) for human review, and cleanup results
+  land as `glossary_cleanup` events — fields `chapter`,
+  `removed: [{source, reason}]`, `kept: [sources]`.
 - Hand-editing entries between runs is safe and encouraged — the file is read
   fresh before every chapter. Hand-added entries need at least `source` and
   `translation`.
@@ -259,8 +269,11 @@ disable with `auto_build_epub: false`.
 ## Prompt templates (`templates/`)
 
 Copied from the skill's `assets/templates/` at `init`; edit freely per project.
-Plain `{{placeholder}}` substitution. The pipeline errors out if a template
-still contains an unknown/leftover `{{...}}` after filling — typos fail fast.
+A template file missing from the project's `templates/` dir falls back to
+the skill's `assets/templates/`, so newly shipped templates work in
+existing projects. Plain `{{placeholder}}` substitution. The pipeline
+errors out if a template still contains an unknown/leftover `{{...}}`
+after filling — typos fail fast.
 
 | Template | Filled for | Placeholders |
 |---|---|---|
@@ -269,6 +282,7 @@ still contains an unknown/leftover `{{...}}` after filling — typos fail fast.
 | `faithfulness.md` | FAITH | `source_lang target_lang source_lines translation_lines background_section` |
 | `tn_generate.md` | TN_GENERATE | `source_lang target_lang source_lines translation_lines background_section max_notes` |
 | `glossary_merge.md` | glossary collision merge | `existing_json proposed_json` |
+| `glossary_cleanup.md` | balance-failure cleanup | `source_lang target_lang term_list sample_lines` |
 | `style_profile.md` | `--style auto` init / `profile` (legacy) | `source_lang target_lang sample_text` |
 
 `source_lines` / `translation_lines` are substituted as JSON arrays (compact,

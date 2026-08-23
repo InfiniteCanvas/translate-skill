@@ -123,6 +123,28 @@ MERGE_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# Glossary-cleanup verdicts after a balance hard-failure. NO
+# additionalProperties inside items — strict nested schemas truncated
+# sglang guided decoding historically.
+CLEANUP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "decisions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "keep": {"type": "boolean"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["source", "keep", "reason"],
+            },
+        }
+    },
+    "required": ["decisions"],
+}
+
 _STAGE_IDX = {name: i for i, name in enumerate(STAGES)}
 _KEY_RE = re.compile(r"\{\{([^{}]+)\}\}")
 _RANGE_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
@@ -310,10 +332,17 @@ def _cfg_value(cfg: dict, key: str) -> Any:
     raise PipelineError(f"missing config key: {key}")
 
 
+# Fallback template source: the skill's shipped assets. Projects initialized
+# before a template was introduced lack a copy in their templates/ dir.
+_SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
+
+
 def _load_template(templates_dir: Path, name: str) -> str:
     path = templates_dir / name
     if not path.is_file():
-        raise PipelineError(f"missing template: {path}")
+        path = _SKILL_TEMPLATES / name
+    if not path.is_file():
+        raise PipelineError(f"missing template: {name} (looked in {templates_dir} and {_SKILL_TEMPLATES})")
     return path.read_text(encoding="utf-8")
 
 
@@ -341,6 +370,9 @@ def _apply_glossary_proposal(
         if isinstance(raw_variants, list)
         else []
     )
+    if src in glossary.retired_sources(g):
+        print(f"{tag} [glossary] skip re-adding retired term '{src}'")
+        return
 
     def union_variants(entry: dict, add: list[str]) -> None:
         current = [v for v in (entry.get("variants") or []) if isinstance(v, str) and v]
@@ -423,6 +455,71 @@ def _apply_glossary_proposal(
             print(f"{tag} [ok] glossary ~ '{src}' -> '{updated.get('translation', '')}'")
             return
     glossary.upsert(g, updated)  # defensive: existing entry was not found in the list
+
+
+def _cleanup_balance_failures(project_dir: Path, cfg: dict, tpl: str,
+                              failures: list[dict], source_body: str, tag: str,
+                              chapter: str | None = None) -> list[dict]:
+    """Ask the glossary job whether failing balance terms deserve glossary
+    entries; retire the mundane ones. Returns the failures to KEEP (all of
+    them on any error — cleanup must never block or remove on uncertainty)."""
+    try:
+        term_list = "\n".join(
+            f"- {f['source']} translates to \"{f['translation']}\" — source "
+            f"{f['src_count']}x, canonical rendering {f['tgt_count']}x"
+            for f in failures
+        )
+        sample_lines: list[str] = []
+        seen: set[str] = set()
+        for f in failures:
+            taken = 0
+            for line in source_body.split("\n"):
+                if taken >= 2 or len(sample_lines) >= 12:
+                    break
+                stripped = line.strip()
+                if stripped and f["source"] in line and stripped not in seen:
+                    seen.add(stripped)
+                    sample_lines.append(stripped)
+                    taken += 1
+        ctx = {
+            "source_lang": _lang_name(cfg.get("source_lang", "")),
+            "target_lang": _lang_name(cfg.get("target_lang", "")),
+            "term_list": term_list,
+            "sample_lines": "\n".join(sample_lines) if sample_lines else "(none)",
+        }
+        prompt = fill(tpl, ctx, "glossary_cleanup.md")
+        resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=CLEANUP_SCHEMA)
+        data = client.extract_json(resp)
+        decisions = data.get("decisions") if isinstance(data, dict) else None
+        if not isinstance(decisions, list):
+            raise ValueError("expected a 'decisions' array")
+        failing_sources = {f["source"] for f in failures}
+        reasons: dict[str, str] = {}
+        to_remove: set[str] = set()
+        for decision in decisions:
+            if not isinstance(decision, dict) or decision.get("keep") is not False:
+                continue
+            src = decision.get("source")
+            if isinstance(src, str) and src in failing_sources:
+                to_remove.add(src)
+                reason = decision.get("reason")
+                reasons[src] = reason if isinstance(reason, str) and reason.strip() else "mundane term"
+        removed = glossary.retire(project_dir, sorted(to_remove))
+        removed_set = set(removed)
+        for src in removed:
+            print(f"{tag} [glossary] retired mundane term '{src}' ({reasons.get(src, 'mundane term')})")
+        event: dict[str, Any] = {"event": "glossary_cleanup"}
+        if chapter:
+            event["chapter"] = chapter
+        event["removed"] = [
+            {"source": src, "reason": reasons.get(src, "mundane term")} for src in removed
+        ]
+        event["kept"] = [f["source"] for f in failures if f["source"] not in removed_set]
+        logger.log_event(project_dir, event)
+        return [f for f in failures if f["source"] not in removed_set]
+    except Exception as exc:  # noqa: BLE001 - fail-safe: keep every failure
+        print(f"{tag} [warn] glossary cleanup failed - keeping all failures: {exc}")
+        return failures
 
 
 def _estimate_output_tokens(lines: list[str]) -> int:
@@ -537,6 +634,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     tpl_translation = _load_template(templates_dir, "translation.md")
     tpl_glossary_expand = _load_template(templates_dir, "glossary_expand.md")
     tpl_glossary_merge = _load_template(templates_dir, "glossary_merge.md")
+    tpl_glossary_cleanup = _load_template(templates_dir, "glossary_cleanup.md")
     tpl_faithfulness = _load_template(templates_dir, "faithfulness.md")
     tpl_tn_generate = _load_template(templates_dir, "tn_generate.md")
 
@@ -829,8 +927,24 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     if len(warnings) > 5:
                         print(f"{tag} [warn] ... and {len(warnings) - 5} more (see logs)")
                 if failures:
-                    state["feedback"].extend(str(f) for f in failures)
-                    failed_stage = "BALANCE"
+                    if _cfg_value(cfg, "glossary_auto_cleanup"):
+                        # Mundane glossary entries trip the drift check by
+                        # being naturally rephrased; ask the glossary job
+                        # whether each failing term deserves enforcement and
+                        # retire the ones that don't. All failures cleaned ->
+                        # the chapter proceeds without a retry (the
+                        # translation itself was fine).
+                        failures = _cleanup_balance_failures(
+                            project_dir, cfg, tpl_glossary_cleanup,
+                            failures, body_for_counts, tag, chapter=file,
+                        )
+                        # retire() rewrote glossary.json on disk; refresh the
+                        # in-memory copy so GLOSSARY_EXPAND's save cannot
+                        # resurrect the retired terms.
+                        g = glossary.load(project_dir)
+                    if failures:
+                        state["feedback"].extend(f["message"] for f in failures)
+                        failed_stage = "BALANCE"
             except PipelineError:
                 raise
             except Exception as exc:  # noqa: BLE001 - becomes retry feedback

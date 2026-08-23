@@ -119,7 +119,20 @@ rerun the same command):
    source vs translation (fuzzy, Levenshtein ≤ 2). Mostly advisory: only a
    term rendered ZERO times (with ≥2 source occurrences) hard-fails as
    drift; under-use warns on the console and over-use is logged (both as
-   `balance_advisory` trace events for human review).
+   `balance_advisory` trace events for human review). Hard failures run a
+   cleanup judgment first (one `glossary`-provider call,
+   `templates/glossary_cleanup.md`): KEEP terms whose consistent rendering
+   matters (names of people/places/sects/techniques/titles/artifacts/
+   cultivation realms, culturally loaded concepts), REMOVE mundane ones
+   (everyday words, common nouns/verbs, generic objects, transient phrases
+   whose natural translation varies). Removed terms are dropped from
+   `glossary.json` into its `retired` list (console: `[glossary] retired
+   mundane term '...'`; trace event `glossary_cleanup`) and never re-added
+   by `seed` or GLOSSARY_EXPAND. If ALL failures are cleaned, the chapter
+   proceeds WITHOUT a retry — the translation itself was fine; the gate
+   tripped on a term that shouldn't have been enforced. Kept failures
+   retry as gate feedback as before; cleanup errors are fail-safe
+   (`[warn] glossary cleanup failed - keeping all failures`).
 5. **GLOSSARY_EXPAND** — the model proposes new drift-prone terms (names,
    places, skills, orgs...); identical duplicates are skipped, conflicting
    ones are merged by the model into the existing entry.
@@ -218,10 +231,17 @@ background build too.
   block.
 - **Templates are per project** (`templates/`). Tuning a prompt for a
   specific novel is normal — edit, then `retry` the affected chapters.
+  Template files missing from a project's `templates/` dir fall back to
+  the skill's `assets/templates/`, so newly shipped templates work in old
+  projects.
 - **Glossary upkeep**: hand-fix bad entries any time; the balance check reads
-  `glossary.json` fresh for every chapter. Re-run seeding with
-  `uv run "$SCRIPT" seed --project .` after adding chapters or editing a
-  catalogue.
+  `glossary.json` fresh for every chapter. Balance hard-failures may
+  auto-prune mundane glossary terms (check console/trace `glossary_cleanup`
+  events); `glossary_auto_cleanup: false` (default true) disables. Retired
+  entries never come back via `seed` or GLOSSARY_EXPAND — remove a source
+  from glossary.json's `retired` list to allow re-adding. Re-run seeding
+  with `uv run "$SCRIPT" seed --project .` after adding chapters or editing
+  a catalogue.
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.
