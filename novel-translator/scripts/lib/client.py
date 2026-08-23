@@ -4,6 +4,7 @@ JSON extraction from model replies."""
 import json
 import re
 import time
+import uuid
 from typing import Any
 
 import requests
@@ -70,9 +71,12 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     guided JSON). Other 4xx raise LLMError with the status code and the
     first 400 chars of the response text.
 
-    meta_hook, when given, is invoked once with the full call metadata
-    (prompt, raw response, finish_reason, usage, params, elapsed, error) —
-    on success AND on the final failure — for request/response trace logs.
+    meta_hook, when given, is invoked with call metadata for trace logs:
+    once with the request (url, model, params, full prompt) BEFORE the call,
+    and once with the response (raw content, finish_reason, usage, elapsed,
+    error) after it completes or exhausts retries. Both metas carry the same
+    call_id and an "event" field ("llm_request" / "llm_response") so they
+    pair up as two JSONL lines per call.
     """
     base_url = _v1_url(str(provider_cfg["base_url"]))
     url = base_url + "/chat/completions"
@@ -98,10 +102,12 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             "json_schema": {"name": "response", "schema": json_schema},
         }
 
-    def _meta(response: str | None = None, finish_reason: object = None,
-              usage: object = None, elapsed: float = 0.0,
-              error: str | None = None) -> dict[str, Any]:
+    call_id = uuid.uuid4().hex[:12]
+
+    def _request_meta() -> dict[str, Any]:
         return {
+            "event": "llm_request",
+            "call_id": call_id,
             "url": url,
             "model": model,
             "params": {k: body[k] for k in
@@ -109,6 +115,16 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
                         "repetition_penalty") if k in body},
             "guided_json": "response_format" in body,
             "prompt": prompt,
+        }
+
+    def _response_meta(response: str | None = None, finish_reason: object = None,
+                       usage: object = None, elapsed: float = 0.0,
+                       error: str | None = None) -> dict[str, Any]:
+        return {
+            "event": "llm_response",
+            "call_id": call_id,
+            "url": url,
+            "model": model,
             "response": response,
             "finish_reason": finish_reason,
             "usage": usage,
@@ -116,6 +132,8 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             "error": error,
         }
 
+    if meta_hook:
+        meta_hook(_request_meta())
     started = time.monotonic()
     failures = 0  # retryable failures so far (network error, 5xx, 429)
     while True:
@@ -126,7 +144,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             if failures >= _MAX_ATTEMPTS:
                 err = f"request to {url} failed after {failures} attempts: {exc}"
                 if meta_hook:
-                    meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+                    meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
                 raise LLMError(err) from exc
             time.sleep(_BACKOFF[failures - 1])
             continue
@@ -140,7 +158,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             if failures >= _MAX_ATTEMPTS:
                 err = f"HTTP {resp.status_code} from {url} after {failures} attempts: {resp.text[:400]}"
                 if meta_hook:
-                    meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+                    meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
                 raise LLMError(err)
             time.sleep(_BACKOFF[failures - 1])
             continue
@@ -148,7 +166,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
         if resp.status_code >= 400:
             err = f"HTTP {resp.status_code} from {url}: {resp.text[:400]}"
             if meta_hook:
-                meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+                meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
             raise LLMError(err)
 
         try:
@@ -156,7 +174,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
         except ValueError as exc:
             err = f"non-JSON response from {url}: {resp.text[:400]}"
             if meta_hook:
-                meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+                meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
             raise LLMError(err) from exc
         try:
             choice = payload["choices"][0]
@@ -164,16 +182,16 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
         except (KeyError, IndexError, TypeError) as exc:
             err = f"unexpected response payload from {url}: {str(payload)[:400]}"
             if meta_hook:
-                meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+                meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
             raise LLMError(err) from exc
         if not isinstance(content, str) or not content.strip():
             err = f"empty completion content from {url}"
             if meta_hook:
-                meta_hook(_meta(elapsed=time.monotonic() - started, error=err))
+                meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
             raise LLMError(err)
 
         if meta_hook:
-            meta_hook(_meta(
+            meta_hook(_response_meta(
                 response=content,
                 finish_reason=choice.get("finish_reason"),
                 usage=payload.get("usage"),

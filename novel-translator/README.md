@@ -105,3 +105,12 @@ book into `export/`.
 
 Every file schema (manifest, chapter state, glossary, notes, novel_info)
 is documented in `references/file-formats.md`.
+## Debugging
+
+Every LLM call is TWO lines in `logs/llm-YYYYMMDD.jsonl`: an `llm_request`
+line (params + full prompt, written before the call) and an `llm_response`
+line (raw response, finish_reason, usage, timing), paired by `call_id`.
+Pipeline attempts and balance advisories are interleaved in the same
+stream. The console is a summary, the log is truth. Disable the LLM lines
+with `log_llm: false` in config.json.
+

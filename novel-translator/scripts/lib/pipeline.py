@@ -446,7 +446,7 @@ def _chat(project_dir: Path, cfg: dict, job: str, prompt: str,
 
     def hook(meta: dict) -> None:
         if enabled:
-            logger.log_event(project_dir, {"event": "llm_call", "job": job, **meta})
+            logger.log_event(project_dir, {"job": job, **meta})
 
     return client.chat(config.provider(cfg, job), prompt,
                        json_schema=json_schema, meta_hook=hook,

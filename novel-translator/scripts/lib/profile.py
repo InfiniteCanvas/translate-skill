@@ -79,7 +79,7 @@ def generate_profile(
     )
     def hook(meta: dict) -> None:
         if bool(cfg.get("log_llm", True)):
-            logger.log_event(project_dir, {"event": "llm_call", "job": "profile", **meta})
+            logger.log_event(project_dir, {"job": "profile", **meta})
 
     resp = client.chat(
         config.provider(cfg, "profile"), prompt, json_schema=PROFILE_SCHEMA,
