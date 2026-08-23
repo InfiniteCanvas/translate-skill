@@ -157,7 +157,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self):
-        if self.path != "/v1/chat/completions":
+        # Accept any base path (e.g. /v1 or a hosted-style /api/paas/v4) so
+        # providers with non-/v1 bases can be simulated; /models stays
+        # /v1-only, letting tests exercise the ping chat-probe fallback.
+        if not self.path.endswith("/chat/completions"):
             self._send(404, b"not found", "text/plain")
             return
         length = int(self.headers.get("Content-Length", 0))

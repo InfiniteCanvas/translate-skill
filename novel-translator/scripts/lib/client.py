@@ -42,7 +42,17 @@ def _v1_url(base_url: str) -> str:
     return base
 
 
-def resolve_model(base_url: str) -> str:
+def auth_headers(provider_cfg: dict) -> dict | None:
+    """Authorization header for hosted providers: "api_key" directly, or
+    "api_key_env" naming an environment variable (preferred - keeps keys
+    out of config.json). None when the provider block carries neither."""
+    api_key = provider_cfg.get("api_key")
+    if not api_key and provider_cfg.get("api_key_env"):
+        api_key = os.environ.get(str(provider_cfg["api_key_env"]))
+    return {"Authorization": f"Bearer {api_key}"} if api_key else None
+
+
+def resolve_model(base_url: str, headers: dict | None = None) -> str:
     """GET {base_url}/v1/models and return the first data[].id (cached per
     base_url in a module dict). Raises LLMError on connection failure or an
     unexpected payload."""
@@ -51,7 +61,7 @@ def resolve_model(base_url: str) -> str:
         return _MODEL_CACHE[base]
     url = base + "/models"
     try:
-        resp = requests.get(url, timeout=_MODELS_TIMEOUT)
+        resp = requests.get(url, headers=headers, timeout=_MODELS_TIMEOUT)
         resp.raise_for_status()
         payload = resp.json()
     except requests.RequestException as exc:
@@ -66,6 +76,36 @@ def resolve_model(base_url: str) -> str:
             _MODEL_CACHE[base] = item["id"]
             return item["id"]
     raise LLMError(f"unexpected payload from {url}: no model id in 'data' ({str(payload)[:200]})")
+
+
+def probe(provider_cfg: dict, timeout: int = 30) -> str:
+    """One minimal chat completion with no retries - a connectivity + auth
+    check for ping. Sends only model/messages/max_tokens so optional
+    provider-specific body fields (chat_template_kwargs, response_format)
+    can't skew the result. Returns choices[0].message.content (possibly
+    empty - any 200 with choices proves routing + auth); raises LLMError on
+    any failure. Requires an explicit model in the provider block."""
+    model = provider_cfg.get("model")
+    if not model:
+        raise LLMError("probe needs an explicit model (set providers.<job>.model)")
+    base_url = _v1_url(str(provider_cfg["base_url"]))
+    url = base_url + "/chat/completions"
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 8,
+    }
+    try:
+        resp = requests.post(url, json=body, headers=auth_headers(provider_cfg),
+                             timeout=timeout)
+    except requests.RequestException as exc:
+        raise LLMError(f"probe request to {url} failed: {exc}") from exc
+    if resp.status_code >= 400:
+        raise LLMError(f"probe HTTP {resp.status_code} from {url}: {resp.text[:200]}")
+    try:
+        return str(resp.json()["choices"][0]["message"].get("content") or "")
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"probe got an unexpected payload from {url}: {resp.text[:200]}") from exc
 
 
 def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
@@ -94,7 +134,9 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     """
     base_url = _v1_url(str(provider_cfg["base_url"]))
     url = base_url + "/chat/completions"
-    model = provider_cfg.get("model") or resolve_model(base_url)
+    # Optional auth for hosted providers; local sglang needs none.
+    headers = auth_headers(provider_cfg)
+    model = provider_cfg.get("model") or resolve_model(base_url, headers=headers)
     body: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],

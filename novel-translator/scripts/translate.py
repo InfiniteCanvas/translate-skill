@@ -298,6 +298,11 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def _ping_err(exc: Exception) -> str:
+    """Compact per-job error line for ping output."""
+    return f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
 def cmd_ping(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     failed = False
@@ -305,12 +310,29 @@ def cmd_ping(args: argparse.Namespace, project_dir: Path) -> int:
         pcfg = config.provider(cfg, job)
         base_url = str(pcfg.get("base_url", ""))
         try:
-            model = client.resolve_model(base_url)
+            model = client.resolve_model(base_url, headers=client.auth_headers(pcfg))
             extra = f" (config model: {pcfg['model']})" if pcfg.get("model") else ""
             print(f"[ok] {job:<10} {base_url} -> {model}{extra}")
         except Exception as exc:  # noqa: BLE001 - endpoint errors are reported per job
+            # Hosted providers may not serve /models (or auth-gate it); a
+            # minimal chat completion still proves routing + auth work.
+            if pcfg.get("model"):
+                try:
+                    client.probe(pcfg)
+                    print(
+                        f"[ok] {job:<10} {base_url} -> {pcfg['model']} "
+                        f"(chat ok; /models failed: {_ping_err(exc)})"
+                    )
+                    continue
+                except Exception as exc2:  # noqa: BLE001 - report both failures
+                    failed = True
+                    print(
+                        f"[FAIL] {job:<10} {base_url} -> "
+                        f"/models: {_ping_err(exc)}; chat: {_ping_err(exc2)}"
+                    )
+                    continue
             failed = True
-            print(f"[FAIL] {job:<10} {base_url} -> {type(exc).__name__}: {exc}")
+            print(f"[FAIL] {job:<10} {base_url} -> {_ping_err(exc)}")
     if failed:
         _fail("ping: one or more providers unreachable")
         return 2

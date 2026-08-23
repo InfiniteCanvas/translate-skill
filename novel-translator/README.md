@@ -60,6 +60,11 @@ the subcommand.
 
        uv run scripts/translate.py ping --project .
 
+   `ping` tries `GET /models` first (with auth headers when the provider
+   has `api_key`/`api_key_env`); hosted providers that don't serve that
+   route fall back to a minimal chat completion, so an `[ok] ... (chat ok;
+   /models failed: ...)` line still means the provider works.
+
 ## Daily loop
 
     uv run scripts/translate.py status --project .
