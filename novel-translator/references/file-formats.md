@@ -295,9 +295,16 @@ robust extraction as fallback:
 ```jsonc
 { "language": "zh", "name": "...",
   "terms": [ { "source": "练气", "variants": ["練氣"], "translation": "Qi Condensation",
+               "alt_translations": ["Qi Refining"],
                "category": "level", "definition": "First major realm of cultivation." } ] }
 ```
 
-A catalogue for a new language (ja/ko) is just another JSON file with the
-right `language` — `init`/`seed` pick up every catalogue matching
-`source_lang`.
+`alt_translations` is optional but recommended for terms with more than one
+accepted rendering — the balance gate counts `translation` +
+`alt_translations` in the translated text, so listing the alternatives
+prevents false drift failures.
+
+Catalogues are split by domain, not just language: `zh` currently ships three
+(`zh-cultivation.json`, `zh-wuxia.json`, `zh-modern.json`). A catalogue for a
+new language (ja/ko) or a new domain is just another JSON file with the right
+`language` — `init`/`seed` pick up every catalogue matching `source_lang`.
