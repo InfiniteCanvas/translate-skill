@@ -77,6 +77,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; only 0 renderings with src>=2 hard-fails
   "fuzzy_max_distance": 2,       // Levenshtein tolerance when matching translated glossary terms
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
+  "tn_keep_low_confidence": false, // keep threshold:"low" notes instead of dropping them (default drops)
   "max_attempts": 3,             // translation attempts before needs-review
   "contextual_glossary_cap": 200, // safety valve only — every glossary term present in the chapter goes in
   "max_new_terms_per_chapter": 15,
@@ -195,7 +196,9 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
 
 Keyed by the source term. A note is attached to a chapter only if the term was
 never annotated, or the last annotation is more than `tn_gap_chapters` order
-positions away. `last_order`/`times` are managed by the tool.
+positions away. `last_order`/`times` are managed by the tool. Notes the model
+self-assessed as `threshold: "low"` are dropped before all of this unless
+`tn_keep_low_confidence` is true.
 
 ## Draft artifacts (`draft/`)
 

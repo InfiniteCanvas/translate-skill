@@ -126,6 +126,8 @@ book into `export/`.
   `https://api.z.ai/api/paas/v4`) is trusted exactly as written.
 - Thresholds: `min_term_coverage (advisory usage floor; only zero renderings hard-fail)`, `tn_gap_chapters`, `max_attempts`,
   `translate_max_output_tokens`, `style_sample_chapters` / `style_sample_chars`
+- `tn_keep_low_confidence` (default false) — keep notes the annotator
+  self-assessed as `threshold: "low"` instead of dropping them.
   (only used by `--style auto`), `contextual_glossary_cap`.
 
 Every file schema (manifest, chapter state, glossary, notes, novel_info)

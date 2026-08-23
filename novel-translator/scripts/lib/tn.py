@@ -1,10 +1,11 @@
 """Translator's-note deduplication and cross-chapter history.
 
-The pipeline generates candidate notes per chapter; this module first drops
-the model's self-assessed low-comprehension notes (threshold "low"), then
-drops invalid entries, collapses within-chapter duplicates, and suppresses
-notes for terms that were already explained recently (the gap rule),
-maintaining a persistent tn_history.json at the project root.
+The pipeline generates candidate notes per chapter; this module drops the
+model's self-assessed low-comprehension notes (threshold "low") unless
+cfg tn_keep_low_confidence is set, then drops invalid entries, collapses
+within-chapter duplicates, and suppresses notes for terms that were
+already explained recently (the gap rule), maintaining a persistent
+tn_history.json at the project root.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ def process(
     chapter_order: int,
     history: dict,
     gap: int,
+    keep_low: bool = False,
 ) -> tuple[list[dict], dict, list[str]]:
     """Filter generated notes for one chapter.
 
@@ -51,10 +53,10 @@ def process(
     "threshold": str (optional)}] from the model.
 
     - Comprehension gate (first, before any other validation or dedup): drop
-      every note whose "threshold" is "low" (case-insensitive), silently.
-      This is the model's self-assessed comprehension-threshold gate --
-      low-threshold notes are discarded by design. Notes missing the
-      "threshold" key or carrying any other value are kept.
+      every note whose "threshold" is "low" (case-insensitive), silently —
+      unless keep_low is true, in which case the gate is skipped entirely.
+      This is the model's self-assessed comprehension-threshold gate. Notes
+      missing the "threshold" key or carrying any other value are kept.
     - Drop invalid entries (line outside [0, line_count), empty term/note,
       wrong types) with a warning string.
     - Key = term.strip(). Within-chapter duplicates by key: keep the first
@@ -79,16 +81,18 @@ def process(
 
     # Comprehension gate (Hy-MT2 convention), before any other validation or
     # dedup: notes the model marked threshold="low" (case-insensitive) are
-    # discarded silently, by design. Notes missing "threshold" or with any
-    # other value are kept.
-    notes = [
-        entry for entry in notes
-        if not (
-            isinstance(entry, dict)
-            and isinstance(entry.get("threshold"), str)
-            and entry["threshold"].lower() == "low"
-        )
-    ]
+    # discarded silently, by design — unless the project opts to keep them
+    # (tn_keep_low_confidence; some models self-assess too harshly). Notes
+    # missing "threshold" or with any other value are kept.
+    if not keep_low:
+        notes = [
+            entry for entry in notes
+            if not (
+                isinstance(entry, dict)
+                and isinstance(entry.get("threshold"), str)
+                and entry["threshold"].lower() == "low"
+            )
+        ]
 
     for idx, entry in enumerate(notes):
         position = f"note #{idx + 1}"

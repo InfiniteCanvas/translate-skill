@@ -12,6 +12,10 @@ DEFAULTS: dict = {
     "min_term_coverage": 0.25,
     "fuzzy_max_distance": 2,
     "tn_gap_chapters": 10,
+    # Keep model self-assessed low-comprehension (threshold "low") notes
+    # instead of dropping them; some models (e.g. Qwen) self-assess too
+    # harshly and their low notes are still useful.
+    "tn_keep_low_confidence": False,
     "max_attempts": 3,
     # Runaway safety valve only: every glossary term present in the chapter
     # goes into the prompt; this caps the rendered list if it ever explodes.

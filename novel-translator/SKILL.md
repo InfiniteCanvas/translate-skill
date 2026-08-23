@@ -126,7 +126,9 @@ rerun the same command):
 6. **FAITH** — the `reviewer` provider judges faithfulness line by line.
    FAILURE reasons become feedback.
 7. **TN_GENERATE / TN_DEDUP** — the `annotator` provider proposes translation
-   notes with line indices; a note is kept only if the term wasn't annotated
+   notes with line indices; self-assessed low-confidence (`threshold: "low"`)
+   notes are dropped by default (set `tn_keep_low_confidence` true to keep
+   them); a note is kept only if the term wasn't annotated
    within the last `tn_gap_chapters` (default 10) chapters (`tn_history.json`).
 8. **ASSEMBLE** — write `translated/Chapter_NNNN.md` with epub3-ready
    footnote markers; auto-promote. On gate failure the chapter retried up to

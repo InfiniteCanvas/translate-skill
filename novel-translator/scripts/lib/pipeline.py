@@ -924,6 +924,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 chapter_order,
                 tn.load_history(project_dir),
                 int(_cfg_value(cfg, "tn_gap_chapters")),
+                bool(_cfg_value(cfg, "tn_keep_low_confidence")),
             )
             tn.save_history(project_dir, history)
             state["notes"] = kept_notes
