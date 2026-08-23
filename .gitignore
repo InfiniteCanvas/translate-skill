@@ -17,3 +17,6 @@ tests/a-b/
 tests/advisory-live/
 tests/style-mock/
 tests/style-auto/
+
+# uv PEP 723 script lockfiles (created next to scripts on uv run)
+*.py.lock
