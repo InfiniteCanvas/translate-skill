@@ -22,7 +22,7 @@ hand-fix.
 ├── templates/           per-project copies of the prompt templates (editable)
 ├── styles/              optional per-project style presets (add/override .md files)
 ├── export/              built epubs
-└── logs/                llm-YYYYMMDD.jsonl (LLM trace); epub-build.log (background epub-build output)
+└── logs/                llm-*-<command>-<pid>.jsonl (one LLM trace per CLI invocation, newest log_llm_keep_runs kept); epub-build.log (background epub-build output)
 ```
 
 Chapter file names must match `Chapter_NNNN.md` (4-digit zero-padded number),

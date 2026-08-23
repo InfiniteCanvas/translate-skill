@@ -104,7 +104,7 @@ rerun resumes where it stopped. Chapters in `needs-review` are skipped by
 - Balance hard-failures trigger automatic pruning of mundane glossary
   terms (console: `[glossary] retired mundane term '...'`); a chapter
   whose failures were all mundane proceeds without a retry. The
-  `glossary_cleanup` trace events in `logs/llm-YYYYMMDD.jsonl` show each
+  `glossary_cleanup` trace events in `logs/llm-*.jsonl` show each
   removal (source + reason) and the kept terms; disable the pruning with
   `glossary_auto_cleanup: false`.
 
@@ -168,12 +168,14 @@ Every file schema (manifest, chapter state, glossary, notes, novel_info)
 is documented in `references/file-formats.md`.
 ## Debugging
 
-Every LLM call is TWO lines in `logs/llm-YYYYMMDD.jsonl`: an `llm_request`
+Every LLM call is TWO lines in the run log — `logs/llm-<timestamp>-<command>-<pid>.jsonl`,
+one file per CLI invocation: an `llm_request`
 line (params + full prompt, written before the call) and an `llm_response`
 line (raw response, finish_reason, usage, timing), paired by `call_id`.
 Pipeline attempts, balance advisories, and `glossary_cleanup` events are
-interleaved in the same stream. The console is a summary, the log is truth. Disable the LLM lines
-with `log_llm: false` in config.json.
+interleaved in the same stream. The console is a summary, the log is truth.
+Each run prunes older logs to the newest `log_llm_keep_runs` (default 5);
+disable the LLM lines with `log_llm: false` in config.json.
 
 Background epub builds append their output (including epubcheck results) to
 `logs/epub-build.log`, with `=== epub build after Chapter_NNNN | timestamp ===`

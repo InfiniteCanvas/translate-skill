@@ -33,6 +33,9 @@ DEFAULTS: dict = {
     "style_sample_chars": 12000,
     # Full request/response trace to logs/llm-YYYYMMDD.jsonl.
     "log_llm": True,
+    # One logs/llm-*.jsonl per CLI invocation; at each run's start older
+    # logs are pruned to the newest log_llm_keep_runs files (by mtime).
+    "log_llm_keep_runs": 5,
     # Rebuild the epub in a parallel subprocess after every chapter that
     # finishes translation (serialized; one final build at batch end
     # guarantees completeness). Set false to build only via build-epub.
