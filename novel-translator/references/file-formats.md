@@ -136,8 +136,10 @@ count. This is the anti-hallucination backbone of the whole pipeline.
 }
 ```
 
-`title_translated` is worth filling by hand — it becomes the epub title and the
-primary text on a generated cover. **Style** resolution: the project
+`title_translated` is worth filling by hand — it becomes the epub title, the
+export filename (`export/<title-slug>.epub`; without it, a CJK title is
+preserved verbatim in the filename and the console suggests setting it), and
+the primary text on a generated cover. **Style** resolution: the project
 `style.md` (copied from the chosen preset at init, hand-editable — edits
 apply on the next translate, no re-init) → legacy
 `style_profile.style_summary` → a generic default descriptor. **Background**

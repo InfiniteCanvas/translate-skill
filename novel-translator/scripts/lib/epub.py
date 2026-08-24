@@ -165,9 +165,20 @@ def chapter_md_to_xhtml(md_path: Path) -> tuple[str, str, bool]:
     return title, "\n".join(parts), has_notes
 
 
+_UNSAFE_FS_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
 def _slugify(title: str) -> str:
+    """Filename slug for an epub: ASCII words joined by hyphens. When the
+    title has no ASCII words (e.g. a pure CJK title), fall back to the title
+    itself minus filesystem-unsafe characters — named after the title beats
+    collapsing to 'novel'."""
     parts = re.findall(r"[A-Za-z0-9]+", title)
-    return "-".join(parts).lower().strip("-") or "novel"
+    if parts:
+        return "-".join(parts).lower()
+    fallback = _UNSAFE_FS_RE.sub("", title)
+    fallback = re.sub(r"\s+", "-", fallback.strip())
+    return fallback.strip(".-") or "novel"
 
 
 def build(
@@ -191,6 +202,9 @@ def build(
         raise EpubError("no translated chapters")
 
     title = novel_info.get("title_translated") or novel_info.get("title") or "Untitled"
+    if not novel_info.get("title_translated") and not re.search(r"[A-Za-z0-9]", title):
+        print('[warn] epub titled from the original-language title; set "title_translated" '
+              "in novel_info.json for an English filename")
     author = novel_info.get("author") or ""
     lang = cfg.get("target_lang", "en")
 

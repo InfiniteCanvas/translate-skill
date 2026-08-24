@@ -197,7 +197,9 @@ Read the feedback, then choose:
 uv run "$SCRIPT" build-epub --project .            # add --skip-check to skip validation
 ```
 
-Builds `export/<title-slug>.epub`: flat epub3 TOC (one entry per chapter,
+Builds `export/<title-slug>.epub` (filename from `novel_info.json`'s
+`title_translated` when set — set it for an English filename; a CJK-only
+title is preserved verbatim, with a console hint): flat epub3 TOC (one entry per chapter,
 sorted by manifest order), metadata from `novel_info.json`, cover from
 `covers/`, translation notes as real epub3 footnotes
 (`epub:type="noteref"`/`"footnote"`), then validates with the epubcheck
