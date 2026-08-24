@@ -17,6 +17,10 @@ tests/a-b/
 tests/advisory-live/
 tests/style-mock/
 tests/style-auto/
+tests/balance-e2e/
+
+# Local agent/tooling session state
+.zcode/
 
 # uv PEP 723 script lockfiles (created next to scripts on uv run)
 *.py.lock

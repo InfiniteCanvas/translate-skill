@@ -136,10 +136,40 @@ def count_in_text(entry: dict, text: str) -> int:
 
 def contextual(g: dict, body: str, cap: int) -> list[tuple[dict, int]]:
     """[(entry, count)] for entries appearing in body, sorted by count desc
-    then source asc, capped at cap."""
+    then source asc, capped at cap.
+
+    Counting is cross-entry and longest-first: every matchable string
+    (source + variants) across ALL entries is combined into a single
+    longest-first alternation, so a longer compound consumes its characters
+    and a shorter nested term is never also credited for that occurrence —
+    e.g. when both 修仙 and 仙界 are glossary entries, the 仙界 inside
+    修仙界 counts only for 修仙, not for 仙界. A string owned by several
+    entries (one entry's source is another entry's variant) credits each
+    owner exactly once per occurrence.
+    """
+    owners: dict[str, list[dict]] = {}
+    for entry in g.get("terms", []):
+        for s in [entry.get("source")] + list(entry.get("variants") or []):
+            if s:
+                owners.setdefault(s, []).append(entry)
+    if not owners:
+        return []
+    pattern = re.compile(
+        "|".join(
+            re.escape(s) for s in sorted(owners, key=lambda s: (-len(s), s))
+        )
+    )
+    counts: dict[int, int] = {id(entry): 0 for entry in g.get("terms", [])}
+    for match in pattern.finditer(body):
+        credited: set[int] = set()
+        for entry in owners[match[0]]:
+            key = id(entry)
+            if key not in credited:
+                credited.add(key)
+                counts[key] += 1
     pairs: list[tuple[dict, int]] = []
     for entry in g.get("terms", []):
-        count = count_in_text(entry, body)
+        count = counts.get(id(entry), 0)
         if count >= 1:
             pairs.append((entry, count))
     pairs.sort(key=lambda pair: (-pair[1], pair[0].get("source", "")))

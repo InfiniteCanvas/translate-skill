@@ -1,6 +1,6 @@
 ---
 name: novel-translator
-description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, glossary-balance check, model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, translation glossaries, translation notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters" or "rebuild the epub".
+description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, translation glossaries, translation notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters" or "rebuild the epub".
 ---
 
 # Novel Translator
@@ -105,7 +105,7 @@ rerun the same command):
 
 1. **PREP** — split the source into an indexed JSON line array; build the
    *contextual glossary* (only glossary terms actually appearing in this
-   chapter, capped at 80, sorted by frequency).
+   chapter, capped at 200, sorted by frequency).
 2. **TRANSLATE** — fill `templates/translation.md`, call the `translator`
    provider with the WHOLE chapter when its expected output fits
    `translate_max_output_tokens` (default 8k, the model card's recommended
@@ -116,28 +116,33 @@ rerun the same command):
 3. **VALIDATE** — line count must match the source exactly; empty lines stay
    empty. Structural violations go back as feedback.
 4. **BALANCE** — for every contextual glossary term: count occurrences in
-   source vs translation (fuzzy, Levenshtein ≤ 2). Mostly advisory: only a
-   term rendered ZERO times (with ≥2 source occurrences) hard-fails as
-   drift; under-use warns on the console and over-use is logged (both as
-   `balance_advisory` trace events for human review). Hard failures run a
-   cleanup judgment first (one `glossary`-provider call,
-   `templates/glossary_cleanup.md`): KEEP terms whose consistent rendering
-   matters (names of people/places/sects/techniques/titles/artifacts/
-   cultivation realms, culturally loaded concepts), REMOVE mundane ones
-   (everyday words, common nouns/verbs, generic objects, transient phrases
-   whose natural translation varies). Removed terms are dropped from
-   `glossary.json` into its `retired` list (console: `[glossary] retired
-   mundane term '...'`; trace event `glossary_cleanup`) and never re-added
-   by `seed` or GLOSSARY_EXPAND. If ALL failures are cleaned, the chapter
-   proceeds WITHOUT a retry — the translation itself was fine; the gate
-   tripped on a term that shouldn't have been enforced. Kept failures
-   retry as gate feedback as before; cleanup errors are fail-safe
-   (`[warn] glossary cleanup failed - keeping all failures`).
+   source vs translation (fuzzy, Levenshtein ≤ 2; cross-entry longest-first,
+   so a term nested inside a longer glossary compound — e.g. 仙界 inside
+   修仙界 — is credited to the longer term only). Fully advisory: nothing
+   fails here. All three tiers (drift signals, under-use warnings, over-count
+   info) surface as `balance_advisory` trace events and console `[warn]`s.
+   Drift signals (canonical rendering absent while the term appears ≥2× in
+   the source) first run the same cleanup judgment as before (one
+   `glossary`-provider call, `templates/glossary_cleanup.md`): KEEP terms
+   whose consistent rendering matters (names of people/places/sects/
+   techniques/titles/artifacts/cultivation realms, culturally loaded
+   concepts), REMOVE mundane ones (everyday words, common nouns/verbs,
+   generic objects, transient phrases whose natural translation varies).
+   Removed terms are dropped from `glossary.json` into its `retired` list
+   (console: `[glossary] retired mundane term '...'`; trace event
+   `glossary_cleanup`) and never re-added by `seed` or GLOSSARY_EXPAND. Kept
+   signals are appended to the FAITH reviewer's prompt (see stage 6), which
+   owns the verdict; cleanup errors are fail-safe (`[warn] glossary cleanup
+   failed - keeping all failures`).
 5. **GLOSSARY_EXPAND** — the model proposes new drift-prone terms (names,
    places, skills, orgs...); identical duplicates are skipped, conflicting
    ones are merged by the model into the existing entry.
 6. **FAITH** — the `reviewer` provider judges faithfulness line by line.
-   FAILURE reasons become feedback.
+   The reviewer also receives any kept BALANCE drift signals as heuristic
+   term-consistency flags: it fails on genuine terminology drift but not on
+   legitimate counting false positives (nested compounds,
+   inflections/hyphenations, generic words). FAILURE reasons become
+   feedback.
 7. **TN_GENERATE / TN_DEDUP** — the `annotator` provider proposes translation
    notes with line indices; self-assessed low-confidence (`threshold: "low"`)
    notes are dropped by default (set `tn_keep_low_confidence` true to keep
@@ -235,13 +240,14 @@ background build too.
   the skill's `assets/templates/`, so newly shipped templates work in old
   projects.
 - **Glossary upkeep**: hand-fix bad entries any time; the balance check reads
-  `glossary.json` fresh for every chapter. Balance hard-failures may
-  auto-prune mundane glossary terms (check console/trace `glossary_cleanup`
-  events); `glossary_auto_cleanup: false` (default true) disables. Retired
-  entries never come back via `seed` or GLOSSARY_EXPAND — remove a source
-  from glossary.json's `retired` list to allow re-adding. Re-run seeding
-  with `uv run "$SCRIPT" seed --project .` after adding chapters or editing
-  a catalogue.
+  `glossary.json` fresh for every chapter. Balance drift signals (advisory)
+  may auto-retire mundane glossary terms via `glossary_auto_cleanup`
+  (default true; check console/trace `glossary_cleanup` events); nothing
+  blocks on balance anymore — enforcement is the FAITH reviewer's call.
+  Retired entries never come back via `seed` or GLOSSARY_EXPAND — remove a
+  source from glossary.json's `retired` list to allow re-adding. Re-run
+  seeding with `uv run "$SCRIPT" seed --project .` after adding chapters or
+  editing a catalogue.
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.

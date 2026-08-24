@@ -105,12 +105,14 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
     inside "Senior Brother"; generic English words: "plot", "system";
     noun-frequency mismatch between Chinese and English).
 
-    Returns (failures, warnings, info):
-    - failures (hard, retry-worthy): one dict per term whose canonical
-      rendering is absent entirely while the term appears src >= 2 times —
-      the reliable drift/omission signal. Dict keys: "source", "translation",
-      "src_count", "tgt_count", and "message" (the human-readable line used
-      for feedback/console output).
+    Returns (drift_signals, warnings, info):
+    - drift_signals (advisory, surfaced to the FAITH reviewer, who owns the
+      pass/fail verdict): one dict per term whose canonical rendering is
+      absent entirely while the term appears src >= 2 times — the reliable
+      drift/omission heuristic, though nested-term counting false positives
+      are possible, and dismissing those is the reviewer's job. Dict keys:
+      "source", "translation", "src_count", "tgt_count", and "message"
+      (the human-readable line used for feedback/console output).
     - warnings (advisory, console + trace log): canonical rendering below
       the usage floor ceil(min_coverage * src) — possible under-use, but
       natural English legitimately repeats nouns less than Chinese.
@@ -118,7 +120,7 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
       most false-positive-prone direction; recorded for the human, never
       blocking.
     """
-    failures: list[dict] = []
+    drift_signals: list[dict] = []
     warnings: list[str] = []
     info: list[str] = []
     for entry, src_count in pairs:
@@ -128,7 +130,7 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
         term = entry['source']
         expected = entry['translation']
         if src_count >= 2 and tgt_count == 0:
-            failures.append({
+            drift_signals.append({
                 "source": term,
                 "translation": expected,
                 "src_count": src_count,
@@ -152,4 +154,4 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
                 f"(ceiling {src_count + max(2, src_count)}) — possible count "
                 "contamination from shared renderings or generic words."
             )
-    return failures, warnings, info
+    return drift_signals, warnings, info

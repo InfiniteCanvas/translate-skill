@@ -123,7 +123,7 @@ MERGE_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-# Glossary-cleanup verdicts after a balance hard-failure. NO
+# Glossary-cleanup verdicts on balance drift signals. NO
 # additionalProperties inside items — strict nested schemas truncated
 # sglang guided decoding historically.
 CLEANUP_SCHEMA: dict[str, Any] = {
@@ -460,8 +460,9 @@ def _apply_glossary_proposal(
 def _cleanup_balance_failures(project_dir: Path, cfg: dict, tpl: str,
                               failures: list[dict], source_body: str, tag: str,
                               chapter: str | None = None) -> list[dict]:
-    """Ask the glossary job whether failing balance terms deserve glossary
-    entries; retire the mundane ones. Returns the failures to KEEP (all of
+    """Ask the glossary job whether balance drift-signal terms deserve
+    glossary entries; retire the mundane ones. Runs on advisory drift
+    signals, not gate failures. Returns the failures to KEEP (all of
     them on any error — cleanup must never block or remove on uncertainty)."""
     try:
         term_list = "\n".join(
@@ -694,6 +695,18 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             + "\n".join(f"- {item}" for item in state["feedback"])
         )
 
+    def balance_signals_section() -> str:
+        """Render kept balance drift signals for the FAITH reviewer; empty
+        when the counter found nothing worth flagging."""
+        if not balance_signals:
+            return ""
+        return (
+            "[Term Consistency Signals]\n"
+            "Heuristic flags from the glossary balance script — the canonical "
+            "rendering below was not found in the translation:\n"
+            + "\n".join(f"- {item}" for item in balance_signals)
+        )
+
     def build_ctx(translation_lines: list[str], feedback: str = "",
                   extra: dict[str, str] | None = None) -> dict[str, str]:
         ctx: dict[str, str] = {
@@ -706,6 +719,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             "translation_lines": json.dumps(translation_lines, ensure_ascii=False),
             "glossary": glossary_str,
             "feedback_section": feedback,
+            "balance_signals_section": "",
             "style": style_summary,
             "background_section": background_section(),
         }
@@ -879,6 +893,9 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 failed_stage = "TRANSLATE"
 
         lines: list[str] = []
+        # Kept balance drift signals for the FAITH reviewer; resets every
+        # attempt and stays empty when resuming past BALANCE.
+        balance_signals: list[str] = []
         if failed_stage is None:
             lines = list(state["lines"] or [])
 
@@ -903,53 +920,58 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
 
         if failed_stage is None and start_idx <= _STAGE_IDX["BALANCE"]:
             advance("BALANCE")
-            # ---------------- BALANCE (mostly advisory) ----------------
-            # Only the zero-rendering drift signal is retry-worthy; the
-            # usage floor and over-count ceiling are counting heuristics
-            # too noisy to fail a chapter on (shared renderings, generic
-            # English words, noun-frequency mismatch) — they surface as
-            # console warnings and trace-log entries for the human instead.
+            # ---------------- BALANCE (advisory) ----------------
+            # All three tiers (drift signals, usage floor, over-count
+            # ceiling) are advisory counting heuristics: none of them can
+            # fail a chapter on its own. Drift signals run through the
+            # glossary cleanup judgment, and whatever survives is handed to
+            # the FAITH reviewer, which owns the verdict.
             try:
-                failures, warnings, over_count = balance.check(
+                drift_signals, warnings, over_count = balance.check(
                     pairs,
                     body_for_counts,
                     lines,
                     _cfg_value(cfg, "min_term_coverage"),
                     _cfg_value(cfg, "fuzzy_max_distance"),
                 )
-                if warnings or over_count:
+                if drift_signals or warnings or over_count:
                     logger.log_event(project_dir, {
                         "event": "balance_advisory", "chapter": file,
+                        "drift_signals": [f["message"] for f in drift_signals],
                         "warnings": warnings, "over_count": over_count,
                     })
+                if warnings:
                     for warning in warnings[:5]:
                         print(f"{tag} [warn] balance advisory: {warning}")
                     if len(warnings) > 5:
                         print(f"{tag} [warn] ... and {len(warnings) - 5} more (see logs)")
-                if failures:
+                if drift_signals:
                     if _cfg_value(cfg, "glossary_auto_cleanup"):
                         # Mundane glossary entries trip the drift check by
                         # being naturally rephrased; ask the glossary job
-                        # whether each failing term deserves enforcement and
-                        # retire the ones that don't. All failures cleaned ->
-                        # the chapter proceeds without a retry (the
-                        # translation itself was fine).
-                        failures = _cleanup_balance_failures(
+                        # whether each flagged term deserves enforcement and
+                        # retire the ones that don't. All signals cleaned ->
+                        # nothing to forward (the translation itself was
+                        # fine).
+                        drift_signals = _cleanup_balance_failures(
                             project_dir, cfg, tpl_glossary_cleanup,
-                            failures, body_for_counts, tag, chapter=file,
+                            drift_signals, body_for_counts, tag, chapter=file,
                         )
                         # retire() rewrote glossary.json on disk; refresh the
                         # in-memory copy so GLOSSARY_EXPAND's save cannot
                         # resurrect the retired terms.
                         g = glossary.load(project_dir)
-                    if failures:
-                        state["feedback"].extend(f["message"] for f in failures)
-                        failed_stage = "BALANCE"
+                    for f in drift_signals:
+                        print(f"{tag} [warn] balance drift signal: {f['message']}")
+                    balance_signals = [f["message"] for f in drift_signals]
             except PipelineError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - becomes retry feedback
-                state["feedback"].append(f"BALANCE check failed: {type(exc).__name__}: {exc}")
-                failed_stage = "BALANCE"
+            except Exception as exc:  # noqa: BLE001 - advisory: never block the chapter
+                print(f"{tag} [warn] balance check failed - continuing: {type(exc).__name__}: {exc}")
+                logger.log_event(project_dir, {
+                    "event": "balance_advisory", "chapter": file,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
 
         if failed_stage is None and start_idx <= _STAGE_IDX["GLOSSARY_EXPAND"]:
             advance("GLOSSARY_EXPAND")
@@ -984,7 +1006,11 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             advance("FAITH")
             # ---------------- FAITH ----------------
             try:
-                prompt = fill(tpl_faithfulness, build_ctx(lines), "faithfulness.md")
+                prompt = fill(
+                    tpl_faithfulness,
+                    build_ctx(lines, extra={"balance_signals_section": balance_signals_section()}),
+                    "faithfulness.md",
+                )
                 print(f"{tag} [init] FAITH")
                 resp = _chat(project_dir, cfg, "reviewer", prompt, json_schema=VERDICT_SCHEMA)
                 data = client.extract_json(resp)

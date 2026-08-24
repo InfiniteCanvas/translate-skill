@@ -8,7 +8,7 @@ PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "profile")
 DEFAULTS: dict = {
     "seed_min_count": 3,
     # Canonical glossary rendering must appear >= ceil(coverage*src) times;
-    # zero occurrences with src >= 2 still hard-fails (drift/omission).
+    # zero occurrences with src >= 2 is the drift signal handed to the FAITH reviewer.
     "min_term_coverage": 0.25,
     "fuzzy_max_distance": 2,
     "tn_gap_chapters": 10,
@@ -40,9 +40,9 @@ DEFAULTS: dict = {
     # finishes translation (serialized; one final build at batch end
     # guarantees completeness). Set false to build only via build-epub.
     "auto_build_epub": True,
-    # After balance hard-failures, one glossary-job call judges whether each
-    # failing term truly belongs in the glossary; mundane terms are removed
-    # and retired (never re-added). Set false for strict retry-only behavior.
+    # On balance drift signals, one glossary-job call judges whether each
+    # flagged term truly belongs in the glossary; mundane terms are removed
+    # and retired (never re-added). Set false to skip the judgment.
     "glossary_auto_cleanup": True,
 }
 

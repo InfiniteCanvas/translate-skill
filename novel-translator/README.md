@@ -107,12 +107,13 @@ rerun resumes where it stopped. Chapters in `needs-review` are skipped by
 
       uv run scripts/translate.py mark --chapters 7 --status translated --project .
 
-- Balance hard-failures trigger automatic pruning of mundane glossary
-  terms (console: `[glossary] retired mundane term '...'`); a chapter
-  whose failures were all mundane proceeds without a retry. The
-  `glossary_cleanup` trace events in `logs/llm-*.jsonl` show each
-  removal (source + reason) and the kept terms; disable the pruning with
-  `glossary_auto_cleanup: false`.
+- Balance drift signals (advisory, never blocking) trigger automatic pruning
+  of mundane glossary terms (console: `[glossary] retired mundane term
+  '...'`); kept signals are surfaced to the faithfulness reviewer, which
+  makes the final pass/fail call on terminology. The `glossary_cleanup`
+  trace events in `logs/llm-*.jsonl` show each removal (source + reason)
+  and the kept terms; disable the pruning with `glossary_auto_cleanup:
+  false`.
 
 ## Glossary and notes upkeep between batches
 
@@ -156,7 +157,7 @@ details land in `logs/epub-build.log`.
   `extra_body` on a provider block merges provider-specific parameters
   verbatim into the request body (after the known knobs, before
   `response_format`; not sent by ping's minimal probe).
-- Thresholds: `min_term_coverage (advisory usage floor; only zero renderings hard-fail)`, `tn_gap_chapters`, `max_attempts`,
+- Thresholds: `min_term_coverage (advisory usage floor; zero renderings become drift signals for the FAITH reviewer)`, `tn_gap_chapters`, `max_attempts`,
   `translate_max_output_tokens`, `style_sample_chapters` / `style_sample_chars`
   (only used by `--style auto`), `contextual_glossary_cap`.
 - `tn_keep_low_confidence` (default false) — keep notes the annotator
@@ -165,10 +166,11 @@ details land in `logs/epub-build.log`.
   after every translated chapter during `translate`/`retry` (serialized,
   coalescing), with a guaranteed final build at batch end; set false to
   build only via `build-epub`.
-- `glossary_auto_cleanup` (default true) -- when the balance gate
-  hard-fails on a term, one glossary-model call judges it: mundane terms
-  are retired from `glossary.json` (never re-added) instead of triggering
-  retries; set false for strict retry-only behavior.
+- `glossary_auto_cleanup` (default true) -- when balance drift signals
+  are flagged (advisory), one glossary-model call judges each term:
+  mundane terms are retired from `glossary.json` (never re-added) while
+  kept signals go to the faithfulness reviewer; set false to disable the
+  retirement.
 
 Every file schema (manifest, chapter state, glossary, notes, novel_info)
 is documented in `references/file-formats.md`.
@@ -178,8 +180,10 @@ Every LLM call is TWO lines in the run log — `logs/llm-<timestamp>-<command>-<
 one file per CLI invocation: an `llm_request`
 line (params + full prompt, written before the call) and an `llm_response`
 line (raw response, finish_reason, usage, timing), paired by `call_id`.
-Pipeline attempts, balance advisories, and `glossary_cleanup` events are
-interleaved in the same stream. The console is a summary, the log is truth.
+Pipeline attempts, `balance_advisory` events (which now carry drift
+signals alongside under-use warnings and over-count info), and
+`glossary_cleanup` events are interleaved in the same stream. The
+console is a summary, the log is truth.
 Each run prunes older logs to the newest `log_llm_keep_runs` (default 5);
 disable the LLM lines with `log_llm: false` in config.json.
 

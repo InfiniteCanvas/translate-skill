@@ -1,6 +1,6 @@
 You are curating the translation glossary for a {{source_lang}} novel being translated into {{target_lang}}.
 
-The balance gate flagged these glossary terms: the canonical English rendering never appears in the translation even though the source term appears in the source text.
+The balance check flagged these glossary terms as drift signals: the canonical English rendering never appears in the translation even though the source term appears in the source text.
 
 [Flagged Terms]
 

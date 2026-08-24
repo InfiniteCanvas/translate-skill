@@ -78,9 +78,9 @@ count. This is the anti-hallucination backbone of the whole pipeline.
     "profile":     { "...same shape, temperature 0.3" }   // style-profile generation (--style auto / `profile` only)
   },
   "seed_min_count": 3,           // catalogue term must appear >= N times in source/ to seed
-  "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; only 0 renderings with src>=2 hard-fails
+  "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; 0 renderings with src>=2 is a drift signal handed to the FAITH reviewer
   "fuzzy_max_distance": 2,       // Levenshtein tolerance for single-word targets (phrases match verbatim; hyphens/space are equivalent on both sides)
-  "glossary_auto_cleanup": true, // balance hard-failures: retire mundane terms via a cleanup judgment instead of retrying on them; false = strict retry-only
+  "glossary_auto_cleanup": true, // balance drift signals: retire mundane terms via a cleanup judgment; kept signals go to the FAITH reviewer; false = skip the judgment
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "tn_keep_low_confidence": false, // keep threshold:"low" notes instead of dropping them (default drops)
   "auto_build_epub": true,      // rebuild the epub in the background after every translated chapter (serialized; final build at batch end); false = manual `build-epub` only
@@ -178,24 +178,24 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
 - The balance check counts `source`+`variants` occurrences in the source text
   and `translation`+`alt_translations` occurrences in the translated text
   (stemmed, case-insensitive word/phrase matching with Levenshtein tolerance 2
-  for words ≥ 5 letters; exact substring match for CJK targets). The gate is
-  MOSTLY ADVISORY — the count is a heuristic poisoned by shared renderings
-  ("Senior" inside "Senior Brother"), generic English words, and
-  noun-frequency mismatch between the languages. Only one condition
-  hard-fails: the canonical rendering appears ZERO
-  times while the term occurs `src >= 2` times — the reliable drift/omission
-  signal. The failure path runs the cleanup judgment before retrying (one
-  `glossary`-provider call, `templates/glossary_cleanup.md`; disable with
+  for words ≥ 5 letters; exact substring match for CJK targets), cross-entry
+  longest-first — a term nested inside a longer glossary compound (仙界
+  inside 修仙界) is credited to the longer term only. The check is FULLY
+  ADVISORY: no condition fails a chapter. Falling below the usage floor
+  `ceil(min_term_coverage × src)` (default 25%) is a console warning, and
+  exceeding `src + max(2, src)` is logged only. Drift signals — the canonical
+  rendering appears ZERO times while the term occurs `src >= 2` times — first
+  run the cleanup judgment (one `glossary`-provider call,
+  `templates/glossary_cleanup.md`; disable with
   `glossary_auto_cleanup: false`): mundane terms are removed into `retired`,
-  and a chapter whose failures are all cleaned proceeds WITHOUT a retry —
-  the translation was fine; the gate tripped on a term that shouldn't have
-  been enforced. Kept failures retry (toward needs-review) as before.
-  Falling below the usage floor `ceil(min_term_coverage × src)`
-  (default 25%) is a console warning, and exceeding `src + max(2, src)` is
-  logged only; both land in the trace log as `balance_advisory` events
-  (`warnings` / `over_count` arrays) for human review, and cleanup results
-  land as `glossary_cleanup` events — fields `chapter`,
-  `removed: [{source, reason}]`, `kept: [sources]`.
+  and kept signals are appended to the FAITH reviewer's prompt, which owns
+  the pass/fail verdict — it fails genuine drift but passes legitimate
+  counting false positives (nested compounds, inflections/hyphenations,
+  generic words). All three tiers land in the trace log as
+  `balance_advisory` events (`drift_signals` / `warnings` / `over_count`
+  arrays) for human review, and cleanup results land as `glossary_cleanup`
+  events — fields `chapter`, `removed: [{source, reason}]`,
+  `kept: [sources]`.
 - Hand-editing entries between runs is safe and encouraged — the file is read
   fresh before every chapter. Hand-added entries need at least `source` and
   `translation`.
@@ -227,7 +227,8 @@ For `Chapter_0001.md` the pipeline creates:
 
 `stage` is one of `PREP, TRANSLATE, VALIDATE, BALANCE, GLOSSARY_EXPAND, FAITH,
 TN_GENERATE, TN_DEDUP, ASSEMBLE`. `feedback` accumulates everything the gates
-rejected (balance violations, faithfulness reasons) and is re-injected into
+rejected (faithfulness reasons, including genuine term drift flagged by
+balance signals) and is re-injected into
 every retry prompt. The state file is deleted after a chapter is assembled
 into `translated/`.
 
@@ -285,7 +286,7 @@ after filling — typos fail fast.
 | `faithfulness.md` | FAITH | `source_lang target_lang source_lines translation_lines background_section` |
 | `tn_generate.md` | TN_GENERATE | `source_lang target_lang source_lines translation_lines background_section max_notes` |
 | `glossary_merge.md` | glossary collision merge | `existing_json proposed_json` |
-| `glossary_cleanup.md` | balance-failure cleanup | `source_lang target_lang term_list sample_lines` |
+| `glossary_cleanup.md` | balance drift-signal cleanup | `source_lang target_lang term_list sample_lines` |
 | `style_profile.md` | `--style auto` init / `profile` (legacy) | `source_lang target_lang sample_text` |
 
 `source_lines` / `translation_lines` are substituted as JSON arrays (compact,
@@ -345,7 +346,7 @@ robust extraction as fallback:
 ```
 
 `alt_translations` is optional but recommended for terms with more than one
-accepted rendering — the balance gate counts `translation` +
+accepted rendering — the balance check counts `translation` +
 `alt_translations` in the translated text, so listing the alternatives
 prevents false drift failures.
 
