@@ -191,7 +191,9 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
   rendering appears ZERO times while the term occurs `src >= 2` times — first
   run the cleanup judgment (one `glossary`-provider call,
   `templates/glossary_cleanup.md`; disable with
-  `glossary_auto_cleanup: false`): mundane terms are removed into `retired`,
+  `glossary_auto_cleanup: false`): mundane terms are removed into `retired`
+  — deferred until the translation passes the FAITH gate, so a rejected
+  attempt retires nothing —
   and kept signals are appended to the FAITH reviewer's prompt, which owns
   the pass/fail verdict — it fails genuine drift but passes legitimate
   counting false positives (nested compounds, inflections/hyphenations,
@@ -307,7 +309,7 @@ For `Chapter_0001.md` the pipeline creates:
 | `Chapter_0001.lines.json` | `{"title": "...", "lines": [...]}` — written per attempt as a debug artifact; nothing reads it back |
 | `Chapter_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "feedback": [...], "notes": [...], "updated_at"}` — `title`/`lines` hold the draft translation (crash-resume past TRANSLATE) |
 
-`stage` is one of `TRANSLATE, VALIDATE, BALANCE, GLOSSARY_EXPAND, FAITH,
+`stage` is one of `TRANSLATE, VALIDATE, BALANCE, FAITH, GLOSSARY_EXPAND,
 TN_GENERATE, TN_DEDUP, ASSEMBLE`. `feedback` accumulates everything the gates
 rejected (faithfulness reasons, including genuine term drift flagged by
 balance signals) and is re-injected into

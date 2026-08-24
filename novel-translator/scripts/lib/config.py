@@ -42,7 +42,9 @@ DEFAULTS: dict = {
     "auto_build_epub": True,
     # On balance drift signals, one glossary-job call judges whether each
     # flagged term truly belongs in the glossary; mundane terms are removed
-    # and retired (never re-added). Set false to skip the judgment.
+    # and retired (never re-added; the retirement is applied only after the
+    # translation passes the faithfulness gate). Set false to skip the
+    # judgment.
     "glossary_auto_cleanup": True,
 }
 

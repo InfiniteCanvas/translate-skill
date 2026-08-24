@@ -110,7 +110,8 @@ rerun resumes where it stopped. Chapters in `needs-review` are skipped by
 
 - Balance drift signals (advisory, never blocking) trigger automatic pruning
   of mundane glossary terms (console: `[glossary] retired mundane term
-  '...'`); kept signals are surfaced to the faithfulness reviewer, which
+  '...'`, applied only once the chapter's translation is accepted); kept
+  signals are surfaced to the faithfulness reviewer, which
   makes the final pass/fail call on terminology. The `glossary_cleanup`
   trace events in `logs/llm-*.jsonl` show each removal (source + reason)
   and the kept terms; disable the pruning with `glossary_auto_cleanup:
@@ -226,7 +227,8 @@ details land in `logs/epub-build.log`.
   build only via `build-epub`.
 - `glossary_auto_cleanup` (default true) -- when balance drift signals
   are flagged (advisory), one glossary-model call judges each term:
-  mundane terms are retired from `glossary.json` (never re-added) while
+  mundane terms are retired from `glossary.json` (never re-added;
+  deferred until the translation passes the faithfulness gate) while
   kept signals go to the faithfulness reviewer; set false to disable the
   retirement.
 - `fuzzy_max_distance` (default 2) -- Levenshtein tolerance for word

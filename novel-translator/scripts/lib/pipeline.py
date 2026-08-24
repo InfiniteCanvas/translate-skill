@@ -1,7 +1,10 @@
 """Staged, resumable translation pipeline for novel chapters.
 
-Per-chapter stages: TRANSLATE -> VALIDATE -> BALANCE -> GLOSSARY_EXPAND ->
-FAITH -> TN_GENERATE -> TN_DEDUP -> ASSEMBLE.
+Per-chapter stages: TRANSLATE -> VALIDATE -> BALANCE -> FAITH ->
+GLOSSARY_EXPAND -> TN_GENERATE -> TN_DEDUP -> ASSEMBLE. Glossary expansion
+runs only after the faithfulness gate accepts the translation, so terms from
+rejected attempts never enter the glossary; drift-signal retirements decided
+in BALANCE are likewise applied only on the accepted attempt.
 
 Progress is persisted in draft/<stem>.state.json after every stage, so an
 interrupted chapter resumes at the failed stage instead of restarting, and a
@@ -22,12 +25,17 @@ STAGES = (
     "TRANSLATE",
     "VALIDATE",
     "BALANCE",
-    "GLOSSARY_EXPAND",
     "FAITH",
+    "GLOSSARY_EXPAND",
     "TN_GENERATE",
     "TN_DEDUP",
     "ASSEMBLE",
 )
+
+# State-file format version. v1 (unmarked) predates the FAITH/GLOSSARY_EXPAND
+# reorder; its "GLOSSARY_EXPAND"/"FAITH" stages both mean FAITH had not
+# finished, so they remap to FAITH on load (see run_chapter).
+STATE_VERSION = 2
 
 TRANSLATION_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -457,12 +465,16 @@ def _apply_glossary_proposal(
 
 
 def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
-                           signals: list[dict], source_body: str, tag: str,
-                           chapter: str | None = None) -> list[dict]:
+                           signals: list[dict], source_body: str,
+                           tag: str) -> tuple[list[dict], dict | None]:
     """Ask the glossary job whether balance drift-signal terms deserve
-    glossary entries; retire the mundane ones. Runs on advisory drift
-    signals, not gate failures. Returns the signals to KEEP (all of
-    them on any error — cleanup must never block or remove on uncertainty)."""
+    glossary entries; the mundane ones are slated for retirement. Runs on
+    advisory drift signals, not gate failures. Returns (signals_to_keep,
+    pending_cleanup): pending_cleanup is None when nothing is to be retired,
+    else {"retirements": [{source, reason}], "kept_sources": [str]}. The
+    CALLER applies the retirements only after the translation is accepted —
+    retiring on a rejected attempt could delete good terms based on a bad
+    translation. On any error keeps every signal, retires nothing."""
     try:
         term_list = "\n".join(
             f"- {s['source']} translates to \"{s['translation']}\" — source "
@@ -494,32 +506,53 @@ def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
         if not isinstance(decisions, list):
             raise ValueError("expected a 'decisions' array")
         signal_sources = {s["source"] for s in signals}
-        reasons: dict[str, str] = {}
-        to_remove: set[str] = set()
+        retirements: list[dict[str, str]] = []
         for decision in decisions:
             if not isinstance(decision, dict) or decision.get("keep") is not False:
                 continue
             src = decision.get("source")
-            if isinstance(src, str) and src in signal_sources:
-                to_remove.add(src)
-                reason = decision.get("reason")
-                reasons[src] = reason if isinstance(reason, str) and reason.strip() else "mundane term"
-        removed = glossary.retire(project_dir, sorted(to_remove))
-        removed_set = set(removed)
-        for src in removed:
-            print(f"{tag} [glossary] retired mundane term '{src}' ({reasons.get(src, 'mundane term')})")
-        event: dict[str, Any] = {"event": "glossary_cleanup"}
-        if chapter:
-            event["chapter"] = chapter
-        event["removed"] = [
-            {"source": src, "reason": reasons.get(src, "mundane term")} for src in removed
-        ]
-        event["kept"] = [s["source"] for s in signals if s["source"] not in removed_set]
-        logger.log_event(project_dir, event)
-        return [s for s in signals if s["source"] not in removed_set]
+            if not (isinstance(src, str) and src in signal_sources):
+                continue
+            if any(r["source"] == src for r in retirements):
+                continue  # duplicate decision for one source
+            reason = decision.get("reason")
+            retirements.append({
+                "source": src,
+                "reason": reason if isinstance(reason, str) and reason.strip() else "mundane term",
+            })
+        if not retirements:
+            return signals, None
+        removed_set = {r["source"] for r in retirements}
+        kept = [s for s in signals if s["source"] not in removed_set]
+        return kept, {
+            "retirements": retirements,
+            "kept_sources": [s["source"] for s in signals],
+        }
     except Exception as exc:  # noqa: BLE001 - fail-safe: keep every signal
         print(f"{tag} [warn] glossary cleanup failed - keeping all signals: {exc}")
-        return signals
+        return signals, None
+
+
+def _apply_pending_cleanup(project_dir: Path, pending: dict, chapter: str, tag: str) -> bool:
+    """Apply retirement decisions deferred from BALANCE. Runs only after the
+    FAITH gate accepted the translation; a rejected attempt's decisions are
+    dropped, never written. Returns True when glossary.json changed (callers
+    must reload their in-memory copy so a later save cannot resurrect the
+    retired terms)."""
+    removed = glossary.retire(project_dir, [r["source"] for r in pending["retirements"]])
+    removed_set = set(removed)
+    event: dict[str, Any] = {"event": "glossary_cleanup"}
+    if chapter:
+        event["chapter"] = chapter
+    event["removed"] = [
+        {"source": r["source"], "reason": r["reason"]}
+        for r in pending["retirements"] if r["source"] in removed_set
+    ]
+    event["kept"] = [s for s in pending["kept_sources"] if s not in removed_set]
+    logger.log_event(project_dir, event)
+    for r in event["removed"]:
+        print(f"{tag} [glossary] retired mundane term '{r['source']}' ({r['reason']})")
+    return bool(removed)
 
 
 def _estimate_output_tokens(lines: list[str]) -> int:
@@ -589,6 +622,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             "lines": None,
             "notes": None,
             "updated_at": "",
+            "pipeline": STATE_VERSION,
         }
     state.setdefault("stage", "TRANSLATE")
     state.setdefault("attempt", 0)
@@ -599,6 +633,14 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
 
     if state["stage"] not in STAGES:
         state["stage"] = "TRANSLATE"
+    if state.get("pipeline") != STATE_VERSION:
+        # v1 state written before the FAITH/GLOSSARY_EXPAND reorder: a
+        # persisted GLOSSARY_EXPAND or FAITH stage means the faithfulness
+        # gate had not completed. Remap to FAITH so the resumed draft is
+        # always faith-checked (expand re-running afterwards is harmless).
+        if state["stage"] in ("GLOSSARY_EXPAND", "FAITH"):
+            state["stage"] = "FAITH"
+        state["pipeline"] = STATE_VERSION
     if _STAGE_IDX[state["stage"]] > _STAGE_IDX["TRANSLATE"] and (
         state["lines"] is None or state["title"] is None
     ):
@@ -895,6 +937,9 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         # Kept balance drift signals for the FAITH reviewer; resets every
         # attempt and stays empty when resuming past BALANCE.
         balance_signals: list[str] = []
+        # Retirement decisions deferred from BALANCE (applied only after
+        # FAITH accepts; dropped when the attempt is rejected).
+        pending_cleanup: dict | None = None
         if failed_stage is None:
             lines = list(state["lines"] or [])
 
@@ -947,18 +992,15 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     if _cfg_value(cfg, "glossary_auto_cleanup"):
                         # Mundane glossary entries trip the drift check by
                         # being naturally rephrased; ask the glossary job
-                        # whether each flagged term deserves enforcement and
-                        # retire the ones that don't. All signals cleaned ->
-                        # nothing to forward (the translation itself was
-                        # fine).
-                        drift_signals = _cleanup_drift_signals(
+                        # whether each flagged term deserves enforcement.
+                        # The retirement itself is DEFERRED to the accepted
+                        # attempt (applied alongside GLOSSARY_EXPAND) — this
+                        # split only filters which signals reach the FAITH
+                        # reviewer, which owns the verdict.
+                        drift_signals, pending_cleanup = _cleanup_drift_signals(
                             project_dir, cfg, tpl_glossary_cleanup,
-                            drift_signals, body_for_counts, tag, chapter=file,
+                            drift_signals, body_for_counts, tag,
                         )
-                        # retire() rewrote glossary.json on disk; refresh the
-                        # in-memory copy so GLOSSARY_EXPAND's save cannot
-                        # resurrect the retired terms.
-                        g = glossary.load(project_dir)
                     for f in drift_signals:
                         print(f"{tag} [warn] balance drift signal: {f['message']}")
                     balance_signals = [f["message"] for f in drift_signals]
@@ -970,35 +1012,6 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     "event": "balance_advisory", "chapter": file,
                     "error": f"{type(exc).__name__}: {exc}",
                 })
-
-        if failed_stage is None and start_idx <= _STAGE_IDX["GLOSSARY_EXPAND"]:
-            advance("GLOSSARY_EXPAND")
-            # ---------------- GLOSSARY_EXPAND (non-fatal) ----------------
-            try:
-                max_terms = int(_cfg_value(cfg, "max_new_terms_per_chapter"))
-                prompt = fill(
-                    tpl_glossary_expand,
-                    build_ctx(lines, extra={"max_terms": str(max_terms)}),
-                    "glossary_expand.md",
-                )
-                print(f"{tag} [init] GLOSSARY_EXPAND")
-                resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=TERMS_SCHEMA)
-                data = client.extract_json(resp)
-                raw_terms = data.get("terms") if isinstance(data, dict) else None
-                if not isinstance(raw_terms, list):
-                    raise ValueError("expected a 'terms' array")
-                for proposal in raw_terms[:max_terms]:
-                    try:
-                        _apply_glossary_proposal(g, proposal, chapter_order, cfg, tpl_glossary_merge, tag, project_dir)
-                    except PipelineError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - skip this proposal only
-                        print(f"{tag} [warn] skipped glossary proposal: {exc}")
-            except PipelineError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - glossary expansion is auxiliary
-                print(f"{tag} [warn] glossary expansion failed: {type(exc).__name__}: {exc}")
-            glossary.save(project_dir, g)
 
         if failed_stage is None and start_idx <= _STAGE_IDX["FAITH"]:
             advance("FAITH")
@@ -1029,6 +1042,46 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             except Exception as exc:  # noqa: BLE001 - becomes retry feedback
                 state["feedback"].append(f"FAITH review failed: {type(exc).__name__}: {exc}")
                 failed_stage = "FAITH"
+
+        if failed_stage is None and start_idx <= _STAGE_IDX["GLOSSARY_EXPAND"]:
+            advance("GLOSSARY_EXPAND")
+            # ---------------- GLOSSARY_EXPAND (non-fatal) ----------------
+            # Runs only on the attempt FAITH just accepted: new terms lock in
+            # after the translation is accepted, never from a rejected one.
+            # Deferred BALANCE retirements land here too (a crash-resume
+            # entering at this stage finds no pending decisions — nothing is
+            # retired, the fail-safe direction).
+            if pending_cleanup is not None:
+                if _apply_pending_cleanup(project_dir, pending_cleanup, file, tag):
+                    # retire() rewrote glossary.json; refresh so this stage's
+                    # save cannot resurrect the retired terms.
+                    g = glossary.load(project_dir)
+                pending_cleanup = None
+            try:
+                max_terms = int(_cfg_value(cfg, "max_new_terms_per_chapter"))
+                prompt = fill(
+                    tpl_glossary_expand,
+                    build_ctx(lines, extra={"max_terms": str(max_terms)}),
+                    "glossary_expand.md",
+                )
+                print(f"{tag} [init] GLOSSARY_EXPAND")
+                resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=TERMS_SCHEMA)
+                data = client.extract_json(resp)
+                raw_terms = data.get("terms") if isinstance(data, dict) else None
+                if not isinstance(raw_terms, list):
+                    raise ValueError("expected a 'terms' array")
+                for proposal in raw_terms[:max_terms]:
+                    try:
+                        _apply_glossary_proposal(g, proposal, chapter_order, cfg, tpl_glossary_merge, tag, project_dir)
+                    except PipelineError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - skip this proposal only
+                        print(f"{tag} [warn] skipped glossary proposal: {exc}")
+            except PipelineError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - glossary expansion is auxiliary
+                print(f"{tag} [warn] glossary expansion failed: {type(exc).__name__}: {exc}")
+            glossary.save(project_dir, g)
 
         if failed_stage is None and start_idx <= _STAGE_IDX["TN_GENERATE"]:
             advance("TN_GENERATE")

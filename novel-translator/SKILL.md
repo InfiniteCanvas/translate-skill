@@ -132,21 +132,28 @@ sorted by frequency):
    techniques/titles/artifacts/cultivation realms, culturally loaded
    concepts), REMOVE mundane ones (everyday words, common nouns/verbs,
    generic objects, transient phrases whose natural translation varies).
-   Removed terms are dropped from `glossary.json` into its `retired` list
-   (console: `[glossary] retired mundane term '...'`; trace event
-   `glossary_cleanup`) and never re-added by `seed` or GLOSSARY_EXPAND. Kept
-   signals are appended to the FAITH reviewer's prompt (see stage 5), which
-   owns the verdict; cleanup errors are fail-safe (`[warn] glossary cleanup
-   failed - keeping all signals`).
-4. **GLOSSARY_EXPAND** — the model proposes new drift-prone terms (names,
-   places, skills, orgs...); identical duplicates are skipped, conflicting
-   ones are merged by the model into the existing entry.
-5. **FAITH** — the `reviewer` provider judges faithfulness line by line.
+   The retirement itself is DEFERRED: flagged terms are only dropped from
+   `glossary.json` into its `retired` list after FAITH accepts the
+   translation (applied alongside GLOSSARY_EXPAND; console: `[glossary]
+   retired mundane term '...'`; trace event `glossary_cleanup`) — a
+   rejected attempt retires nothing, since a bad translation is exactly
+   what produces false drift. Retired terms are never re-added by `seed`
+   or GLOSSARY_EXPAND. Kept signals are appended to the FAITH reviewer's
+   prompt (see stage 4), which owns the verdict; cleanup errors are
+   fail-safe (`[warn] glossary cleanup failed - keeping all signals`).
+4. **FAITH** — the `reviewer` provider judges faithfulness line by line.
    The reviewer also receives any kept BALANCE drift signals as heuristic
    term-consistency flags: it fails on genuine terminology drift but not on
    legitimate counting false positives (nested compounds,
    inflections/hyphenations, generic words). FAILURE reasons become
    feedback.
+5. **GLOSSARY_EXPAND** — the model proposes new drift-prone terms (names,
+   places, skills, orgs...); identical duplicates are skipped, conflicting
+   ones are merged by the model into the existing entry. Runs only on the
+   attempt FAITH just accepted — new terms lock in after the translation is
+   accepted, never from a rejected one (a chapter that ends needs-review
+   adds no terms). BALANCE's deferred retirements are applied here first,
+   on the same acceptance gate.
 6. **TN_GENERATE / TN_DEDUP** — the `annotator` provider proposes translation
    notes with line indices; self-assessed low-confidence (`threshold: "low"`)
    notes are dropped by default (set `tn_keep_low_confidence` true to keep
@@ -308,7 +315,8 @@ background build too.
   config skips the build with a warning — the commands themselves don't
   need config.json. Balance drift signals (advisory)
   may auto-retire mundane glossary terms via `glossary_auto_cleanup`
-  (default true; check console/trace `glossary_cleanup` events); nothing
+  (default true; retirement is applied only after the chapter's translation
+  is accepted; check console/trace `glossary_cleanup` events); nothing
   blocks on balance anymore — enforcement is the FAITH reviewer's call.
   Retired entries never come back via `seed` or GLOSSARY_EXPAND — remove a
   source from glossary.json's `retired` list to allow re-adding. Re-run
