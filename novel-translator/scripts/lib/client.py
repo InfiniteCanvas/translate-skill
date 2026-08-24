@@ -130,7 +130,9 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     and once with the response (raw content, finish_reason, usage, elapsed,
     error) after it completes or exhausts retries. Both metas carry the same
     call_id and an "event" field ("llm_request" / "llm_response") so they
-    pair up as two JSONL lines per call.
+    pair up as two JSONL lines per call — a call that hits the 400 fallback
+    (retry without response_format) adds one extra "llm_request" line for
+    the retried request.
     """
     base_url = _v1_url(str(provider_cfg["base_url"]))
     url = base_url + "/chat/completions"
@@ -170,9 +172,6 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             "type": "json_schema",
             "json_schema": {"name": "response", "schema": json_schema},
         }
-
-    # Optional auth for hosted providers; local sglang needs none.
-    headers = auth_headers(provider_cfg)
 
     call_id = uuid.uuid4().hex[:12]
 
@@ -226,6 +225,8 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
 
         if resp.status_code == 400 and "response_format" in body:
             body.pop("response_format")
+            if meta_hook:  # log the retried request; it differs from the first
+                meta_hook(_request_meta())
             continue
 
         if resp.status_code == 429 or resp.status_code >= 500:

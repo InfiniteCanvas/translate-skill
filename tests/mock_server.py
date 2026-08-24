@@ -5,7 +5,7 @@ Serves:
   POST /v1/chat/completions  -> canned responses, sniffed from prompt content:
        - asks for a "verdict"      -> faithfulness check (SUCCESS)
        - asks for "notes"          -> one translation note (term 测试)
-       - merge prompt ("Merge")    -> merged glossary entry
+       - merge prompt ("Merge them into ONE canonical entry") -> merged glossary entry
        - asks for "style_summary"  -> mock style profile (summary + background)
        - "Flagged Terms" prompt     -> glossary cleanup: remove every flagged term
        - asks for "terms"          -> no new glossary terms
@@ -74,7 +74,7 @@ def mock_reply(prompt: str) -> str:
         return json.dumps(
             {"notes": [{"line": 1, "term": "测试", "note": "A test note about 测试."}]}
         )
-    if "Merge" in prompt[:400] or "merge" in prompt[:400]:
+    if "Merge them into ONE canonical entry" in prompt:
         return json.dumps(
             {
                 "source": "测试",
@@ -86,7 +86,7 @@ def mock_reply(prompt: str) -> str:
     if "style_summary" in prompt:
         return json.dumps({"style_summary": "A mock literary style.", "background": "A mock novel background."})
     if "Flagged Terms" in prompt:
-        # glossary cleanup after a balance failure: remove every flagged term
+        # glossary cleanup on balance drift signals: remove every flagged term
         terms = re.findall(r"- (\S+) translates to", prompt)
         return json.dumps(
             {"decisions": [{"source": t, "keep": False, "reason": "mundane mock term"} for t in terms]}

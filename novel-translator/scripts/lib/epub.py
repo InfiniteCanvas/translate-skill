@@ -71,7 +71,7 @@ def chapter_md_to_xhtml(md_path: Path) -> tuple[str, str, bool]:
     body_lines = lines if tn_start is None else lines[:tn_start]
     note_lines = [] if tn_start is None else lines[tn_start + 1 :]
 
-    # Definitions: [^3]: **term** -- note text
+    # Definitions: [^3]: **term** — note text
     definitions: dict[int, str] = {}
     for line in note_lines:
         match = _DEFINITION_RE.match(line.strip())

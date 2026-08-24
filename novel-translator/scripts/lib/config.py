@@ -31,7 +31,7 @@ DEFAULTS: dict = {
     # roughly how many source characters to include in the prompt.
     "style_sample_chapters": 4,
     "style_sample_chars": 12000,
-    # Full request/response trace to logs/llm-YYYYMMDD.jsonl.
+    # Full request/response trace, one log per CLI invocation (see log_llm_keep_runs).
     "log_llm": True,
     # One logs/llm-*.jsonl per CLI invocation; at each run's start older
     # logs are pruned to the newest log_llm_keep_runs files (by mtime).

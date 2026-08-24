@@ -19,7 +19,6 @@ from typing import Any
 from lib import assemble, autobuild, balance, client, config, glossary, logger, project, styles, tn
 
 STAGES = (
-    "PREP",
     "TRANSLATE",
     "VALIDATE",
     "BALANCE",
@@ -457,28 +456,28 @@ def _apply_glossary_proposal(
     glossary.upsert(g, updated)  # defensive: existing entry was not found in the list
 
 
-def _cleanup_balance_failures(project_dir: Path, cfg: dict, tpl: str,
-                              failures: list[dict], source_body: str, tag: str,
-                              chapter: str | None = None) -> list[dict]:
+def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
+                           signals: list[dict], source_body: str, tag: str,
+                           chapter: str | None = None) -> list[dict]:
     """Ask the glossary job whether balance drift-signal terms deserve
     glossary entries; retire the mundane ones. Runs on advisory drift
-    signals, not gate failures. Returns the failures to KEEP (all of
+    signals, not gate failures. Returns the signals to KEEP (all of
     them on any error — cleanup must never block or remove on uncertainty)."""
     try:
         term_list = "\n".join(
-            f"- {f['source']} translates to \"{f['translation']}\" — source "
-            f"{f['src_count']}x, canonical rendering {f['tgt_count']}x"
-            for f in failures
+            f"- {s['source']} translates to \"{s['translation']}\" — source "
+            f"{s['src_count']}x, canonical rendering {s['tgt_count']}x"
+            for s in signals
         )
         sample_lines: list[str] = []
         seen: set[str] = set()
-        for f in failures:
+        for s in signals:
             taken = 0
             for line in source_body.split("\n"):
                 if taken >= 2 or len(sample_lines) >= 12:
                     break
                 stripped = line.strip()
-                if stripped and f["source"] in line and stripped not in seen:
+                if stripped and s["source"] in line and stripped not in seen:
                     seen.add(stripped)
                     sample_lines.append(stripped)
                     taken += 1
@@ -494,14 +493,14 @@ def _cleanup_balance_failures(project_dir: Path, cfg: dict, tpl: str,
         decisions = data.get("decisions") if isinstance(data, dict) else None
         if not isinstance(decisions, list):
             raise ValueError("expected a 'decisions' array")
-        failing_sources = {f["source"] for f in failures}
+        signal_sources = {s["source"] for s in signals}
         reasons: dict[str, str] = {}
         to_remove: set[str] = set()
         for decision in decisions:
             if not isinstance(decision, dict) or decision.get("keep") is not False:
                 continue
             src = decision.get("source")
-            if isinstance(src, str) and src in failing_sources:
+            if isinstance(src, str) and src in signal_sources:
                 to_remove.add(src)
                 reason = decision.get("reason")
                 reasons[src] = reason if isinstance(reason, str) and reason.strip() else "mundane term"
@@ -515,12 +514,12 @@ def _cleanup_balance_failures(project_dir: Path, cfg: dict, tpl: str,
         event["removed"] = [
             {"source": src, "reason": reasons.get(src, "mundane term")} for src in removed
         ]
-        event["kept"] = [f["source"] for f in failures if f["source"] not in removed_set]
+        event["kept"] = [s["source"] for s in signals if s["source"] not in removed_set]
         logger.log_event(project_dir, event)
-        return [f for f in failures if f["source"] not in removed_set]
-    except Exception as exc:  # noqa: BLE001 - fail-safe: keep every failure
-        print(f"{tag} [warn] glossary cleanup failed - keeping all failures: {exc}")
-        return failures
+        return [s for s in signals if s["source"] not in removed_set]
+    except Exception as exc:  # noqa: BLE001 - fail-safe: keep every signal
+        print(f"{tag} [warn] glossary cleanup failed - keeping all signals: {exc}")
+        return signals
 
 
 def _estimate_output_tokens(lines: list[str]) -> int:
@@ -929,7 +928,6 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             try:
                 drift_signals, warnings, over_count = balance.check(
                     pairs,
-                    body_for_counts,
                     lines,
                     _cfg_value(cfg, "min_term_coverage"),
                     _cfg_value(cfg, "fuzzy_max_distance"),
@@ -953,7 +951,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                         # retire the ones that don't. All signals cleaned ->
                         # nothing to forward (the translation itself was
                         # fine).
-                        drift_signals = _cleanup_balance_failures(
+                        drift_signals = _cleanup_drift_signals(
                             project_dir, cfg, tpl_glossary_cleanup,
                             drift_signals, body_for_counts, tag, chapter=file,
                         )

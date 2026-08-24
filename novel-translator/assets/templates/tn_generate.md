@@ -1,7 +1,5 @@
 You are reviewing a translated chapter of a {{source_lang}} novel for cultural adaptation.
 
-[Background Information]
-
 {{background_section}}
 
 [Source Text]

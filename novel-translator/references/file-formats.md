@@ -25,10 +25,11 @@ hand-fix.
 └── logs/                llm-*-<command>-<pid>.jsonl (one LLM trace per CLI invocation, newest log_llm_keep_runs kept); epub-build.log (background epub-build output)
 ```
 
-Chapter file names must match `Chapter_NNNN.md` (4-digit zero-padded number),
-optionally with a lowercase letter suffix for extras/bonus chapters:
+Chapter file names must match `Chapter_NNNN.md` (1-4 digit zero-padded
+number), optionally with a lowercase letter suffix for extras/bonus chapters:
 `Chapter_0042a.md` sorts between `Chapter_0042.md` and `Chapter_0043.md`.
-Chapter order = position in the lexicographically sorted file list; that order
+Chapter order = position in the file list sorted numerically by the parsed
+`(number, suffix)` — so `Chapter_999` sorts before `Chapter_1000`; that order
 is written into each source file's frontmatter and into `chapters.json` as
 `order` (0-based), and ALL chapter-distance logic (the translation-note gap)
 measures distance in `order` units.
@@ -90,7 +91,9 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "max_notes_per_chapter": 10,
   "translate_max_output_tokens": 8192, // per-call OUTPUT cap (card recommends 4k-8k) + chunk threshold: expected output above this splits the chapter; input context is never limited
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation (--style auto only)
-  "style_sample_chars": 12000    // rough source-character budget for the sample (--style auto only)
+  "style_sample_chars": 12000,   // rough source-character budget for the sample (--style auto only)
+  "log_llm": true,               // full request/response LLM trace; false disables the LLM trace lines only
+  "log_llm_keep_runs": 5         // one llm-*.jsonl per CLI invocation; older logs pruned to the newest N (by mtime)
 }
 ```
 
@@ -211,7 +214,11 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
 
 Keyed by the source term. A note is attached to a chapter only if the term was
 never annotated, or the last annotation is more than `tn_gap_chapters` order
-positions away. `last_order`/`times` are managed by the tool. Notes the model
+positions away — and even within the gap, only an annotation from an
+earlier, different chapter suppresses. A note recorded in the SAME chapter
+(retranslate/retry) is restored, and retranslating an earlier chapter after
+a later one annotated the term re-annotates it (the reader hits the earlier
+chapter first). `last_order`/`times` are managed by the tool. Notes the model
 self-assessed as `threshold: "low"` are dropped before all of this unless
 `tn_keep_low_confidence` is true.
 
@@ -222,10 +229,10 @@ For `Chapter_0001.md` the pipeline creates:
 | File | Contents |
 |---|---|
 | `Chapter_0001.md` | human-readable current translation draft (frontmatter + lines) |
-| `Chapter_0001.lines.json` | `{"title": "...", "lines": [...]}` — the machine array |
-| `Chapter_0001.state.json` | pipeline state: `{"stage", "attempt", "feedback": [...], "notes": [...], "updated_at"}` |
+| `Chapter_0001.lines.json` | `{"title": "...", "lines": [...]}` — written per attempt as a debug artifact; nothing reads it back |
+| `Chapter_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "feedback": [...], "notes": [...], "updated_at"}` — `title`/`lines` hold the draft translation (crash-resume past TRANSLATE) |
 
-`stage` is one of `PREP, TRANSLATE, VALIDATE, BALANCE, GLOSSARY_EXPAND, FAITH,
+`stage` is one of `TRANSLATE, VALIDATE, BALANCE, GLOSSARY_EXPAND, FAITH,
 TN_GENERATE, TN_DEDUP, ASSEMBLE`. `feedback` accumulates everything the gates
 rejected (faithfulness reasons, including genuine term drift flagged by
 balance signals) and is re-injected into
@@ -262,7 +269,7 @@ One translated paragraph per line, same count as the source.[^1]
   carries the translated title in the frontmatter `title` field only — such
   chapters have one fewer body line than their source file.
 - The `## Translator's Notes` section is always last if present.
-- TOC label = `title` (falls back to `chapter_title`).
+- TOC label = `title` (falls back to `chapter_title`, then the file stem).
 
 During `translate`/`retry`, `build-epub` also runs automatically after every
 chapter reaches `translated`: per-chapter rebuilds are serialized (with a
@@ -281,9 +288,9 @@ after filling — typos fail fast.
 
 | Template | Filled for | Placeholders |
 |---|---|---|
-| `translation.md` | TRANSLATE (per chunk) | `source_lang target_lang glossary feedback_section chapter_title chunk_info style background_section source_lines line_count` |
+| `translation.md` | TRANSLATE (per chunk) | `target_lang glossary feedback_section chapter_title chunk_info style background_section source_lines line_count` |
 | `glossary_expand.md` | GLOSSARY_EXPAND | `source_lang target_lang glossary source_lines translation_lines max_terms` |
-| `faithfulness.md` | FAITH | `source_lang target_lang source_lines translation_lines background_section` |
+| `faithfulness.md` | FAITH | `source_lang target_lang source_lines translation_lines background_section balance_signals_section` |
 | `tn_generate.md` | TN_GENERATE | `source_lang target_lang source_lines translation_lines background_section max_notes` |
 | `glossary_merge.md` | glossary collision merge | `existing_json proposed_json` |
 | `glossary_cleanup.md` | balance drift-signal cleanup | `source_lang target_lang term_list sample_lines` |
@@ -321,12 +328,13 @@ robust extraction as fallback:
   chapter-global index) and each translated line echoes its input `i`.
   Coverage is verified exactly (missing/duplicate/out-of-range indices become
   corrective feedback). Chapters whose body opens with a line identical to the
-  frontmatter `chapter_title` have that line stripped at PREP — the title is
-  carried by the frontmatter `title` field instead.
+  frontmatter `chapter_title` have that line stripped during per-attempt
+  preparation (before TRANSLATE) — the title is carried by the frontmatter
+  `title` field instead.
 - GLOSSARY_EXPAND → `{"terms": [{"source", "variants": [str], "translation", "definition", "category"}]}` —
-  proposals whose source is contained in a known term with the same
-  translation (nicknames/short forms) are absorbed as variants, never
-  separate entries
+  a proposal whose source is contained in a known term's source, or contains
+  it, with the same translation (nicknames/short forms) is absorbed as a
+  variant of the known entry, never a separate entry
 - FAITH → `{"verdict": "SUCCESS"|"FAILURE", "reasons": [str]}`
 - TN_GENERATE → `{"notes": [{"line": int, "term": str, "note": str, "threshold": "high"|"low"}]}` —
   the threshold is the model's self-assessed comprehension judgment
@@ -348,7 +356,7 @@ robust extraction as fallback:
 `alt_translations` is optional but recommended for terms with more than one
 accepted rendering — the balance check counts `translation` +
 `alt_translations` in the translated text, so listing the alternatives
-prevents false drift failures.
+prevents false drift signals.
 
 Catalogues are split by domain, not just language: `zh` currently ships three
 (`zh-cultivation.json`, `zh-wuxia.json`, `zh-modern.json`). A catalogue for a

@@ -67,9 +67,10 @@ through uv automatically):
        uv run scripts/translate.py ping --project .
 
    `ping` tries `GET /models` first (with auth headers when the provider
-   has `api_key`/`api_key_env`); hosted providers that don't serve that
-   route fall back to a minimal chat completion, so an `[ok] ... (chat ok;
-   /models failed: ...)` line still means the provider works.
+   has `api_key`/`api_key_env`); hosted providers with an explicit `model`
+   configured that don't serve that route fall back to a minimal chat
+   completion, so an `[ok] ... (chat ok; /models failed: ...)` line still
+   means the provider works.
 
 ## Daily loop
 
@@ -100,8 +101,8 @@ rerun resumes where it stopped. Chapters in `needs-review` are skipped by
 
       uv run scripts/translate.py status --why --project .
 
-  prints the most recent reviewer feedback for every `needs-review`
-  chapter.
+  prints the last few accumulated feedback entries (from any stage —
+  translate, validate, or faith) for every `needs-review` chapter.
 - Fully manual chapters: write `translated/Chapter_NNNN.md` yourself
   following the format described in `references/file-formats.md`, then:
 
@@ -157,7 +158,7 @@ details land in `logs/epub-build.log`.
   `extra_body` on a provider block merges provider-specific parameters
   verbatim into the request body (after the known knobs, before
   `response_format`; not sent by ping's minimal probe).
-- Thresholds: `min_term_coverage (advisory usage floor; zero renderings become drift signals for the FAITH reviewer)`, `tn_gap_chapters`, `max_attempts`,
+- Thresholds: `min_term_coverage` (advisory usage floor; zero renderings become drift signals for the FAITH reviewer), `tn_gap_chapters`, `max_attempts`,
   `translate_max_output_tokens`, `style_sample_chapters` / `style_sample_chars`
   (only used by `--style auto`), `contextual_glossary_cap`.
 - `tn_keep_low_confidence` (default false) — keep notes the annotator
@@ -171,15 +172,24 @@ details land in `logs/epub-build.log`.
   mundane terms are retired from `glossary.json` (never re-added) while
   kept signals go to the faithfulness reviewer; set false to disable the
   retirement.
+- `fuzzy_max_distance` (default 2) -- Levenshtein tolerance for word
+  matches in the balance check.
+- `max_new_terms_per_chapter` (default 15) -- cap on new glossary terms
+  proposed per chapter.
+- `max_notes_per_chapter` (default 10) -- cap on translator's notes
+  generated per chapter.
 
 Every file schema (manifest, chapter state, glossary, notes, novel_info)
 is documented in `references/file-formats.md`.
 ## Debugging
 
-Every LLM call is TWO lines in the run log — `logs/llm-<timestamp>-<command>-<pid>.jsonl`,
-one file per CLI invocation: an `llm_request`
-line (params + full prompt, written before the call) and an `llm_response`
-line (raw response, finish_reason, usage, timing), paired by `call_id`.
+Every LLM call logs an `llm_request` line and an `llm_response` line in the
+run log — `logs/llm-<timestamp>-<command>-<pid>.jsonl`, one file per CLI
+invocation: the request (params + full prompt, written before the call) and
+the response (raw response, finish_reason, usage, timing), paired by
+`call_id`; a call that hits the 400 fallback (retry without
+`response_format`) adds one extra `llm_request` line for the retried
+request.
 Pipeline attempts, `balance_advisory` events (which now carry drift
 signals alongside under-use warnings and over-count info), and
 `glossary_cleanup` events are interleaved in the same stream. The
@@ -188,6 +198,6 @@ Each run prunes older logs to the newest `log_llm_keep_runs` (default 5);
 disable the LLM lines with `log_llm: false` in config.json.
 
 Background epub builds append their output (including epubcheck results) to
-`logs/epub-build.log`, with `=== epub build after Chapter_NNNN | timestamp ===`
+`logs/epub-build.log`, with `=== epub build after Chapter_NNNN.md | timestamp ===`
 separators between builds.
 

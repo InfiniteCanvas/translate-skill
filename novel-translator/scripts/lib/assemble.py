@@ -27,7 +27,7 @@ def assemble(
       appends "[^n]" to the end of lines[note["line"]] (after rstripping that
       line). Multiple notes on one line stack as "[^1][^2]".
     - If notes: blank line, "## Translator's Notes", blank line, then one
-      "[^n]: **{term}** -- {note}" definition per note.
+      "[^n]: **{term}** — {note}" definition per note.
     """
     fm: dict[str, Any] = dict(frontmatter)
     fm["title"] = translated_title

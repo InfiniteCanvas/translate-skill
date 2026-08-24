@@ -92,12 +92,11 @@ def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
     return total
 
 
-def check(pairs: list[tuple[dict, int]], source_body: str,
+def check(pairs: list[tuple[dict, int]],
           translated_lines: list[str], min_coverage: float = 0.25,
           fuzzy_max: int = 2) -> tuple[list[dict], list[str], list[str]]:
     """Compare source-side counts (pairs from glossary.contextual()) against
-    target-side counts. source_body is accepted for interface symmetry (the
-    source counts arrive via pairs).
+    target-side counts.
 
     Three-tier, mostly-advisory semantics. The gate exists to catch DRIFT (a
     term rendered not at all); everything else is a counting heuristic too
@@ -105,7 +104,7 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
     inside "Senior Brother"; generic English words: "plot", "system";
     noun-frequency mismatch between Chinese and English).
 
-    Returns (drift_signals, warnings, info):
+    Returns (drift_signals, warnings, over_count):
     - drift_signals (advisory, surfaced to the FAITH reviewer, who owns the
       pass/fail verdict): one dict per term whose canonical rendering is
       absent entirely while the term appears src >= 2 times — the reliable
@@ -116,13 +115,13 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
     - warnings (advisory, console + trace log): canonical rendering below
       the usage floor ceil(min_coverage * src) — possible under-use, but
       natural English legitimately repeats nouns less than Chinese.
-    - info (trace log only): target count above src + max(2, src) — the
+    - over_count (trace log only): target count above src + max(2, src) — the
       most false-positive-prone direction; recorded for the human, never
       blocking.
     """
     drift_signals: list[dict] = []
     warnings: list[str] = []
-    info: list[str] = []
+    over_count: list[str] = []
     for entry, src_count in pairs:
         tgt_count = count_in_target(entry, translated_lines, fuzzy_max)
         floor = max(1, math.ceil(src_count * min_coverage))
@@ -149,9 +148,9 @@ def check(pairs: list[tuple[dict, int]], source_body: str,
                 f"(floor {floor}) — possible under-use."
             )
         elif extra > max(2, src_count):
-            info.append(
+            over_count.append(
                 f"'{term}' rendered {tgt_count}/{src_count} times "
                 f"(ceiling {src_count + max(2, src_count)}) — possible count "
                 "contamination from shared renderings or generic words."
             )
-    return drift_signals, warnings, info
+    return drift_signals, warnings, over_count

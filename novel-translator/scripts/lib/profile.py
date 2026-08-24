@@ -10,6 +10,10 @@ from pathlib import Path
 from lib import client, config, logger, project
 from lib.pipeline import LANG_NAMES, fill
 
+# Fallback template source: the skill's shipped assets. Projects initialized
+# before a template was introduced lack a copy in their templates/ dir.
+_SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
+
 PROFILE_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -36,7 +40,9 @@ def generate_profile(
 
     Samples up to sample_chapters random source chapters, concatenates their
     bodies until roughly sample_chars characters are collected (truncating the
-    last one at a line boundary), fills templates/style_profile.md, and asks
+    last one at a line boundary), fills templates/style_profile.md (falling
+    back to the skill's shipped assets/templates for projects initialized
+    before the template existed), and asks
     the "profile" provider. Raises ProfileError on any failure.
     """
     chapters = project.discover(project_dir)
@@ -65,9 +71,15 @@ def generate_profile(
     if not sample_text:
         raise ProfileError("sampled chapters contained no text")
 
-    tpl_path = project.paths(project_dir)["templates"] / "style_profile.md"
+    templates_dir = project.paths(project_dir)["templates"]
+    tpl_path = templates_dir / "style_profile.md"
     if not tpl_path.is_file():
-        raise ProfileError(f"missing template: {tpl_path}")
+        tpl_path = _SKILL_TEMPLATES / "style_profile.md"
+    if not tpl_path.is_file():
+        raise ProfileError(
+            f"missing template: style_profile.md "
+            f"(looked in {templates_dir} and {_SKILL_TEMPLATES})"
+        )
     prompt = fill(
         tpl_path.read_text(encoding="utf-8"),
         {

@@ -31,7 +31,7 @@ markdown contract).
 
 ### 1. Prepare source material
 
-The user provides `source/Chapter_NNNN.md` files (4-digit zero-padded; extras
+The user provides `source/Chapter_NNNN.md` files (1-4 digit zero-padded; extras
 get a letter suffix: `Chapter_0042a.md`). Each file has YAML frontmatter with
 `source_url`, `novel_title`, `chapter_title`, `author`. If chapters arrive
 without frontmatter, create it from the info the user gives you — `init`
@@ -84,8 +84,9 @@ the novel's synopsis/source page by editing `novel_info.json` before
 translating. `style.md` is hand-editable; edits apply on the next
 translate without re-init. `--style auto` is the legacy model-generated
 profile path (`novel_info.json:style_profile`, one LLM call over a random
-sample of source chapters; regenerate with the `profile` subcommand) for
-novels that fit no preset; `--skip-profile` is a no-op for preset styles,
+sample of source chapters; regenerate with the `profile` subcommand, whose
+`--chapters N` / `--chars N` flags override the sample size) for novels
+that fit no preset; `--skip-profile` is a no-op for preset styles,
 and with `--style auto` it skips the profile LLM call.
 `status` prints the active style line.
 
@@ -101,26 +102,29 @@ chapters translate more consistently than earlier ones. Already-`translated`
 chapters are skipped; `--force` retranslates anyway.
 
 Each chapter runs through a state machine (resumable; safe to Ctrl-C and
-rerun the same command):
+rerun the same command). Per-attempt preparation happens inline before the
+state machine rather than being a resumable stage: every attempt splits the
+source into an indexed JSON line array and builds the *contextual glossary*
+(only glossary terms actually appearing in this chapter, capped at 200,
+sorted by frequency):
 
-1. **PREP** — split the source into an indexed JSON line array; build the
-   *contextual glossary* (only glossary terms actually appearing in this
-   chapter, capped at 200, sorted by frequency).
-2. **TRANSLATE** — fill `templates/translation.md`, call the `translator`
+1. **TRANSLATE** — fill `templates/translation.md`, call the `translator`
    provider with the WHOLE chapter when its expected output fits
    `translate_max_output_tokens` (default 8k, the model card's recommended
    output range); longer chapters split into parts sized to that output cap,
    each still carrying style background and the previous part's tail as
    input context. The numbered-line protocol plus the corrective retry keep
    the one-line-in/one-line-out contract intact.
-3. **VALIDATE** — line count must match the source exactly; empty lines stay
+2. **VALIDATE** — line count must match the source exactly; empty lines stay
    empty. Structural violations go back as feedback.
-4. **BALANCE** — for every contextual glossary term: count occurrences in
+3. **BALANCE** — for every contextual glossary term: count occurrences in
    source vs translation (fuzzy, Levenshtein ≤ 2; cross-entry longest-first,
    so a term nested inside a longer glossary compound — e.g. 仙界 inside
    修仙界 — is credited to the longer term only). Fully advisory: nothing
    fails here. All three tiers (drift signals, under-use warnings, over-count
-   info) surface as `balance_advisory` trace events and console `[warn]`s.
+   info) surface as `balance_advisory` trace events; only drift signals and
+   under-use warnings also print console `[warn]`s (over-count is
+   trace-only).
    Drift signals (canonical rendering absent while the term appears ≥2× in
    the source) first run the same cleanup judgment as before (one
    `glossary`-provider call, `templates/glossary_cleanup.md`): KEEP terms
@@ -131,24 +135,24 @@ rerun the same command):
    Removed terms are dropped from `glossary.json` into its `retired` list
    (console: `[glossary] retired mundane term '...'`; trace event
    `glossary_cleanup`) and never re-added by `seed` or GLOSSARY_EXPAND. Kept
-   signals are appended to the FAITH reviewer's prompt (see stage 6), which
+   signals are appended to the FAITH reviewer's prompt (see stage 5), which
    owns the verdict; cleanup errors are fail-safe (`[warn] glossary cleanup
-   failed - keeping all failures`).
-5. **GLOSSARY_EXPAND** — the model proposes new drift-prone terms (names,
+   failed - keeping all signals`).
+4. **GLOSSARY_EXPAND** — the model proposes new drift-prone terms (names,
    places, skills, orgs...); identical duplicates are skipped, conflicting
    ones are merged by the model into the existing entry.
-6. **FAITH** — the `reviewer` provider judges faithfulness line by line.
+5. **FAITH** — the `reviewer` provider judges faithfulness line by line.
    The reviewer also receives any kept BALANCE drift signals as heuristic
    term-consistency flags: it fails on genuine terminology drift but not on
    legitimate counting false positives (nested compounds,
    inflections/hyphenations, generic words). FAILURE reasons become
    feedback.
-7. **TN_GENERATE / TN_DEDUP** — the `annotator` provider proposes translation
+6. **TN_GENERATE / TN_DEDUP** — the `annotator` provider proposes translation
    notes with line indices; self-assessed low-confidence (`threshold: "low"`)
    notes are dropped by default (set `tn_keep_low_confidence` true to keep
    them); a note is kept only if the term wasn't annotated
    within the last `tn_gap_chapters` (default 10) chapters (`tn_history.json`).
-8. **ASSEMBLE** — write `translated/Chapter_NNNN.md` with epub3-ready
+7. **ASSEMBLE** — write `translated/Chapter_NNNN.md` with epub3-ready
    footnote markers; auto-promote. On gate failure the chapter retried up to
    `max_attempts` (default 3) with all accumulated feedback injected into each
    retry; then it becomes `needs-review`.
@@ -204,8 +208,8 @@ batch end guarantees the finished epub includes every chapter. `export/`
 thus always holds a current, epubcheck-validated epub — no manual builds
 during long batches. Child build output (incl. epubcheck results) appends
 to `logs/epub-build.log` with
-`=== epub build after Chapter_NNNN | timestamp ===` separators; the console
-prints `[epub-auto] build ok (after Chapter_NNNN)`. Failures are warnings
+`=== epub build after Chapter_NNNN.md | timestamp ===` separators; the console
+prints `[epub-auto] build ok (after Chapter_NNNN.md)`. Failures are warnings
 only and never change the translate/retry exit code (which still reflects
 translation status). Set `auto_build_epub: false` (default true) in
 `config.json` to build only via the command above; Ctrl-C kills a running
@@ -247,7 +251,9 @@ background build too.
   Retired entries never come back via `seed` or GLOSSARY_EXPAND — remove a
   source from glossary.json's `retired` list to allow re-adding. Re-run
   seeding with `uv run "$SCRIPT" seed --project .` after adding chapters or
-  editing a catalogue.
+  editing a catalogue; `--min-count N` overrides the seed threshold for the
+  run, and `--catalogue PATH` (repeatable) adds an explicit catalogue file,
+  bypassing the language filter.
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.

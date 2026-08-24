@@ -152,13 +152,12 @@ def case_8_balance_drift() -> None:
     """balance.check: drift signal iff src >= 2 and canonical rendering absent."""
     xianjie = {"source": "仙界", "translation": "Immortal Realm"}
     pairs = [(xianjie, 2)]
-    src_body = "他飞升去了仙界。仙界广阔无垠。"
 
     lines_a = [
         "He returned to the immortal cultivation world.",
         "Spiritual energy filled the immortal cultivation world.",
     ]
-    drift_a, _warn_a, _info_a = balance.check(pairs, src_body, lines_a)
+    drift_a, _warn_a, _info_a = balance.check(pairs, lines_a)
     check("8a balance: exactly 1 drift signal when rendering absent",
           len(drift_a) == 1, f"drift={drift_a}")
     if drift_a:
@@ -179,7 +178,7 @@ def case_8_balance_drift() -> None:
         "He ascended to the Immortal Realm.",
         "Past the Immortal Realm's edge lies mist.",
     ]
-    drift_b, _warn_b, _info_b = balance.check(pairs, src_body, lines_b)
+    drift_b, _warn_b, _info_b = balance.check(pairs, lines_b)
     check("8d balance: zero drift signals when rendering present",
           len(drift_b) == 0, f"drift={drift_b}")
 

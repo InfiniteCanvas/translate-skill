@@ -1,7 +1,5 @@
 You are a strict, skeptical QA reviewer for a {{source_lang}} -> {{target_lang}} literary translation. Trust nothing; verify every line.
 
-[Background Information]
-
 {{background_section}}
 
 [Source Text]
