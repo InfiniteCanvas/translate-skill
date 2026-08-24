@@ -101,6 +101,7 @@ def mock_reply(prompt: str) -> str:
             "source": first, "kind": "mistranslation", "severity": "warn",
             "reason": "mock glossary review finding",
             "suggestion": "Mock Fix",
+            "action": "Set the translation field for this entry to the suggested rendering.",
         }]})
     if '"terms"' in prompt:
         return json.dumps({"terms": []})

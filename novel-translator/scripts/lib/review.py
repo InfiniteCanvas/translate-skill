@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,9 @@ REVIEW_SCHEMA: dict[str, Any] = {
                     "severity": {"type": "string", "enum": list(SEVERITIES)},
                     "reason": {"type": "string"},
                     "suggestion": {"type": "string"},
+                    "action": {"type": "string"},
                 },
-                "required": ["source", "kind", "severity", "reason", "suggestion"],
+                "required": ["source", "kind", "severity", "reason", "suggestion", "action"],
             },
         }
     },
@@ -69,6 +71,7 @@ def _finding(entry: dict, kind: str, severity: str, reason: str) -> dict:
         "severity": severity,
         "reason": reason,
         "suggestion": "",  # heuristic tier never proposes fixes
+        "action": "",
         "origin": "heuristic",
     }
 
@@ -224,12 +227,14 @@ def _model_findings(
                 if not isinstance(reason, str) or not reason.strip():
                     continue
                 suggestion = row.get("suggestion")
+                action = row.get("action")
                 findings.append({
                     "source": source,
                     "kind": kind,
                     "severity": severity,
                     "reason": reason,
                     "suggestion": suggestion if isinstance(suggestion, str) else "",
+                    "action": action if isinstance(action, str) else "",
                     "origin": "model",
                 })
         except Exception as exc:  # one bad batch must not kill the whole review
@@ -264,11 +269,14 @@ def review_glossary(
         h = by_key.get((mf["source"], mf["kind"]))
         if h is None:
             findings.append(mf)
-        elif not h.get("suggestion") and mf.get("suggestion"):
+            continue
+        if not h.get("suggestion") and mf.get("suggestion"):
             # Heuristic won the reporting slot, but the fix is model-sourced:
             # mark it so --fix may still apply it (apply_fixes gates on that).
             h["suggestion"] = mf["suggestion"]
             h["fixable"] = True
+        if not h.get("action") and mf.get("action"):
+            h["action"] = mf["action"]
     findings.sort(key=lambda f: (SEVERITIES.index(f["severity"]), f["source"]))
     return {
         "entries": len(entries),
@@ -281,6 +289,141 @@ def review_glossary(
 def field_for_kind(kind: str) -> str | None:
     """The glossary field a fixable kind amends (None = report-only kind)."""
     return _FIELD_BY_KIND.get(kind)
+
+
+REPORT_NAME = "review-report.md"
+
+
+def _action_text(finding: dict, source_name: str, target_name: str) -> str:
+    """Deterministic per-kind fix instruction for the report's Action line."""
+    kind = finding.get("kind", "other")
+    suggestion = str(finding.get("suggestion") or "").strip()
+    if kind in ("mistranslation", "wrong_language"):
+        if suggestion:
+            return f'Set the `translation` field of this entry to "{suggestion}".'
+        return (f"Decide the correct {target_name} rendering and update the "
+                "`translation` field.")
+    if kind == "definition":
+        if suggestion:
+            return f'Set `definition` to "{suggestion}".'
+        return "Rewrite `definition` so it accurately describes the term in one sentence."
+    if kind == "category":
+        if suggestion:
+            return f'Set `category` to "{suggestion}".'
+        return f"Set `category` to one of: {', '.join(glossary.CATEGORIES)}."
+    if kind == "variant":
+        return ("Remove the flagged string from `variants` (variants are "
+                f"{source_name}-script spellings of the source); move it to "
+                "`alt_translations` only if it is an alternative translation.")
+    if kind == "duplicate":
+        return ("Merge this entry with the other owner of the same string: combine "
+                "`variants`, keep one entry, delete the other, and add the deleted "
+                'source to the top-level "retired" list so it is not re-added.')
+    if kind == "collision":
+        return ("Give this entry a `translation` distinct from the other entry's, "
+                "or move the shared rendering to `alt_translations`.")
+    return "Review this entry and correct it as judged."
+
+
+def write_report(
+    project_dir: Path, *, findings: list[dict], terms: list[dict],
+    applied: list[dict], skipped: list[dict], ran_fix: bool,
+    batches: int, batch_errors: list[str], cfg: dict,
+) -> Path:
+    """Write the indexed, agent-actionable <project>/review-report.md.
+
+    Findings whose kind-field was fixed this run (same (source, field) as an
+    applied fix) are excluded from the numbering and listed under "Fixed
+    automatically" instead — indices only cover outstanding work. Returns the
+    report path."""
+    source_name = _lang_name(cfg.get("source_lang"))
+    target_name = _lang_name(cfg.get("target_lang"))
+    by_source: dict[str, dict] = {}
+    for entry in terms:
+        src = entry.get("source")
+        if isinstance(src, str) and src not in by_source:
+            by_source[src] = entry
+
+    resolved = {(a["source"], a["field"]) for a in applied}
+
+    def outstanding(f: dict) -> bool:
+        field = _FIELD_BY_KIND.get(f.get("kind"))
+        return field is None or (f.get("source"), field) not in resolved
+
+    open_findings = [f for f in findings if outstanding(f)]
+    n_warn = sum(1 for f in open_findings if f["severity"] == "warn")
+    n_info = len(open_findings) - n_warn
+
+    lines: list[str] = [
+        "# Glossary Review Report",
+        "",
+        f"- Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        "- Command: `review glossary`" + (" `--fix`" if ran_fix else ""),
+        f"- Languages: {source_name} -> {target_name}",
+        f"- Entries reviewed: {len(terms)} ({batches} model batch(es)"
+        + (f", {len(batch_errors)} batch error(s) — findings from failed batches are missing"
+           if batch_errors else "") + ")",
+        f"- Outcome: {n_warn} warn / {n_info} info outstanding"
+        + (f", {len(applied)} fixed automatically" if applied else ""),
+        "",
+    ]
+
+    if not open_findings:
+        lines += ["No outstanding findings — the glossary is clean.", ""]
+    else:
+        idx = 0
+        for severity, title in (
+            ("warn", "Warnings (fix before translating further)"),
+            ("info", "Info (optional improvements)"),
+        ):
+            group = [f for f in open_findings if f["severity"] == severity]
+            if not group:
+                continue
+            lines += [f"## {title}", ""]
+            for f in group:
+                idx += 1
+                entry = by_source.get(f["source"])
+                lines += [f"### [{idx}] {f['severity']} / {f['kind']} / {f['source']}", ""]
+                lines.append(f"- Reason: {f['reason']}")
+                if f.get("suggestion"):
+                    lines.append(f"- Suggestion: {f['suggestion']}")
+                lines.append(f"- Tier: {f.get('origin', 'model')}")
+                if entry is not None:
+                    lines += [
+                        "- Entry:",
+                        "",
+                        "```json",
+                        json.dumps(entry, ensure_ascii=False, indent=2),
+                        "```",
+                    ]
+                # Model-written instruction preferred; the per-kind template
+                # guarantees a baseline when the model sent none.
+                action = str(f.get("action") or "").strip() or _action_text(f, source_name, target_name)
+                lines += [f"- Action: {action}", ""]
+
+    if applied:
+        lines += ["## Fixed automatically (--fix)", ""]
+        lines += [f"- `{a['source']}`: {a['field']} '{a['old']}' -> '{a['new']}'"
+                  for a in applied]
+        lines.append("")
+    if skipped:
+        lines += ["## Fixes skipped (need a decision)", ""]
+        lines += [f"- `{s['source']}` ({s['field']}): {s['reason']}" for s in skipped]
+        lines.append("")
+
+    lines += [
+        "## Next steps",
+        "",
+        "- Fix indexed findings by editing glossary.json (hand edits are safe — it is re-read before every chapter).",
+        '- Delete junk entries outright and add their source to the top-level "retired" list so seed/GLOSSARY_EXPAND will not re-add them.',
+        "- Re-run `review glossary` to confirm the report comes back clean (exit 0).",
+        "- If chapters were already translated with a wrong rendering, re-run `retry --chapters N` after fixing.",
+        "",
+    ]
+
+    path = Path(project_dir) / REPORT_NAME
+    project.atomic_write_text(path, "\n".join(lines), newline="\n")
+    return path
 
 
 def apply_fixes(project_dir: Path, findings: list[dict]) -> dict:

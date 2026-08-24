@@ -262,7 +262,12 @@ background build too.
   Exit 0 clean or info-only (or every warn fixed), 1 warns remain,
   2 usage/setup error; empty glossary exits 0. Cost ceil(N/40) model
   calls; model-tier failures fail safe per batch — heuristic findings
-  still report. Balance drift signals (advisory)
+  still report. Every run also writes indexed `<project>/review-report.md`
+  (overwritten each run, clean runs too; console: `[glossary] report: <path>`)
+  — numbered OUTSTANDING findings only, each with the full entry JSON + an
+  Action line (model-written when available, else a per-kind template);
+  tell an agent "fix items 1,4,5 in review-report.md doing what was
+  suggested". Balance drift signals (advisory)
   may auto-retire mundane glossary terms via `glossary_auto_cleanup`
   (default true; check console/trace `glossary_cleanup` events); nothing
   blocks on balance anymore — enforcement is the FAITH reviewer's call.

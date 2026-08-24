@@ -659,19 +659,17 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
         for s in skipped:
             print(f"[glossary] warn fix skipped for '{s['source']}' ({s['field']}): {s['reason']}")
 
-    # A fix resolves every warn on the same entry FIELD, not just the finding
-    # kind it came from (e.g. a mistranslation fix also resolves the
+    # A fix resolves every finding on the same entry FIELD, not just the
+    # finding kind it came from (e.g. a mistranslation fix also resolves the
     # wrong_language warn it superseded).
     resolved = {(a["source"], a["field"]) for a in applied}
 
-    def warn_unresolved(f: dict) -> bool:
-        if f["severity"] != "warn":
-            return False
+    def outstanding(f: dict) -> bool:
         field = review.field_for_kind(f["kind"])
         return field is None or (f["source"], field) not in resolved
 
-    warns = sum(1 for f in findings if warn_unresolved(f))
-    infos = sum(1 for f in findings if f["severity"] == "info")
+    warns = sum(1 for f in findings if f["severity"] == "warn" and outstanding(f))
+    infos = sum(1 for f in findings if f["severity"] == "info" and outstanding(f))
     logger.log_event(project_dir, {
         "event": "glossary_review",
         "entries": result["entries"],
@@ -682,6 +680,13 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
         "skipped": skipped,
     })
     print(f"[glossary] review: {result['entries']} entries, {warns} warn / {infos} info findings")
+    report_path = review.write_report(
+        project_dir,
+        findings=findings, terms=terms, applied=applied, skipped=skipped,
+        ran_fix=bool(args.fix), batches=batches,
+        batch_errors=result["batch_errors"], cfg=cfg,
+    )
+    print(f"[glossary] report: {report_path}")
     if warns:
         _fail(f"glossary review: {warns} finding(s) need attention")
         return 1

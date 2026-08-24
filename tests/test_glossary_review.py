@@ -190,9 +190,10 @@ def case_6_model_normalization() -> None:
         ])
         rows = {"findings": [
             {"source": "灵石", "kind": "mistranslation", "severity": "warn",
-             "reason": "r1", "suggestion": "Fixed Name"},
+             "reason": "r1", "suggestion": "Fixed Name",
+             "action": "Set the translation field to the suggested name."},
             {"source": "灵石", "kind": "bizarre_kind", "severity": "info",
-             "reason": "r2", "suggestion": ""},
+             "reason": "r2", "suggestion": "", "action": 123},
             {"source": "天雷宗", "kind": "mistranslation", "severity": "garbage",
              "reason": "r3", "suggestion": "Sect of Thunder"},
             {"source": "灵石", "kind": "variant", "severity": "info",
@@ -215,6 +216,10 @@ def case_6_model_normalization() -> None:
               len(ok) == 1 and ok[0]["severity"] == "warn"
               and ok[0]["suggestion"] == "Fixed Name"
               and ok[0]["origin"] == "model", f"row={ok}")
+        check("6d2 model: action passes through (non-str -> empty)",
+              len(ok) == 1 and ok[0]["action"] == "Set the translation field to the suggested name."
+              and pick(fs, "灵石", "other")[0]["action"] == "",
+              f"actions={[f.get('action') for f in fs]}")
         other = pick(fs, "灵石", "other")
         check("6e model: unknown kind normalized to 'other'",
               len(other) == 1 and other[0]["severity"] == "info"
@@ -237,7 +242,8 @@ def case_7_merge_borrows_suggestion() -> None:
         ])
         rows = {"findings": [
             {"source": "灵根", "kind": "wrong_language", "severity": "warn",
-             "reason": "model says wrong", "suggestion": "spirit root"},
+             "reason": "model says wrong", "suggestion": "spirit root",
+             "action": "Replace the untranslated translation with the suggestion."},
         ]}
         result, _prompts = run_with_fake_chat(project_dir, [rows])
         wl = pick(result["findings"], "灵根", "wrong_language")
@@ -253,11 +259,15 @@ def case_7_merge_borrows_suggestion() -> None:
                   f"severity={f['severity']!r}")
             check("7e merge: borrowed suggestion is fixable",
                   f.get("fixable") is True, f"fixable={f.get('fixable')!r}")
+            check("7f merge: model action borrowed too",
+                  f.get("action") == "Replace the untranslated translation with the suggestion.",
+                  f"action={f.get('action')!r}")
         else:
             for name in ("7b merge: heuristic wins (origin heuristic)",
                          "7c merge: model suggestion borrowed",
                          "7d merge: severity stays warn",
-                         "7e merge: borrowed suggestion is fixable"):
+                         "7e merge: borrowed suggestion is fixable",
+                         "7f merge: model action borrowed too"):
                 check(name, False, "no finding to inspect")
 
 
@@ -420,6 +430,92 @@ def case_9_apply_fixes_guards() -> None:
               f"entry={e}")
 
 
+def case_10_report() -> None:
+    """write_report: indexed findings, fix-resolution exclusion, sections."""
+    with tempfile.TemporaryDirectory() as td:
+        project_dir = Path(td)
+        terms = [
+            {"source": "灵根", "variants": [], "translation": "spirit root",
+             "alt_translations": [], "definition": "Innate aptitude.",
+             "category": "other", "origin": "seeded", "first_seen_chapter": None},
+            {"source": "裴家村", "variants": ["Pei Family Village"],
+             "translation": "Pei Family Village", "alt_translations": [],
+             "definition": "A village.", "category": "place",
+             "origin": "model", "first_seen_chapter": 2},
+            {"source": "天雷宗", "variants": [], "translation": "river town",
+             "alt_translations": [], "definition": "A sect.", "category": "org",
+             "origin": "model", "first_seen_chapter": 1},
+        ]
+        write_glossary(project_dir, terms)
+        cfg = {"source_lang": "zh", "target_lang": "en"}
+        findings = [
+            {"source": "天雷宗", "kind": "mistranslation", "severity": "warn",
+             "reason": "bad rendering of the sect name",
+             "suggestion": "Heavenly Thunder Sect",
+             "action": "Rename the sect's translation to the suggested English name.",
+             "origin": "model"},
+            {"source": "裴家村", "kind": "variant", "severity": "info",
+             "reason": "variant 'Pei Family Village' contains no CJK characters",
+             "suggestion": "", "origin": "heuristic"},
+        ]
+
+        # report-only run: everything indexed, warns before info, continuous [1]..[2]
+        path = review.write_report(
+            project_dir, findings=findings, terms=terms, applied=[], skipped=[],
+            ran_fix=False, batches=1, batch_errors=[], cfg=cfg,
+        )
+        check("10a report: written as review-report.md",
+              path.name == review.REPORT_NAME and path.is_file(), f"path={path}")
+        text = path.read_text(encoding="utf-8")
+        check("10b report: warn indexed [1], info [2] (continuous)",
+              "### [1] warn / mistranslation / 天雷宗" in text
+              and "### [2] info / variant / 裴家村" in text, "headings missing")
+        check("10c report: model action preferred, template fallback",
+              "- Action: Rename the sect's translation to the suggested English name." in text
+              and "- Action: Set the `translation` field of this entry" not in text
+              and "Remove the flagged string from `variants`" in text,
+              "action lines wrong")
+        check("10d report: full entry JSON embedded",
+              '"first_seen_chapter": 2' in text and '"Pei Family Village"' in text,
+              "entry JSON missing")
+        check("10e report: next-steps footer",
+              "retry --chapters" in text and "retired" in text, "footer missing")
+
+        # --fix run where the translation fix resolved the warn: excluded from
+        # numbering, listed under Fixed automatically instead
+        applied = [{"source": "天雷宗", "field": "translation",
+                    "kind": "mistranslation", "old": "river town",
+                    "new": "Heavenly Thunder Sect"}]
+        skipped = [{"source": "灵根", "field": "definition",
+                    "reason": "conflicting suggestions"}]
+        path = review.write_report(
+            project_dir, findings=findings, terms=terms, applied=applied,
+            skipped=skipped, ran_fix=True, batches=1, batch_errors=[], cfg=cfg,
+        )
+        text = path.read_text(encoding="utf-8")
+        check("10f report: resolved finding renumbered out (info becomes [1])",
+              "### [1] info / variant / 裴家村" in text
+              and "### [2]" not in text
+              and "bad rendering of the sect name" not in text,
+              "numbering wrong")
+        check("10g report: fixed-automatically section with old -> new",
+              "Fixed automatically" in text
+              and "`天雷宗`: translation 'river town' -> 'Heavenly Thunder Sect'" in text,
+              "applied section wrong")
+        check("10h report: skipped section with reason",
+              "conflicting suggestions" in text, "skipped section wrong")
+
+        # clean run
+        path = review.write_report(
+            project_dir, findings=[], terms=terms, applied=[], skipped=[],
+            ran_fix=False, batches=1, batch_errors=[], cfg=cfg,
+        )
+        text = path.read_text(encoding="utf-8")
+        check("10i report: clean report, nothing indexed",
+              "No outstanding findings" in text and "[1]" not in text,
+              "clean report wrong")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -434,6 +530,7 @@ def main() -> int:
     case_7_merge_borrows_suggestion()
     case_8_batch_resilience()
     case_9_apply_fixes_guards()
+    case_10_report()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

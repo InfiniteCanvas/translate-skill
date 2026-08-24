@@ -27,8 +27,9 @@ Also report cross-entry conflicts among the entries shown here — the same term
 Report ONLY genuine problems — entries you consider acceptable must NOT be listed. When unsure, do not report.
 
 `suggestion` is the corrected translation, definition, or category string when you are confident of the fix; otherwise an empty string.
+`action` is one concise instruction telling a fixing agent exactly what to change in the glossary (which entry, which field, what value — and for duplicates/collisions, which entries to merge or how to separate them); an empty string when the suggestion alone says it all.
 
 Return ONE JSON object:
-{"findings": [{"source": "<exactly as listed>", "kind": "...", "severity": "warn" or "info", "reason": "<short English reason>", "suggestion": "<fix or empty string>"}]}
+{"findings": [{"source": "<exactly as listed>", "kind": "...", "severity": "warn" or "info", "reason": "<short English reason>", "suggestion": "<fix or empty string>", "action": "<instruction or empty string>"}]}
 
 Output ONLY the JSON object — no code fences, no explanations.

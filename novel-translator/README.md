@@ -143,6 +143,19 @@ translation/definition/category only; validated; conflicting suggestions
 skipped; prints `[glossary] fixed ...` per change). Exit 0 clean or
 info-only, 1 warns remain, 2 usage error. Cost ceil(N/40) model calls.
 
+Every run also writes `<project>/review-report.md` (overwritten each run,
+clean runs included; console: `[glossary] report: <path>`): numbered
+outstanding findings -- warnings first, then info -- each with its reason,
+suggestion, tier, the full glossary entry as JSON, and an Action line
+(model-written when available, else a per-kind template). Findings fixed
+by `--fix` drop out of the numbering into a "Fixed automatically" section;
+guarded-out suggestions sit under "Fixes skipped (need a decision)", and a
+footer walks the next steps (hand-edit glossary.json, re-run to confirm
+exit 0, `retry --chapters N` for chapters already translated with a wrong
+rendering). The report is meant for delegating fixes by index:
+
+    fix items 1, 4, and 5 in review-report.md doing what was suggested
+
 ## Shipping
 
     uv run scripts/translate.py build-epub --project .
