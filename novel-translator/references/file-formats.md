@@ -209,7 +209,11 @@ merge-borrowed from the model), and the `--fix`
   `skipped: [{source, field, reason}]`.
 - Hand-editing entries between runs is safe and encouraged — the file is read
   fresh before every chapter. Hand-added entries need at least `source` and
-  `translation`.
+  `translation`. `glossary replace` (which sets `translation` and rewrites
+  the old rendering in translated chapters) prunes that rendering from the
+  entry's `alt_translations` by default — a stale alt would keep the balance
+  check counting the old rendering as valid, masking drift; `--keep-alt`
+  leaves alt_translations untouched.
 
 ## review-report.md
 
@@ -341,6 +345,10 @@ One translated paragraph per line, same count as the source.[^1]
   chapters have one fewer body line than their source file.
 - The `## Translator's Notes` section is always last if present.
 - TOC label = `title` (falls back to `chapter_title`, then the file stem).
+- `util replace` / `glossary replace` rewrite the body (everything after the
+  frontmatter, Translator's Notes included) in place when a rendering
+  changes: frontmatter stays byte-verbatim, only files with matches are
+  rewritten, atomically, LF.
 
 During `translate`/`retry`, `build-epub` also runs automatically after every
 chapter reaches `translated`: per-chapter rebuilds are serialized (with a

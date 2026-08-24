@@ -171,7 +171,9 @@ cat draft/Chapter_0007.state.json                  # full accumulated gate feedb
 Read the feedback, then choose:
 - **Fix the cause and retry**: adjust `glossary.json` (e.g., a term whose
   English translation is awkward to use verbatim — add an `alt_translations`
-  entry), or tweak `templates/`, then
+  entry; to propagate a changed translation to chapters already translated,
+  `glossary replace` beats retranslating — see Glossary upkeep), or tweak
+  `templates/`, then
   `uv run "$SCRIPT" retry --project . --chapters 7` — or
   `retry --failed` to retry every needs-review chapter at once (selection is
   by status, so hand-marked chapters are included).
@@ -267,7 +269,44 @@ background build too.
   — numbered OUTSTANDING findings only, each with the full entry JSON + an
   Action line (model-written when available, else a per-kind template);
   tell an agent "fix items 1,4,5 in review-report.md doing what was
-  suggested". Balance drift signals (advisory)
+  suggested". When a glossary translation changes (hand edit or `review
+  glossary --fix`), already-translated chapters still carry the old
+  rendering — fix them with `glossary replace`, not expensive retranslation
+  (`retry --chapters N`): `uv run "$SCRIPT" glossary replace --project .
+  --source 灵根 --translation "spiritual root"` finds the entry by source
+  or variants (exit 2 when unknown), sets `translation` in place, then
+  rewrites the old rendering across chapters — a friendly no-op (exit 0)
+  when the translation already equals the new one; by default it also
+  prunes the old rendering from the entry's `alt_translations` (a stale
+  alt would let the balance check keep counting the old rendering as
+  valid, masking drift), while `--keep-alt` leaves alt_translations
+  untouched for renderings that should stay accepted variants.
+  `uv run "$SCRIPT" util replace --project . --source "spirit root"
+  --target "spiritual root"` is the raw-phrase variant for arbitrary term
+  fixes. Both are offline (no LLM calls) and match smartly, mirroring the
+  balance checker's phrase semantics minus the fuzzy tier: case-insensitive,
+  words may be joined by whitespace or hyphens, optional inflection
+  (es/s/ed/ing) on the last word — each match's capitalization is
+  preserved and the inflection re-appended (Spirit root → Spiritual root;
+  spirit roots → spiritual roots); CJK phrases replace as exact literal
+  substrings; footnote markers `[^N]` are never disturbed. Only the chapter
+  body is rewritten (everything after the frontmatter, Translator's Notes
+  included; frontmatter stays byte-verbatim; only files with matches are
+  rewritten, atomically, LF); chapters are enumerated from the manifest
+  (status `translated`), listed-but-missing files reported as warnings.
+  `--dry-run` reports the glossary diff and per-chapter occurrence counts,
+  writing nothing. Console: `[util] replace '...' -> '...'` /
+  `[glossary] '灵根' translation: 'old' -> 'new' (pruned alt: ...)`
+  headers, `[replace] Chapter_NNNN.md: N occurrence(s)` per changed
+  chapter, `[ok] replaced X occurrence(s) in Y chapter(s) (Z scanned)`,
+  `[warn] no occurrences found ...` (still exit 0). Exit codes: 0 success,
+  2 usage/setup (no manifest, unknown glossary term). After any chapter
+  actually changes (and not `--dry-run`), one synchronous epub build runs
+  when `auto_build_epub` is true (default) and novel_info.json exists
+  (console `[epub-auto] build ok (after util replace|glossary replace):
+  <path>`; failures warn only and never change the exit code); unreadable
+  config skips the build with a warning — the commands themselves don't
+  need config.json. Balance drift signals (advisory)
   may auto-retire mundane glossary terms via `glossary_auto_cleanup`
   (default true; check console/trace `glossary_cleanup` events); nothing
   blocks on balance anymore — enforcement is the FAITH reviewer's call.

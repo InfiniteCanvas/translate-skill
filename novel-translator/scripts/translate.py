@@ -5,7 +5,8 @@
 # ///
 """novel-translator: staged, resumable CJK novel translation CLI.
 
-Subcommands: init, ping, seed, profile, styles, status, translate, retry, mark, review, build-epub.
+Subcommands: init, ping, seed, profile, styles, status, translate, retry,
+mark, review, util, glossary, build-epub.
 Exit codes: 0 ok, 1 chapter needs-review / epubcheck failed, 2 usage or setup error.
 """
 
@@ -32,7 +33,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, cover, epub, glossary, logger, pipeline, project, review, tn  # noqa: E402
+from lib import client, config, cover, epub, glossary, logger, pipeline, project, replace, review, tn  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
@@ -78,6 +79,56 @@ def _probe_glossary(project_dir: Path) -> None:
         glossary.load(project_dir)
     except (OSError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
         raise CliError(f"cannot read {project_dir / 'glossary.json'}: {exc}") from exc
+
+
+def _load_config_lenient(project_dir: Path) -> dict | None:
+    """Config for the epub auto-build only; util/glossary replace must run
+    without one (None skips the build with a warning)."""
+    try:
+        return config.load_config(project_dir)
+    except (OSError, ValueError):
+        return None
+
+
+def _maybe_autobuild(project_dir: Path, cfg: dict | None, reason: str, changed: bool) -> None:
+    """One synchronous epub rebuild after in-place chapter edits, honoring
+    auto_build_epub — same 'export/ always current' philosophy as the
+    translate-time auto-build. Build problems warn and never fail a replace."""
+    if not changed:
+        return
+    if cfg is None:
+        print("[warn] config.json not readable - skipping auto epub build")
+        return
+    if not cfg.get("auto_build_epub", True):
+        return
+    paths = project.paths(project_dir)
+    if not paths["novel_info"].is_file():
+        print("[warn] auto epub build skipped - novel_info.json not found")
+        return
+    try:
+        novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+        epub_path, ok, _output = epub.build(project_dir, novel_info, cfg, False)
+        if ok:
+            print(f"[epub-auto] build ok (after {reason}): {epub_path}")
+        else:
+            print(f"[warn] epub auto-build failed validation: {epub_path}")
+    except Exception as exc:  # noqa: BLE001 - build problems never fail a replace
+        print(f"[warn] epub auto-build failed: {type(exc).__name__}: {exc}")
+
+
+def _print_replacement(result: dict, dry_run: bool, old: str) -> None:
+    """Shared console report for util/glossary replace chapter rewrites."""
+    prefix = "[dry-run] " if dry_run else ""
+    for file, count in result["per_chapter"]:
+        print(f"{prefix}[replace] {file}: {count} occurrence(s)")
+    for file in result["missing"]:
+        print(f"[warn] translated/{file} listed as translated but missing")
+    if result["occurrences"] == 0:
+        print(f"{prefix}[warn] no occurrences of '{old}' found "
+              f"({result['scanned']} chapter(s) scanned)")
+    else:
+        print(f"{prefix}[ok] replaced {result['occurrences']} occurrence(s) in "
+              f"{result['changed']} chapter(s) ({result['scanned']} scanned)")
 
 
 # --------------------------------------------------------------------------
@@ -694,6 +745,62 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def cmd_util(args: argparse.Namespace, project_dir: Path) -> int:
+    if args.action != "replace":
+        raise CliError(f"unknown util action: {args.action}")
+    source = args.source.strip()
+    target = args.target.strip()
+    if not source or not target:
+        raise CliError("--source and --target must be non-empty")
+    manifest = _load_manifest(project_dir)
+    cfg = _load_config_lenient(project_dir)
+    prefix = "[dry-run] " if args.dry_run else ""
+    print(f"{prefix}[util] replace '{source}' -> '{target}'")
+    try:
+        result = replace.replace_chapters(
+            project_dir, manifest, source, target, dry_run=args.dry_run
+        )
+    except replace.ReplaceError as exc:
+        raise CliError(str(exc)) from exc
+    _print_replacement(result, args.dry_run, source)
+    if not args.dry_run:
+        _maybe_autobuild(project_dir, cfg, "util replace", result["changed"] > 0)
+    return 0
+
+
+def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
+    if args.action != "replace":
+        raise CliError(f"unknown glossary action: {args.action}")
+    _probe_glossary(project_dir)
+    cfg = _load_config_lenient(project_dir)
+    prefix = "[dry-run] " if args.dry_run else ""
+    try:
+        result = replace.glossary_replace(
+            project_dir, args.source, args.translation,
+            dry_run=args.dry_run, keep_alt=bool(args.keep_alt),
+        )
+    except replace.ReplaceError as exc:
+        raise CliError(str(exc)) from exc
+    gz = result["glossary"]
+    if gz["noop"]:
+        print(f"[ok] glossary '{gz['source']}' already translates as '{gz['new']}' - nothing to do")
+        return 0
+    if args.keep_alt:
+        alt_note = " (alt_translations kept)"
+    elif gz["pruned_alt"]:
+        alt_note = f" (pruned alt: {', '.join(gz['pruned_alt'])})"
+    else:
+        alt_note = ""
+    print(f"{prefix}[glossary] '{gz['source']}' translation: "
+          f"'{gz['old']}' -> '{gz['new']}'{alt_note}")
+    _print_replacement(result["chapters"], args.dry_run, gz["old"])
+    if not args.dry_run:
+        _maybe_autobuild(
+            project_dir, cfg, "glossary replace", result["chapters"]["changed"] > 0
+        )
+    return 0
+
+
 def cmd_build_epub(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     paths = project.paths(project_dir)
@@ -811,6 +918,29 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type=int, default=review.DEFAULT_BATCH_SIZE, metavar="N",
                    help="glossary entries per model review call (default 40)")
     p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser("util", parents=[common],
+                       help="maintenance utilities (replace: rewrite a term across translated chapters)")
+    p.add_argument("action", choices=["replace"], help="utility to run")
+    p.add_argument("--source", required=True, metavar="TEXT",
+                   help="text to replace (smart phrase match: case-insensitive, hyphen/space, inflections)")
+    p.add_argument("--target", required=True, metavar="TEXT", help="replacement text")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would change without writing")
+    p.set_defaults(func=cmd_util)
+
+    p = sub.add_parser("glossary", parents=[common],
+                       help="glossary upkeep (replace: change a term's translation and rewrite chapters)")
+    p.add_argument("action", choices=["replace"], help="action to run")
+    p.add_argument("--source", required=True, metavar="TERM",
+                   help="glossary source term (matched by source or variants)")
+    p.add_argument("--translation", required=True, metavar="TEXT",
+                   help="new translation")
+    p.add_argument("--keep-alt", action="store_true",
+                   help="leave alt_translations untouched; only the main translation changes")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would change without writing")
+    p.set_defaults(func=cmd_glossary)
 
     p = sub.add_parser("build-epub", parents=[common], help="assemble translated chapters into an EPUB")
     p.add_argument("--skip-check", action="store_true", help="skip the epubcheck validation")

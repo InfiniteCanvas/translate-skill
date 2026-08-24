@@ -156,6 +156,31 @@ rendering). The report is meant for delegating fixes by index:
 
     fix items 1, 4, and 5 in review-report.md doing what was suggested
 
+When a glossary translation changes (hand edit or `review glossary --fix`),
+chapters already translated still carry the old rendering. Rewrite it in
+place -- no retranslation needed:
+
+    uv run scripts/translate.py glossary replace --project . --source 灵根 \
+        --translation "spiritual root" [--keep-alt] [--dry-run]
+    uv run scripts/translate.py util replace --project . \
+        --source "spirit root" --target "spiritual root" [--dry-run]
+
+`glossary replace` finds the entry by source or variants (exit 2 unknown),
+sets the translation, and rewrites the old rendering across chapters (a
+no-op, exit 0, when it already equals the new one); `util replace` is the
+raw phrase -> replacement variant for arbitrary term fixes. Both are
+offline (no LLM calls) and match smartly: case-insensitive, words joined
+by spaces or hyphens, optional es/s/ed/ing inflection on the last word
+(capitalization preserved, inflection re-appended -- Spirit Root ->
+Spiritual Root), CJK as literal substrings, `[^N]` markers untouched. Only
+the chapter body is rewritten (frontmatter byte-verbatim, only files with
+matches, atomic LF; chapters come from the manifest). By default the old
+rendering is pruned from the entry's `alt_translations` (a stale alt would
+mask balance drift); `--keep-alt` keeps it. `--dry-run` prints the glossary
+diff and per-chapter counts. Exit 0 success, 2 usage error (no manifest,
+unknown term). The epub rebuilds once after changed chapters when
+`auto_build_epub` is on (default); build failures are warnings only.
+
 ## Shipping
 
     uv run scripts/translate.py build-epub --project .
