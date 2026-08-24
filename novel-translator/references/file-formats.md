@@ -198,7 +198,13 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
   `balance_advisory` events (`drift_signals` / `warnings` / `over_count`
   arrays) for human review, and cleanup results land as `glossary_cleanup`
   events — fields `chapter`, `removed: [{source, reason}]`,
-  `kept: [sources]`.
+  `kept: [sources]`. A `review glossary` run logs one `glossary_review`
+  event — fields `entries`, `batches`, `batch_errors`, `findings` (each
+  `{source, kind, severity, reason, suggestion, origin, fixable}` —
+  `fixable: true` only on heuristic findings whose suggestion was
+  merge-borrowed from the model), and the `--fix`
+  results `applied: [{source, field, old, new}]` /
+  `skipped: [{source, field, reason}]`.
 - Hand-editing entries between runs is safe and encouraged — the file is read
   fresh before every chapter. Hand-added entries need at least `source` and
   `translation`.
@@ -294,13 +300,16 @@ after filling — typos fail fast.
 | `tn_generate.md` | TN_GENERATE | `source_lang target_lang source_lines translation_lines background_section max_notes` |
 | `glossary_merge.md` | glossary collision merge | `existing_json proposed_json` |
 | `glossary_cleanup.md` | balance drift-signal cleanup | `source_lang target_lang term_list sample_lines` |
+| `glossary_review.md` | `review glossary` model tier | `source_lang target_lang entries` |
 | `style_profile.md` | `--style auto` init / `profile` (legacy) | `source_lang target_lang sample_text` |
 
 `source_lines` / `translation_lines` are substituted as JSON arrays (compact,
-`ensure_ascii=False`). The `glossary` block renders in the Hy-MT2 trained
-terminology format — one pure pair per line: `筑基 translates to
-"Foundation Establishment"` — with no categories or definitions in the
-translation prompt (they live in glossary.json for the other stages).
+`ensure_ascii=False`); `glossary_review.md`'s `entries` as one compact JSON
+object per line (one batch of entries per model call). The `glossary` block
+renders in the Hy-MT2 trained terminology format — one pure pair per line:
+`筑基 translates to "Foundation Establishment"` — with no categories or
+definitions in the translation prompt (they live in glossary.json for the
+other stages).
 `source_lang`/`target_lang` are always full language names. `style` is the
 active style guide (project `style.md`, else legacy
 `style_profile.style_summary`, else a generic default); `background_section`

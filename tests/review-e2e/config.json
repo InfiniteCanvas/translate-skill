@@ -1,0 +1,50 @@
+{
+  "source_lang": "zh",
+  "target_lang": "en",
+  "providers": {
+    "translator": {
+      "base_url": "http://127.0.0.1:8901/v1",
+      "model": null,
+      "temperature": 0.7,
+      "max_tokens": 16384,
+      "top_p": 1.0
+    },
+    "glossary": {
+      "base_url": "http://127.0.0.1:8901/v1",
+      "model": null,
+      "temperature": 0.2,
+      "max_tokens": 16384
+    },
+    "reviewer": {
+      "base_url": "http://127.0.0.1:8901/v1",
+      "model": null,
+      "temperature": 0.0,
+      "max_tokens": 16384
+    },
+    "annotator": {
+      "base_url": "http://127.0.0.1:8901/v1",
+      "model": null,
+      "temperature": 0.2,
+      "max_tokens": 16384
+    },
+    "profile": {
+      "base_url": "http://127.0.0.1:8901/v1",
+      "model": null,
+      "temperature": 0.3,
+      "max_tokens": 16384
+    }
+  },
+  "seed_min_count": 3,
+  "min_term_coverage": 0.25,
+  "fuzzy_max_distance": 2,
+  "tn_gap_chapters": 10,
+  "max_attempts": 3,
+  "contextual_glossary_cap": 200,
+  "max_new_terms_per_chapter": 15,
+  "max_notes_per_chapter": 10,
+  "translate_max_output_tokens": 8192,
+  "style_sample_chapters": 4,
+  "style_sample_chars": 12000,
+  "log_llm": true,
+  "glossary_auto_cleanup": false
+}

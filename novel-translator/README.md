@@ -124,6 +124,25 @@ seeding:
 
     uv run scripts/translate.py seed --project .
 
+To audit entry quality (nothing else does -- the balance check only
+counts occurrences, cleanup only judges drift-flagged terms):
+
+    uv run scripts/translate.py review glossary --project .
+
+Two tiers: deterministic heuristics (duplicate/variant collisions, a
+translation shared by several entries, translation still in the source
+language or equal to the source, unknown category, non-CJK text in a
+CJK entry's variants) plus the glossary model judging alignment,
+definitions, categories, and cross-entry conflicts in batches of 40
+(`--batch-size N`). Report-only by default -- one
+`[glossary] warn|info '<source>' -> '<translation>': <kind> - <reason>`
+line per finding plus a summary; `--fix` opts in to guarded fixes
+(model-suggested fixes only: direct model-tier warn findings, or a
+suggestion the merge borrowed onto a heuristic finding;
+translation/definition/category only; validated; conflicting suggestions
+skipped; prints `[glossary] fixed ...` per change). Exit 0 clean or
+info-only, 1 warns remain, 2 usage error. Cost ceil(N/40) model calls.
+
 ## Shipping
 
     uv run scripts/translate.py build-epub --project .
@@ -191,9 +210,10 @@ the response (raw response, finish_reason, usage, timing), paired by
 `response_format`) adds one extra `llm_request` line for the retried
 request.
 Pipeline attempts, `balance_advisory` events (which now carry drift
-signals alongside under-use warnings and over-count info), and
-`glossary_cleanup` events are interleaved in the same stream. The
-console is a summary, the log is truth.
+signals alongside under-use warnings and over-count info),
+`glossary_cleanup` events, and `glossary_review` events (entries,
+batches, batch_errors, findings, applied, skipped) are interleaved in the
+same stream. The console is a summary, the log is truth.
 Each run prunes older logs to the newest `log_llm_keep_runs` (default 5);
 disable the LLM lines with `log_llm: false` in config.json.
 

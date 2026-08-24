@@ -8,6 +8,8 @@ Serves:
        - merge prompt ("Merge them into ONE canonical entry") -> merged glossary entry
        - asks for "style_summary"  -> mock style profile (summary + background)
        - "Flagged Terms" prompt     -> glossary cleanup: remove every flagged term
+       - "Glossary Review" prompt   -> glossary review: one fixable warn finding
+                                       (mistranslation) for the first listed entry
        - asks for "terms"          -> no new glossary terms
        - otherwise                 -> translation: fake lines matching the
                                       source array found in the prompt
@@ -91,6 +93,15 @@ def mock_reply(prompt: str) -> str:
         return json.dumps(
             {"decisions": [{"source": t, "keep": False, "reason": "mundane mock term"} for t in terms]}
         )
+    if "Glossary Review" in prompt:
+        # review glossary model tier: flag the first listed entry as fixable
+        m = re.search(r'"source":\s*"([^"]+)"', prompt)
+        first = m.group(1) if m else "测试"
+        return json.dumps({"findings": [{
+            "source": first, "kind": "mistranslation", "severity": "warn",
+            "reason": "mock glossary review finding",
+            "suggestion": "Mock Fix",
+        }]})
     if '"terms"' in prompt:
         return json.dumps({"terms": []})
     # translation: mirror the last line array in the prompt — numbered

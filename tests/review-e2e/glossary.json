@@ -1,0 +1,36 @@
+{
+  "terms": [
+    {
+      "source": "天雷宗",
+      "variants": [],
+      "translation": "river town",
+      "alt_translations": [],
+      "definition": "A sect of heavenly thunder.",
+      "category": "org",
+      "origin": "model",
+      "first_seen_chapter": 1
+    },
+    {
+      "source": "裴家村",
+      "variants": [
+        "Pei Family Village"
+      ],
+      "translation": "Pei Family Village",
+      "alt_translations": [],
+      "definition": "A village.",
+      "category": "place",
+      "origin": "model",
+      "first_seen_chapter": 2
+    },
+    {
+      "source": "灵石",
+      "variants": [],
+      "translation": "spirit stone",
+      "alt_translations": [],
+      "definition": "Currency of the cultivation world.",
+      "category": "item",
+      "origin": "seeded",
+      "first_seen_chapter": null
+    }
+  ]
+}

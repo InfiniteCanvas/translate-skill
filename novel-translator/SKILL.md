@@ -1,6 +1,6 @@
 ---
 name: novel-translator
-description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, translation glossaries, translation notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters" or "rebuild the epub".
+description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, reviews glossary quality, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, translation glossaries, glossary quality, translation notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters", "review the glossary", or "rebuild the epub".
 ---
 
 # Novel Translator
@@ -244,7 +244,25 @@ background build too.
   the skill's `assets/templates/`, so newly shipped templates work in old
   projects.
 - **Glossary upkeep**: hand-fix bad entries any time; the balance check reads
-  `glossary.json` fresh for every chapter. Balance drift signals (advisory)
+  `glossary.json` fresh for every chapter. Nothing in the pipeline audits
+  ENTRY quality — `uv run "$SCRIPT" review glossary --project .` does: a
+  deterministic heuristic tier (cross-entry duplicate/variant collisions;
+  a translation shared by other entries (info); translation still in the
+  source language or equal to the source; unknown category; non-CJK text
+  in a CJK entry's variants (info)) plus the `glossary` provider judging
+  source-translation alignment, definitions, categories, and cross-entry
+  conflicts in batches of 40 (`--batch-size N`) through
+  `templates/glossary_review.md`. Report-only: one `[glossary] warn|info`
+  line per finding, never touching glossary.json unless `--fix`; `--fix`
+  applies only model-suggested fixes (direct model-tier warn findings,
+  or a suggestion the merge borrowed onto a heuristic finding), to
+  translation/definition/category only, validated (valid category, no
+  source-language text), skipping conflicting suggestions (console:
+  `[glossary] fixed '<source>': <field> '<old>' -> '<new>'` per change).
+  Exit 0 clean or info-only (or every warn fixed), 1 warns remain,
+  2 usage/setup error; empty glossary exits 0. Cost ceil(N/40) model
+  calls; model-tier failures fail safe per batch — heuristic findings
+  still report. Balance drift signals (advisory)
   may auto-retire mundane glossary terms via `glossary_auto_cleanup`
   (default true; check console/trace `glossary_cleanup` events); nothing
   blocks on balance anymore — enforcement is the FAITH reviewer's call.
@@ -257,8 +275,9 @@ background build too.
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.
-- **Cost/cadence**: each chapter ≈ 4 model calls + retries. `status` before
-  long batches; run `ping` first if the server was restarted.
+- **Cost/cadence**: each chapter ≈ 4 model calls + retries; one glossary
+  review pass ≈ ceil(N/40) calls for N entries. `status` before long
+  batches; run `ping` first if the server was restarted.
 - Script output is plain ASCII on purpose (`[ok]`/`[FAIL]` markers) — parse
   it, don't guess. Exit code is non-zero when any chapter ends
   `needs-review`.

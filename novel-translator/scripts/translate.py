@@ -5,7 +5,7 @@
 # ///
 """novel-translator: staged, resumable CJK novel translation CLI.
 
-Subcommands: init, ping, seed, profile, styles, status, translate, retry, mark, build-epub.
+Subcommands: init, ping, seed, profile, styles, status, translate, retry, mark, review, build-epub.
 Exit codes: 0 ok, 1 chapter needs-review / epubcheck failed, 2 usage or setup error.
 """
 
@@ -32,7 +32,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, cover, epub, glossary, pipeline, project, tn  # noqa: E402
+from lib import client, config, cover, epub, glossary, logger, pipeline, project, review, tn  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
@@ -616,6 +616,75 @@ def cmd_mark(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
+    if args.batch_size < 1:
+        raise CliError("--batch-size must be a positive integer")
+    cfg = _load_config(project_dir)
+    _probe_glossary(project_dir)
+    g = glossary.load(project_dir)
+    if not g.get("terms"):
+        print("[ok] glossary is empty - nothing to review")
+        return 0
+
+    result = review.review_glossary(project_dir, cfg, args.batch_size)
+    batches = result["batches"]
+    print(
+        f"[glossary] review: {result['entries']} entries"
+        + (f" ({batches} model batch(es) of up to {args.batch_size})" if batches else "")
+    )
+    translations = {
+        str(e.get("source", "")): str(e.get("translation", "")) for e in g.get("terms", [])
+    }
+    findings = result["findings"]
+    for f in findings:
+        line = (
+            f"[glossary] {f['severity']} '{f['source']}' -> "
+            f"'{translations.get(f['source'], '?')}': {f['kind']} - {f['reason']}"
+        )
+        if f.get("suggestion"):
+            line += f" (suggest: {f['suggestion']})"
+        print(line)
+
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    if args.fix:
+        fixes = review.apply_fixes(project_dir, findings)
+        applied, skipped = fixes["applied"], fixes["skipped"]
+        for a in applied:
+            print(f"[glossary] fixed '{a['source']}': {a['field']} '{a['old']}' -> '{a['new']}'")
+        for s in skipped:
+            print(f"[glossary] warn fix skipped for '{s['source']}' ({s['field']}): {s['reason']}")
+
+    # A fix resolves every warn on the same entry FIELD, not just the finding
+    # kind it came from (e.g. a mistranslation fix also resolves the
+    # wrong_language warn it superseded).
+    resolved = {(a["source"], a["field"]) for a in applied}
+
+    def warn_unresolved(f: dict) -> bool:
+        if f["severity"] != "warn":
+            return False
+        field = review.field_for_kind(f["kind"])
+        return field is None or (f["source"], field) not in resolved
+
+    warns = sum(1 for f in findings if warn_unresolved(f))
+    infos = sum(1 for f in findings if f["severity"] == "info")
+    logger.log_event(project_dir, {
+        "event": "glossary_review",
+        "entries": result["entries"],
+        "batches": batches,
+        "batch_errors": result["batch_errors"],
+        "findings": findings,
+        "applied": applied,
+        "skipped": skipped,
+    })
+    print(f"[glossary] review: {result['entries']} entries, {warns} warn / {infos} info findings")
+    if warns:
+        _fail(f"glossary review: {warns} finding(s) need attention")
+        return 1
+    print("[ok] glossary review complete")
+    return 0
+
+
 def cmd_build_epub(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     paths = project.paths(project_dir)
@@ -724,6 +793,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--chapters", metavar="SPEC", required=True, help="chapter spec")
     p.add_argument("--status", required=True, choices=list(MARK_STATUSES))
     p.set_defaults(func=cmd_mark)
+
+    p = sub.add_parser("review", parents=[common],
+                       help="advisory quality review (glossary: source-translation alignment audit)")
+    p.add_argument("subject", choices=["glossary"], help="what to review")
+    p.add_argument("--fix", action="store_true",
+                   help="apply guarded model-suggested fixes (translation/definition/category)")
+    p.add_argument("--batch-size", type=int, default=review.DEFAULT_BATCH_SIZE, metavar="N",
+                   help="glossary entries per model review call (default 40)")
+    p.set_defaults(func=cmd_review)
 
     p = sub.add_parser("build-epub", parents=[common], help="assemble translated chapters into an EPUB")
     p.add_argument("--skip-check", action="store_true", help="skip the epubcheck validation")
