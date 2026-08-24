@@ -626,12 +626,16 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
         print("[ok] glossary is empty - nothing to review")
         return 0
 
+    # Header and per-batch progress print BEFORE/DURING the model calls --
+    # a large glossary means minutes of silent LLM batches otherwise.
+    terms = g.get("terms", [])
+    n_batches = -(-len(terms) // args.batch_size)
+    print(
+        f"[glossary] review: {len(terms)} entries"
+        + f" ({n_batches} model batch(es) of up to {args.batch_size})"
+    )
     result = review.review_glossary(project_dir, cfg, args.batch_size)
     batches = result["batches"]
-    print(
-        f"[glossary] review: {result['entries']} entries"
-        + (f" ({batches} model batch(es) of up to {args.batch_size})" if batches else "")
-    )
     translations = {
         str(e.get("source", "")): str(e.get("translation", "")) for e in g.get("terms", [])
     }

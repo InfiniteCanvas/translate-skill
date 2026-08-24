@@ -165,6 +165,7 @@ def _model_findings(
     batches = [entries[i:i + batch_size] for i in range(0, len(entries), batch_size)]
     n = len(batches)
     for i, batch in enumerate(batches, 1):
+        print(f"[glossary] reviewing batch {i}/{n}")  # LLM calls are slow; show life
         try:
             lines = "\n".join(
                 json.dumps(
