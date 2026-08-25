@@ -14,7 +14,7 @@ The balance check flagged these glossary terms as drift signals: the canonical E
 
 For each flagged term, decide whether it belongs in a translation glossary:
 - KEEP terms whose consistent rendering matters across chapters: names of people, places, sects, organizations, techniques, titles, artifacts, cultivation realms, or culturally loaded concepts.
-- REMOVE mundane terms: everyday words, common nouns or verbs, generic objects, or transient phrases whose natural translation legitimately varies by context — these do not need enforced consistency.
+- REMOVE mundane terms: everyday words, common nouns or verbs, generic objects, or transient phrases whose natural translation legitimately varies by context — these must be deleted.
 
 Return ONE JSON object:
 {"decisions": [{"source": "<term exactly as listed>", "keep": true or false, "reason": "<short English reason>"}]}
