@@ -1,11 +1,16 @@
 """Advisory glossary quality review: deterministic heuristic checks plus a
-model pass over batched entries, merged into one findings list. Report-only
-by design -- apply_fixes exists solely for the CLI's opt-in --fix."""
+model pass over batched entries, merged into one findings list. The
+review report itself is a human-readable index, but the writer now also
+emits a `- Command:` bullet per finding whose fix is fully determined by
+its structured fields -- so `review fix` can apply every
+machine-determinable finding offline from the same report. `apply_fixes`
+exists solely for the CLI's opt-in --fix (in-review fix path)."""
 
 from __future__ import annotations
 
 import json
 import re
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -63,9 +68,17 @@ def _lang_name(code: object) -> str:
     return LANG_NAMES.get(str(code).strip().lower(), str(code))
 
 
-def _finding(entry: dict, kind: str, severity: str, reason: str) -> dict:
+def _finding(
+    entry: dict, kind: str, severity: str, reason: str, **extras: Any
+) -> dict:
+    """Build a heuristic-tier finding dict. `extras` lets callers attach
+    structured fields at creation time (`variant_to_remove`, `merge_with`,
+    ...) without disturbing the schema model findings use; values become
+    regular keys on the returned dict and flow through to the report,
+    the glossary_review trace event, and (for those two keys) the
+    command_for_finding() mapping."""
     source = entry.get("source")
-    return {
+    finding: dict[str, Any] = {
         "source": source if isinstance(source, str) else "",
         "kind": kind,
         "severity": severity,
@@ -74,6 +87,8 @@ def _finding(entry: dict, kind: str, severity: str, reason: str) -> dict:
         "action": "",
         "origin": "heuristic",
     }
+    finding.update(extras)
+    return finding
 
 
 def _heuristic_findings(g: dict) -> list[dict]:
@@ -96,9 +111,15 @@ def _heuristic_findings(g: dict) -> list[dict]:
         first_source = owner_list[0].get("source", "")
         for entry in owner_list[1:]:
             role = "source" if entry.get("source") == s else "variant"
+            # `merge_with` carries the structured merge target. The reason
+            # text alone is not enough for a parser to recover the target
+            # reliably; finding it at creation time means the writer (and
+            # Step 3's lib/fix.py synthesiser) can emit a Command line
+            # without ever parsing model prose.
             findings.append(_finding(
                 entry, "duplicate", "warn",
                 f"{role} '{s}' also belongs to entry '{first_source}'",
+                merge_with=first_source,
             ))
 
     # collision: distinct entries sharing one translation (case-insensitive).
@@ -151,9 +172,13 @@ def _heuristic_findings(g: dict) -> list[dict]:
         if cjk_source:
             for variant in entry.get("variants") or []:
                 if isinstance(variant, str) and not _CJK_RE.search(variant):
+                    # `variant_to_remove` carries the flagged string so the
+                    # writer can emit `glossary set --remove-variant V`
+                    # without inspecting reason text.
                     findings.append(_finding(
                         entry, "variant", "info",
                         f"variant '{variant}' contains no CJK characters",
+                        variant_to_remove=variant,
                     ))
     return findings
 
@@ -325,6 +350,108 @@ def _action_text(finding: dict, source_name: str, target_name: str) -> str:
     return "Review this entry and correct it as judged."
 
 
+def command_for_finding(finding: dict) -> dict | None:
+    """Map a finding dict to a CLI subcommand shape, or None when no
+    auto-applicable form exists.
+
+    The closed vocabulary:
+
+    - `mistranslation` / `wrong_language` with a non-empty `suggestion`
+      -> ``glossary replace --source S --translation T``
+    - `collision` with a non-empty `suggestion`
+      -> ``glossary replace --source S --translation T``
+    - `definition` with a non-empty `suggestion`
+      -> ``glossary set --source S --definition D``
+    - `category` with a non-empty `suggestion`
+      -> ``glossary set --source S --category C``
+    - heuristic `variant` carrying `variant_to_remove`
+      -> ``glossary set --source S --remove-variant V``
+    - heuristic `duplicate` carrying `merge_with`
+      -> ``glossary merge --keep M --remove S``
+
+    Everything else (model-tier `duplicate` / `variant`, suggestion-less
+    kinds, `other`) returns None -- their fix is a judgment call living in
+    free-form Action prose, which this design deliberately refuses to parse.
+
+    Returned shape: ``{"name": "<verb phrase>", "args": {"<flag>": <value>, ...}}``
+    where flag names use the same hyphens as the CLI (so `_command_argv`
+    can splat them through directly). Used by both `write_report()` (to
+    emit `- Command:` bullets in new reports) and `lib/fix.py` (to
+    synthesize commands from legacy reports); keeping a single mapping
+    ensures writer and parser never drift.
+    """
+    kind = str(finding.get("kind") or "")
+    suggestion = str(finding.get("suggestion") or "").strip()
+    source = str(finding.get("source") or "")
+
+    # Field-kind findings with a suggestion map to set/replace the field.
+    # `collision` is gated the same way -- when no suggestion exists the
+    # Action text says "give this entry a distinct translation" but the
+    # *distinct* rendering lives only in prose, which we refuse to parse.
+    if suggestion and source:
+        if kind in ("mistranslation", "wrong_language", "collision"):
+            return {
+                "name": "glossary replace",
+                "args": {"source": source, "translation": suggestion},
+            }
+        if kind == "definition":
+            return {
+                "name": "glossary set",
+                "args": {"source": source, "definition": suggestion},
+            }
+        if kind == "category":
+            return {
+                "name": "glossary set",
+                "args": {"source": source, "category": suggestion},
+            }
+
+    # Heuristic structured fields -- available on the finding dict because
+    # _heuristic_findings() attaches them at creation time.
+    variant = finding.get("variant_to_remove")
+    if kind == "variant" and isinstance(variant, str) and variant and source:
+        return {
+            "name": "glossary set",
+            "args": {"source": source, "remove-variant": variant},
+        }
+
+    merge_with = finding.get("merge_with")
+    if kind == "duplicate" and isinstance(merge_with, str) and merge_with and source:
+        return {
+            "name": "glossary merge",
+            "args": {"keep": merge_with, "remove": source},
+        }
+
+    return None
+
+
+def _command_argv(spec: dict) -> list[str]:
+    """Render a command_for_finding() spec to subprocess-style argv tokens.
+
+    Flag keys use the same hyphenated form as the CLI (so the writer and
+    lib/fix.py can share this verbatim); values are stringified. Used by
+    write_report() (joined with shlex.quote for the human-readable
+    report line) and intended to be reused by lib/fix.py for actual
+    subprocess execution."""
+    argv: list[str] = []
+    name = str(spec.get("name") or "").strip()
+    if name:
+        argv.extend(name.split())
+    args = spec.get("args") or {}
+    if isinstance(args, dict):
+        for key, value in args.items():
+            flag = str(key)
+            if not flag.startswith("-"):
+                flag = "--" + flag
+            argv.append(flag)
+            if isinstance(value, list):
+                argv.extend(str(item) for item in value)
+            elif value is None:
+                continue
+            else:
+                argv.append(str(value))
+    return argv
+
+
 def write_report(
     project_dir: Path, *, findings: list[dict], terms: list[dict],
     applied: list[dict], skipped: list[dict], ran_fix: bool,
@@ -334,8 +461,15 @@ def write_report(
 
     Findings whose kind-field was fixed this run (same (source, field) as an
     applied fix) are excluded from the numbering and listed under "Fixed
-    automatically" instead — indices only cover outstanding work. Returns the
-    report path."""
+    automatically" instead -- indices only cover outstanding work. Each
+    outstanding finding whose fix is fully determined by its structured
+    fields (see command_for_finding) gets a `- Command:` bullet after
+    the `- Action:` line, so `review fix --glossary <this file>` can
+    apply every machine-determinable finding offline; model-tier
+    duplicate / variant findings and suggestion-less collisions stay
+    decision items with no Command line. The header bullet that records
+    the generating command is named `- Generated by:` so `- Command:`
+    unambiguously means a fix command. Returns the report path."""
     source_name = _lang_name(cfg.get("source_lang"))
     target_name = _lang_name(cfg.get("target_lang"))
     by_source: dict[str, dict] = {}
@@ -358,10 +492,10 @@ def write_report(
         "# Glossary Review Report",
         "",
         f"- Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
-        "- Command: `review glossary`" + (" `--fix`" if ran_fix else ""),
+        "- Generated by: `review glossary`" + (" `--fix`" if ran_fix else ""),
         f"- Languages: {source_name} -> {target_name}",
         f"- Entries reviewed: {len(terms)} ({batches} model batch(es)"
-        + (f", {len(batch_errors)} batch error(s) — findings from failed batches are missing"
+        + (f", {len(batch_errors)} batch error(s) -- findings from failed batches are missing"
            if batch_errors else "") + ")",
         f"- Outcome: {n_warn} warn / {n_info} info outstanding"
         + (f", {len(applied)} fixed automatically" if applied else ""),
@@ -369,7 +503,7 @@ def write_report(
     ]
 
     if not open_findings:
-        lines += ["No outstanding findings — the glossary is clean.", ""]
+        lines += ["No outstanding findings -- the glossary is clean.", ""]
     else:
         idx = 0
         for severity, title in (
@@ -400,6 +534,15 @@ def write_report(
                 # guarantees a baseline when the model sent none.
                 action = str(f.get("action") or "").strip() or _action_text(f, source_name, target_name)
                 lines += [f"- Action: {action}", ""]
+                # `- Command:` is the contract with `review fix`: only
+                # emitted when the fix is fully determined by the finding's
+                # structured fields. Every argv element is shlex.quoted so
+                # CJK and space-containing terms survive round-trip.
+                spec = command_for_finding(f)
+                if spec is not None:
+                    argv = _command_argv(spec)
+                    quoted = " ".join(shlex.quote(t) for t in argv)
+                    lines.append(f"- Command: {quoted}")
 
     if applied:
         lines += ["## Fixed automatically (--fix)", ""]
@@ -414,8 +557,9 @@ def write_report(
     lines += [
         "## Next steps",
         "",
-        "- Fix indexed findings by editing glossary.json (hand edits are safe — it is re-read before every chapter).",
+        "- Fix indexed findings by editing glossary.json (hand edits are safe -- it is re-read before every chapter).",
         '- Delete junk entries outright and add their source to the top-level "retired" list so seed/GLOSSARY_EXPAND will not re-add them.',
+        "- Run `review fix --glossary review-report.md` to apply every machine-determinable finding (one offline command per `- Command:` bullet).",
         "- Re-run `review glossary` to confirm the report comes back clean (exit 0).",
         "- If chapters were already translated with a wrong rendering, re-run `retry --chapters N` after fixing.",
         "",
