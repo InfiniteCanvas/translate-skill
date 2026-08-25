@@ -7,7 +7,8 @@
 
 Subcommands: init, ping, seed, profile, styles, status, translate, retry,
 mark, review, util, glossary, build-epub.
-Exit codes: 0 ok, 1 chapter needs-review / epubcheck failed, 2 usage or setup error.
+Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
+had failures, 2 usage or setup error.
 """
 
 from __future__ import annotations

@@ -276,20 +276,34 @@ background build too.
   still report. Every run also writes indexed `<project>/review-report.md`
   (overwritten each run, clean runs too; console: `[glossary] report: <path>`)
   — numbered OUTSTANDING findings only, each with the full entry JSON + an
-  Action line (model-written when available, else a per-kind template);
-  tell an agent "fix items 1,4,5 in review-report.md doing what was
-  suggested". When a glossary translation changes (hand edit or `review
+  Action line (model-written when available, else a per-kind template); the
+  findings whose fix is fully determined by their structured fields also
+  carry a `- Command:` bullet (skill-level, novel-agnostic). Tell an agent
+  "fix items 1,4,5 in review-report.md doing what was suggested", or for the
+  offline machine-actionable path run
+  `uv run "$SCRIPT" review fix --glossary review-report.md [--dry-run]
+  [--exit-on-error]`: it runs every machine-determinable `- Command:` bullet
+  as a subprocess, in order, and exits 0 on full success / no-op, 1 if any
+  command failed (continues past failures by default; `--exit-on-error` to
+  stop), 2 on a missing/unreadable report or a report with no machine-
+  applicable commands. Legacy reports (no `- Command:` bullets, old `- Command:`
+  header that records the generating command) are synthesized on the fly
+  from the structured parts alone — no `review glossary` re-run needed.
+  When a glossary translation changes (hand edit or `review
   glossary --fix`), already-translated chapters still carry the old
   rendering — fix them with `glossary replace`, not expensive retranslation
   (`retry --chapters N`): `uv run "$SCRIPT" glossary replace --project .
-  --source 灵根 --translation "spiritual root"` finds the entry by source
-  or variants (exit 2 when unknown), sets `translation` in place, then
-  rewrites the old rendering across chapters — a friendly no-op (exit 0)
-  when the translation already equals the new one; by default it also
-  prunes the old rendering from the entry's `alt_translations` (a stale
-  alt would let the balance check keep counting the old rendering as
-  valid, masking drift), while `--keep-alt` leaves alt_translations
-  untouched for renderings that should stay accepted variants.
+  --source 灵根 --translation "spiritual root" [--keep-alt] [--no-build]
+  [--dry-run]` finds the entry by source or variants (exit 2 when unknown),
+  sets `translation` in place, then rewrites the old rendering across
+  chapters — a friendly no-op (exit 0) when the translation already equals
+  the new one; by default it also prunes the old rendering from the entry's
+  `alt_translations` (a stale alt would let the balance check keep counting
+  the old rendering as valid, masking drift), while `--keep-alt` leaves
+  alt_translations untouched for renderings that should stay accepted
+  variants; use `--no-build` to suppress the auto epub build when running
+  many replaces in a batch (e.g. from `review fix`, which always passes it
+  itself and runs exactly one final epub build at the end).
   `uv run "$SCRIPT" util replace --project . --source "spirit root"
   --target "spiritual root"` is the raw-phrase variant for arbitrary term
   fixes. Both are offline (no LLM calls) and match smartly, mirroring the
@@ -335,3 +349,52 @@ background build too.
 - Script output is plain ASCII on purpose (`[ok]`/`[FAIL]` markers) — parse
   it, don't guess. Exit code is non-zero when any chapter ends
   `needs-review`.
+
+## Bulk review fixes
+
+`review glossary` may leave dozens of machine-determinable findings behind
+(field-kind fixes with a suggestion, heuristic duplicate / variant
+collisions with structured merge data); applying them one at a time by hand
+or by an agent is tedious and prone to drift. For the offline
+machine-actionable path, run
+`uv run "$SCRIPT" review fix --glossary review-report.md [--dry-run]
+[--exit-on-error]`: it parses every `- Command:` bullet in
+`review-report.md` and runs each as a subprocess (`glossary replace | set |
+merge | retire`), in order, and exits 0 on full success or full no-op, 1 if
+any command failed (continues past failures by default; `--exit-on-error` to
+stop at the first), 2 on a missing/unreadable report or a report with no
+machine-applicable commands. **The `- Command:` bullet is the contract**:
+`write_report()` emits it on every finding whose fix is fully determined by
+its structured fields, and `review fix` reads it; the closed vocabulary is
+documented in `references/file-formats.md` (per-finding `glossary replace`
+for mistranslation / wrong_language / collision with a suggestion;
+`glossary set --definition` / `--category` for definition / category
+findings with a suggestion; `glossary set --remove-variant` for heuristic
+variants; `glossary merge --keep ... --remove ...` for heuristic
+duplicates). Legacy reports (no `- Command:` bullets, old `- Command:`
+header that records the generating command) are synthesized on the fly from
+the structured parts alone — no `review glossary` re-run needed. After
+applying, one final `build-epub` runs when chapters changed and
+`auto_build_epub` is on; the `- Command:` lines in the report never carry
+`--no-build`, so they remain human-copyable.
+
+The new subcommands enabled for the batch flow:
+
+- `uv run "$SCRIPT" glossary set --project . --source S [--translation T]
+  [--definition D] [--category C] [--add-variant V] [--remove-variant V]
+  [--alt-translations "A,B"] [--add-alt A] [--remove-alt A]` — atomic
+  multi-field metadata edit (CJK-checked against the source like
+  `apply_fixes`); idempotent; silent no-op when nothing actually changes.
+- `uv run "$SCRIPT" glossary merge --project . --keep K --remove R` —
+  transfer `variants` / `alt_translations` / `definition` from R to K
+  (definition only fills K when K's is empty), append R to the top-level
+  `retired` list, remove R from `terms`; idempotent (already-retired R is a
+  no-op exit 0). Translation / category / origin / first_seen_chapter of
+  the kept entry are preserved.
+- `uv run "$SCRIPT" glossary retire --project . --source X` — thin wrapper
+  over `glossary.retire()` for a single source. Already-retired sources
+  print `[glossary] already retired: X` and exit 0.
+- `uv run "$SCRIPT" glossary replace --project . --source S
+  --translation T [--keep-alt] [--no-build] [--dry-run]` — `--no-build` is
+  new and skips the auto epub build for batch runs; the replace behavior
+  itself is unchanged.

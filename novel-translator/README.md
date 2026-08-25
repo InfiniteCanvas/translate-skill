@@ -147,22 +147,36 @@ info-only, 1 warns remain, 2 usage error. Cost ceil(N/40) model calls.
 Every run also writes `<project>/review-report.md` (overwritten each run,
 clean runs included; console: `[glossary] report: <path>`): numbered
 outstanding findings -- warnings first, then info -- each with its reason,
-suggestion, tier, the full glossary entry as JSON, and an Action line
-(model-written when available, else a per-kind template). Findings fixed
-by `--fix` drop out of the numbering into a "Fixed automatically" section;
-guarded-out suggestions sit under "Fixes skipped (need a decision)", and a
-footer walks the next steps (hand-edit glossary.json, re-run to confirm
-exit 0, `retry --chapters N` for chapters already translated with a wrong
-rendering). The report is meant for delegating fixes by index:
+suggestion, tier, the full glossary entry as JSON, an Action line
+(model-written when available, else a per-kind template), and a
+`- Command:` bullet on every finding whose fix is fully determined by its
+structured fields. Findings fixed by `--fix` drop out of the numbering into
+a "Fixed automatically" section; guarded-out suggestions sit under "Fixes
+skipped (need a decision)", and a footer walks the next steps (hand-edit
+glossary.json, `review fix --glossary review-report.md` for the offline
+batch path, re-run to confirm exit 0, `retry --chapters N` for chapters
+already translated with a wrong rendering). The report is meant for
+delegating fixes by index:
 
     fix items 1, 4, and 5 in review-report.md doing what was suggested
+
+For the offline machine-actionable path, run
+`uv run scripts/translate.py review fix --glossary review-report.md
+[--dry-run] [--exit-on-error]`: it runs every `- Command:` bullet as a
+subprocess (`glossary replace | set | merge | retire`), in order, and exits
+0 on full success or full no-op, 1 if any command failed (continues past
+failures by default; `--exit-on-error` to stop at the first), 2 on a
+missing/unreadable report or a report with no machine-applicable commands.
+Legacy reports (no `- Command:` bullets, old `- Command:` header that
+records the generating command) are synthesized on the fly from the
+structured parts alone -- no `review glossary` re-run needed.
 
 When a glossary translation changes (hand edit or `review glossary --fix`),
 chapters already translated still carry the old rendering. Rewrite it in
 place -- no retranslation needed:
 
     uv run scripts/translate.py glossary replace --project . --source 灵根 \
-        --translation "spiritual root" [--keep-alt] [--dry-run]
+        --translation "spiritual root" [--keep-alt] [--no-build] [--dry-run]
     uv run scripts/translate.py util replace --project . \
         --source "spirit root" --target "spiritual root" [--dry-run]
 
@@ -180,7 +194,76 @@ rendering is pruned from the entry's `alt_translations` (a stale alt would
 mask balance drift); `--keep-alt` keeps it. `--dry-run` prints the glossary
 diff and per-chapter counts. Exit 0 success, 2 usage error (no manifest,
 unknown term). The epub rebuilds once after changed chapters when
-`auto_build_epub` is on (default); build failures are warnings only.
+`auto_build_epub` is on (default); pass `--no-build` to skip that rebuild
+(use when running many replaces from `review fix`, which always passes it
+itself and runs exactly one final epub build at the end). Build failures
+are warnings only.
+
+## Bulk review fixes
+
+`review glossary` may leave dozens of machine-determinable findings
+behind (every `mistranslation` / `wrong_language` / `collision` /
+`definition` / `category` finding with a suggestion, plus heuristic
+duplicate / variant collisions with structured merge data). Applying them
+one at a time by hand or by an agent is tedious and prone to drift. For
+the offline path:
+
+    uv run scripts/translate.py review fix --glossary review-report.md \
+        [--dry-run] [--exit-on-error]
+
+`review fix` parses every `- Command:` bullet in `review-report.md` and
+runs each as a subprocess (`glossary replace | set | merge | retire`), in
+order. Exit codes: 0 on full success or full no-op, 1 if any command
+failed (continues past failures by default; `--exit-on-error` to stop at
+the first), 2 on a missing/unreadable report or a report with no
+machine-applicable commands. `--dry-run` prints each command with its
+finding index plus a summary (`applied/failed/needs-decision`) and applies
+nothing. The `- Command:` bullet is the contract: `write_report()` emits
+it on every finding whose fix is fully determined by its structured
+fields; the closed vocabulary is documented in
+`references/file-formats.md` (per-finding `glossary replace` for
+mistranslation / wrong_language / collision with a suggestion; `glossary
+set --definition` / `--category` for definition / category findings with
+a suggestion; `glossary set --remove-variant` for heuristic variants;
+`glossary merge --keep ... --remove ...` for heuristic duplicates).
+Delete any `- Command:` bullet to veto that finding; legacy reports
+without `- Command:` lines (and the old `- Command:` header that records
+the generating command) are synthesized on the fly from the structured
+parts alone -- no `review glossary` re-run needed. After applying, one
+final `build-epub` runs when chapters changed and `auto_build_epub` is on;
+the `- Command:` lines in the report never carry `--no-build`, so they
+remain human-copyable.
+
+The new subcommands enabled for the batch flow:
+
+    uv run scripts/translate.py glossary set --project . --source S \
+        [--translation T] [--definition D] [--category C]
+        [--add-variant V] [--remove-variant V]
+        [--alt-translations "A,B"] [--add-alt A] [--remove-alt A]
+    uv run scripts/translate.py glossary merge --project . --keep K --remove R
+    uv run scripts/translate.py glossary retire --project . --source X
+
+`glossary set` applies any combination of `--translation`, `--definition`,
+`--category`, `--add-variant` / `--remove-variant`,
+`--alt-translations` / `--add-alt` / `--remove-alt` atomically -- one save,
+all-or-nothing -- and is idempotent (exit 0 when nothing actually
+changed); `--category` is whitelisted against the same list `apply_fixes`
+uses, `--translation` is CJK-checked against the source like `apply_fixes`
+(definitions may legitimately quote CJK terms and are stored as-is).
+
+`glossary merge --keep K --remove R` transfers `variants` /
+`alt_translations` / `definition` from R to K (definition only fills K
+when K's is empty), appends R to the top-level `retired` list, and
+removes R from `terms` -- idem-potent (already-retired R is a no-op
+exit 0). The kept entry's `translation` / `category` / `origin` /
+`first_seen_chapter` are preserved.
+
+`glossary retire --source X` is a thin wrapper over `glossary.retire()`
+for a single source; already-retired sources print
+`[glossary] already retired: X` and exit 0.
+
+`glossary replace` gains `--no-build` to skip the post-success epub
+build for batch callers (the replace behavior itself is unchanged).
 
 ## Shipping
 
@@ -251,9 +334,11 @@ the response (raw response, finish_reason, usage, timing), paired by
 request.
 Pipeline attempts, `balance_advisory` events (which now carry drift
 signals alongside under-use warnings and over-count info),
-`glossary_cleanup` events, and `glossary_review` events (entries,
-batches, batch_errors, findings, applied, skipped) are interleaved in the
-same stream. The console is a summary, the log is truth.
+`glossary_cleanup` events, `glossary_review` events (entries, batches,
+batch_errors, findings, applied, skipped), and `review_fix` events
+(specs_run, applied, noop, failed, changed_chapters, needs_decision -- one
+per `review fix` run) are interleaved in the same stream. The console is a
+summary, the log is truth.
 Each run prunes older logs to the newest `log_llm_keep_runs` (default 5);
 disable the LLM lines with `log_llm: false` in config.json.
 
