@@ -82,8 +82,8 @@ def _probe_glossary(project_dir: Path) -> None:
 
 
 def _load_config_lenient(project_dir: Path) -> dict | None:
-    """Config for the epub auto-build only; util/glossary replace must run
-    without one (None skips the build with a warning)."""
+    """Config for the epub auto-build only; util/glossary upkeep commands must
+    run without one (None skips the build with a warning)."""
     try:
         return config.load_config(project_dir)
     except (OSError, ValueError):
@@ -769,8 +769,21 @@ def cmd_util(args: argparse.Namespace, project_dir: Path) -> int:
 
 
 def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
-    if args.action != "replace":
-        raise CliError(f"unknown glossary action: {args.action}")
+    """Dispatch on args.action: replace / set / merge / retire."""
+    if args.action == "replace":
+        return _cmd_glossary_replace(args, project_dir)
+    if args.action == "set":
+        return _cmd_glossary_set(args, project_dir)
+    if args.action == "merge":
+        return _cmd_glossary_merge(args, project_dir)
+    if args.action == "retire":
+        return _cmd_glossary_retire(args, project_dir)
+    raise CliError(f"unknown glossary action: {args.action}")
+
+
+def _cmd_glossary_replace(args: argparse.Namespace, project_dir: Path) -> int:
+    """Behaviorally identical to the pre-step-1 `glossary replace`; --no-build
+    only short-circuits the post-success auto epub build."""
     _probe_glossary(project_dir)
     cfg = _load_config_lenient(project_dir)
     prefix = "[dry-run] " if args.dry_run else ""
@@ -794,10 +807,104 @@ def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"{prefix}[glossary] '{gz['source']}' translation: "
           f"'{gz['old']}' -> '{gz['new']}'{alt_note}")
     _print_replacement(result["chapters"], args.dry_run, gz["old"])
-    if not args.dry_run:
+    if not args.dry_run and not args.no_build:
         _maybe_autobuild(
             project_dir, cfg, "glossary replace", result["chapters"]["changed"] > 0
         )
+    return 0
+
+
+def _cmd_glossary_set(args: argparse.Namespace, project_dir: Path) -> int:
+    """Atomic multi-field metadata edit on a single entry; idempotent and
+    metadata-only (never rewrites chapters — use `glossary replace` for that).
+    A no-op diff exits 0 without saving."""
+    _probe_glossary(project_dir)
+    g = glossary.load(project_dir)
+    entry = glossary.find(g, args.source)
+    if entry is None:
+        raise CliError(f"no glossary entry for '{args.source}'")
+    if not any([
+        args.translation is not None,
+        args.definition is not None,
+        args.category is not None,
+        args.add_variant,
+        args.remove_variant,
+        args.alt_translations is not None,
+        args.add_alt,
+        args.remove_alt,
+    ]):
+        raise CliError(
+            "glossary set requires at least one of "
+            "--translation/--definition/--category/--add-variant/--remove-variant/"
+            "--alt-translations/--add-alt/--remove-alt"
+        )
+    try:
+        new_entry, changes = glossary.set_fields(
+            entry,
+            translation=args.translation,
+            definition=args.definition,
+            category=args.category,
+            add_variant=args.add_variant,
+            remove_variant=args.remove_variant,
+            alt_translations=args.alt_translations,
+            add_alt=args.add_alt,
+            remove_alt=args.remove_alt,
+        )
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+    if not changes:
+        print(f"[glossary] set '{args.source}': already up-to-date")
+        return 0
+    entry.update(new_entry)
+    glossary.save(project_dir, g)
+    for field, old_v, new_v in changes:
+        print(f"[glossary] set '{args.source}': {field} "
+              f"{old_v!r} -> {new_v!r}")
+    return 0
+
+
+def _cmd_glossary_merge(args: argparse.Namespace, project_dir: Path) -> int:
+    """Fold --remove into --keep (variants/alts/definition unioned); append
+    --remove to top-level 'retired'. Already-retired --remove is a friendly
+    no-op exit 0; --keep == --remove is a usage error."""
+    if args.keep == args.remove:
+        raise CliError(
+            f"--keep and --remove must be distinct ('{args.keep}')"
+        )
+    _probe_glossary(project_dir)
+    g = glossary.load(project_dir)
+    if args.remove in glossary.retired_sources(g):
+        print(f"[glossary] merge: '{args.remove}' already retired")
+        return 0
+    try:
+        kept, removed_key, variants_added, alt_added, def_filled = (
+            glossary.merge_entries(g, args.keep, args.remove)
+        )
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+    glossary.save(project_dir, g)
+    extras = []
+    extras.append(f"variants +{variants_added}")
+    extras.append(f"alt +{alt_added}")
+    if def_filled:
+        extras.append("definition filled")
+    print(f"[glossary] merged '{removed_key}' into '{kept.get('source')}' "
+          f"({', '.join(extras)})")
+    return 0
+
+
+def _cmd_glossary_retire(args: argparse.Namespace, project_dir: Path) -> int:
+    """Single-source retire. Distinguishes 'already retired' (no-op exit 0)
+    from 'no matching entry' (exit 2) — glossary.retire() collapses both."""
+    _probe_glossary(project_dir)
+    g = glossary.load(project_dir)
+    if args.source in glossary.retired_sources(g):
+        print(f"[glossary] already retired: {args.source}")
+        return 0
+    removed = glossary.retire(project_dir, [args.source])
+    if not removed:
+        raise CliError(f"no glossary entry for '{args.source}'")
+    print(f"[glossary] retired: {args.source}")
     return 0
 
 
@@ -930,17 +1037,58 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_util)
 
     p = sub.add_parser("glossary", parents=[common],
-                       help="glossary upkeep (replace: change a term's translation and rewrite chapters)")
-    p.add_argument("action", choices=["replace"], help="action to run")
-    p.add_argument("--source", required=True, metavar="TERM",
-                   help="glossary source term (matched by source or variants)")
-    p.add_argument("--translation", required=True, metavar="TEXT",
-                   help="new translation")
-    p.add_argument("--keep-alt", action="store_true",
-                   help="leave alt_translations untouched; only the main translation changes")
-    p.add_argument("--dry-run", action="store_true",
-                   help="report what would change without writing")
-    p.set_defaults(func=cmd_glossary)
+                       help="glossary upkeep (replace | set | merge | retire)")
+    gloss_sub = p.add_subparsers(dest="action", required=True, metavar="action")
+
+    pr = gloss_sub.add_parser("replace",
+                              help="change a term's translation and rewrite chapters")
+    pr.add_argument("--source", required=True, metavar="TERM",
+                    help="glossary source term (matched by source or variants)")
+    pr.add_argument("--translation", required=True, metavar="TEXT",
+                    help="new translation")
+    pr.add_argument("--keep-alt", action="store_true",
+                    help="leave alt_translations untouched; only the main translation changes")
+    pr.add_argument("--dry-run", action="store_true",
+                    help="report what would change without writing")
+    pr.add_argument("--no-build", action="store_true",
+                    help="skip the auto epub build after chapter rewrites (batch callers only)")
+    pr.set_defaults(func=cmd_glossary)
+
+    ps = gloss_sub.add_parser("set",
+                              help="edit metadata fields on a single entry (atomic, idempotent)")
+    ps.add_argument("--source", required=True, metavar="TERM",
+                    help="glossary source term (matched by source or variants)")
+    ps.add_argument("--translation", metavar="TEXT",
+                    help="new translation (CJK-checked against the source like apply_fixes)")
+    ps.add_argument("--definition", metavar="TEXT",
+                    help="new definition (stored as-is; may quote source-language terms)")
+    ps.add_argument("--category", metavar="CAT",
+                    help=f"new category (one of: {', '.join(glossary.CATEGORIES)})")
+    ps.add_argument("--add-variant", action="append", default=[], metavar="V",
+                    help="append V to the entry's variants (repeatable)")
+    ps.add_argument("--remove-variant", action="append", default=[], metavar="V",
+                    help="remove V from the entry's variants (repeatable, no-op when absent)")
+    ps.add_argument("--alt-translations", metavar="LIST",
+                    help="comma-separated alt_translations (REPLACES the existing list)")
+    ps.add_argument("--add-alt", action="append", default=[], metavar="A",
+                    help="append A to the entry's alt_translations (repeatable)")
+    ps.add_argument("--remove-alt", action="append", default=[], metavar="A",
+                    help="remove A from alt_translations (repeatable, no-op when absent)")
+    ps.set_defaults(func=cmd_glossary)
+
+    pm = gloss_sub.add_parser("merge",
+                              help="merge --remove into --keep; retire --remove")
+    pm.add_argument("--keep", required=True, metavar="TERM",
+                    help="source of the entry to keep (variants/alts unioned into)")
+    pm.add_argument("--remove", required=True, metavar="TERM",
+                    help="source of the entry to absorb (also appended to 'retired')")
+    pm.set_defaults(func=cmd_glossary)
+
+    pt = gloss_sub.add_parser("retire",
+                              help="retire a single source from the glossary")
+    pt.add_argument("--source", required=True, metavar="TERM",
+                    help="glossary source term to retire (matched by source or variants)")
+    pt.set_defaults(func=cmd_glossary)
 
     p = sub.add_parser("build-epub", parents=[common], help="assemble translated chapters into an EPUB")
     p.add_argument("--skip-check", action="store_true", help="skip the epubcheck validation")

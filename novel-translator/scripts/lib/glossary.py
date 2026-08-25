@@ -1,6 +1,12 @@
 """Translation glossary: storage, lookup, contextual rendering, seeding.
 
-Glossary file (glossary.json) layout: {"terms": [entry, ...]}. Entry schema:
+Glossary file (glossary.json) layout:
+
+    {"terms": [entry, ...],
+     "retired": [<source>, ...]  # optional — sources that must never be
+                                 # re-added by seed/expansion}
+
+Entry schema:
 
     source              str          term in the original language (unique key)
     translation         str          fixed translation
@@ -11,6 +17,11 @@ Glossary file (glossary.json) layout: {"terms": [entry, ...]}. Entry schema:
     category            str          one of CATEGORIES
     origin              str          "seeded" | "model"
     first_seen_chapter  int | None
+
+set_fields() and merge_entries() are the building blocks the
+`glossary set` / `glossary merge` CLI commands share; both treat the
+glossary as a dict-of-entries and only save when something actually
+changes.
 """
 
 import json
@@ -24,6 +35,12 @@ except ImportError:  # imported with scripts/lib directly on sys.path
 
 CATEGORIES = ("place", "person", "org", "skill", "technique", "level",
               "state", "item", "honorific", "other")
+
+# Same CJK range used by lib.review._CJK_RE; mirrored here so the glossary
+# set/merge helpers don't need to import review (review already imports
+# glossary — a back-edge would be circular). Validates translations on
+# CJK-source entries exactly like apply_fixes() does.
+_CJK_RE = re.compile(r"[\u3000-\u9fff\uff00-\uffef]")
 
 
 def empty() -> dict:
@@ -92,6 +109,186 @@ def retire(project_dir: Path, sources: list[str]) -> list[str]:
         g["retired"] = retired
         save(project_dir, g)
     return removed
+
+
+def set_fields(
+    entry: dict, *,
+    translation: str | None = None,
+    definition: str | None = None,
+    category: str | None = None,
+    add_variant: list[str] | None = None,
+    remove_variant: list[str] | None = None,
+    alt_translations: str | None = None,
+    add_alt: list[str] | None = None,
+    remove_alt: list[str] | None = None,
+) -> tuple[dict, list[tuple[str, object, object]]]:
+    """Apply atomic field edits to a copy of `entry`.
+
+    Validates exactly like apply_fixes(): unknown category -> ValueError;
+    translation still containing CJK characters for a CJK-source entry ->
+    ValueError (definitions deliberately skip the CJK check — they may
+    legitimately quote source-language terms). Removing an absent variant
+    or alt is a silent no-op (the entry stays byte-identical, so callers
+    can detect "no change" via the empty `changes` list).
+
+    Returns (new_entry, [(field, old, new), ...]) where each tuple is one
+    field that actually differs from the input. Caller decides whether to
+    save based on the changes list — this function never writes.
+    """
+    if not isinstance(entry, dict):
+        raise ValueError("entry must be a dict")
+    new = dict(entry)
+    changes: list[tuple[str, object, object]] = []
+
+    if translation is not None:
+        new_translation = translation.strip()
+        if not new_translation:
+            raise ValueError("empty --translation")
+        source = entry.get("source") or ""
+        if (
+            isinstance(source, str)
+            and source
+            and _CJK_RE.search(source)
+            and _CJK_RE.search(new_translation)
+        ):
+            raise ValueError(
+                f"translation '{new_translation}' still contains source-language "
+                f"characters"
+            )
+        old = entry.get("translation")
+        if old != new_translation:
+            new["translation"] = new_translation
+            changes.append(("translation", old, new_translation))
+
+    if definition is not None:
+        old = entry.get("definition")
+        if old != definition:
+            new["definition"] = definition
+            changes.append(("definition", old, definition))
+
+    if category is not None:
+        if category not in CATEGORIES:
+            raise ValueError(
+                f"unknown --category '{category}' "
+                f"(must be one of: {', '.join(CATEGORIES)})"
+            )
+        old = entry.get("category")
+        if old != category:
+            new["category"] = category
+            changes.append(("category", old, category))
+
+    if add_variant or remove_variant:
+        old_variants = list(entry.get("variants") or [])
+        new_variants = list(old_variants)
+        for v in add_variant or []:
+            if isinstance(v, str) and v and v not in new_variants:
+                new_variants.append(v)
+        for v in remove_variant or []:
+            if v in new_variants:
+                new_variants.remove(v)
+        if new_variants != old_variants:
+            new["variants"] = new_variants
+            changes.append(("variants", list(old_variants), list(new_variants)))
+
+    if alt_translations is not None or add_alt or remove_alt:
+        old_alts = list(entry.get("alt_translations") or [])
+        if alt_translations is not None:
+            # Replace semantics: split on comma, strip, drop empties.
+            new_alts = [a.strip() for a in alt_translations.split(",")]
+            new_alts = [a for a in new_alts if a]
+        else:
+            new_alts = list(old_alts)
+        for a in add_alt or []:
+            if isinstance(a, str) and a and a not in new_alts:
+                new_alts.append(a)
+        for a in remove_alt or []:
+            if a in new_alts:
+                new_alts.remove(a)
+        if new_alts != old_alts:
+            new["alt_translations"] = new_alts
+            changes.append(
+                ("alt_translations", list(old_alts), list(new_alts))
+            )
+
+    return new, changes
+
+
+def merge_entries(
+    g: dict, keep_source: str, remove_source: str,
+) -> tuple[dict, str, int, int, bool]:
+    """Merge the `remove_source` entry into the `keep_source` entry in place.
+
+    Union `remove`'s `variants` and `alt_translations` into the kept entry
+    (keep-first, deduped — set semantics). Fill the kept entry's
+    `definition` only when it is empty AND the removed entry has one. Append
+    `remove_source` to the top-level `retired` list (set semantics — no
+    duplicates). Drop the removed entry from `terms`. The kept entry's
+    `translation`, `category`, `origin`, and `first_seen_chapter` are
+    preserved verbatim.
+
+    Returns (kept_entry, remove_source_key, variants_added, alt_added,
+    definition_filled). Raises ValueError when either entry is missing or
+    the two resolve to the same entry. Never writes — caller saves.
+
+    Pre-condition: callers should detect "remove already retired" up front
+    via retired_sources(g) for a friendly no-op message; this helper does
+    not look at `g["retired"]` (a merge against an already-retired source
+    would simply fail to find the entry).
+    """
+    if keep_source == remove_source:
+        raise ValueError(
+            f"--keep and --remove must be distinct ('{keep_source}')"
+        )
+    keep = find(g, keep_source)
+    if keep is None:
+        raise ValueError(f"no glossary entry for --keep '{keep_source}'")
+    remove = find(g, remove_source)
+    if remove is None:
+        raise ValueError(f"no glossary entry for --remove '{remove_source}'")
+    if keep is remove:
+        # Source-vs-variant collision resolving to one entry: refuse.
+        raise ValueError(
+            f"--keep and --remove must be distinct ('{keep_source}')"
+        )
+
+    keep_variants = list(keep.get("variants") or [])
+    variants_added = 0
+    for v in (remove.get("variants") or []):
+        if isinstance(v, str) and v and v not in keep_variants:
+            keep_variants.append(v)
+            variants_added += 1
+
+    keep_alts = list(keep.get("alt_translations") or [])
+    alt_added = 0
+    for a in (remove.get("alt_translations") or []):
+        if isinstance(a, str) and a and a not in keep_alts:
+            keep_alts.append(a)
+            alt_added += 1
+
+    def_filled = False
+    keep_def = (keep.get("definition") or "").strip()
+    remove_def = (remove.get("definition") or "").strip()
+    if not keep_def and remove_def:
+        keep["definition"] = remove.get("definition")
+        def_filled = True
+
+    keep["variants"] = keep_variants
+    keep["alt_translations"] = keep_alts
+
+    terms = g.get("terms", [])
+    for i, item in enumerate(terms):
+        if item is remove:
+            del terms[i]
+            break
+
+    retired = [s for s in (g.get("retired") or []) if isinstance(s, str)]
+    remove_key = remove.get("source")
+    if isinstance(remove_key, str) and remove_key not in retired:
+        retired.append(remove_key)
+    g["retired"] = retired
+
+    return keep, (remove_key if isinstance(remove_key, str) else remove_source), \
+        variants_added, alt_added, def_filled
 
 
 def upsert(g: dict, entry: dict) -> bool:
