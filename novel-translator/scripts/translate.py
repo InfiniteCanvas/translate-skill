@@ -35,7 +35,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, cover, fix, glossary, logger, pipeline, project, replace, review, tn  # noqa: E402
+from lib import client, config, cover, epub, fix, glossary, logger, pipeline, project, replace, review, tn  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
