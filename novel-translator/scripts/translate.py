@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, cover, epub, glossary, logger, pipeline, project, replace, review, tn  # noqa: E402
+from lib import client, config, cover, fix, glossary, logger, pipeline, project, replace, review, tn  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
@@ -667,7 +668,91 @@ def cmd_mark(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
+    """Post-hoc fixer driver: parse review-report.md and run every machine-
+    applicable finding as a glossary subcommand. Pure Python, no LLM calls.
+
+    Two parser modes share the writer's vocabulary through
+    review.command_for_finding():
+      1. Explicit: - Command: bullets from a freshly-written report.
+      2. Legacy synthesis: walk finding blocks when zero Command bullets exist
+         (the project's pre-Step-2 reports).
+    """
+    if args.fix:
+        raise CliError(
+            "--fix applies to 'review glossary' only; not 'review fix'"
+        )
+    report_path = Path(args.glossary)
+    if not report_path.is_absolute():
+        report_path = (project_dir / report_path).resolve()
+    if not report_path.is_file():
+        raise CliError(f"report not found: {report_path}")
+
+    try:
+        specs, findings_count = fix.parse_report(report_path)
+    except fix.FixError as exc:
+        raise CliError(str(exc)) from exc
+
+    # Dry-run: list every spec + summary, apply nothing.
+    if args.dry_run:
+        for i, spec in enumerate(specs, 1):
+            f = spec.finding
+            tag = f.get("kind", "?")
+            src = f.get("source", "?")
+            line = " ".join(shlex.quote(t) for t in spec.argv)
+            print(f"[review fix] [{i}] {tag} {src}: {line}")
+        needs_decision = max(findings_count - len(specs), 0)
+        print(
+            f"[review fix] dry-run: {len(specs)} command(s), "
+            f"{needs_decision} finding(s) need a decision"
+        )
+        return 0
+
+    # Real run: execute each spec as a subprocess, then one final epub build
+    # when chapters changed.
+    result = fix.run_commands(
+        project_dir, SCRIPT_DIR / "translate.py", specs,
+        exit_on_error=bool(args.exit_on_error),
+    )
+    applied = result["applied"]
+    noop = result["noop"]
+    failed = result["failed"]
+    changed_chapters = result["changed_chapters"]
+    needs_decision = max(findings_count - result["specs_run"], 0)
+
+    logger.log_event(project_dir, {
+        "event": "review_fix",
+        "specs_run": result["specs_run"],
+        "applied": applied,
+        "noop": noop,
+        "failed": failed,
+        "changed_chapters": changed_chapters,
+        "needs_decision": needs_decision,
+    })
+
+    print(
+        f"[review fix] applied {applied} / no-op {noop} / failed {failed}"
+        f" of {result['specs_run']} command(s); "
+        f"{needs_decision} finding(s) need a decision"
+    )
+
+    if changed_chapters:
+        _maybe_autobuild(
+            project_dir, _load_config_lenient(project_dir),
+            "review fix", True,
+        )
+
+    return 1 if failed else 0
+
+
 def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
+    # The "fix" subject reuses the same dispatcher so `--fix` (apply_fixes),
+    # `--batch-size`, and the model pipeline stay attached to "glossary".
+    # The early branch MUST come before args.batch_size validation: the
+    # parse_report path doesn't need --batch-size and would fail validation
+    # on the way through.
+    if args.subject == "fix":
+        return cmd_review_fix(args, project_dir)
     if args.batch_size < 1:
         raise CliError("--batch-size must be a positive integer")
     cfg = _load_config(project_dir)
@@ -1018,12 +1103,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_mark)
 
     p = sub.add_parser("review", parents=[common],
-                       help="advisory quality review (glossary: source-translation alignment audit)")
-    p.add_argument("subject", choices=["glossary"], help="what to review")
+                       help="advisory quality review (glossary: source-translation alignment audit; fix: apply a report's machine-applicable findings)")
+    p.add_argument("subject", choices=["glossary", "fix"], help="what to review")
     p.add_argument("--fix", action="store_true",
-                   help="apply guarded model-suggested fixes (translation/definition/category)")
+                   help="(subject=glossary only) apply guarded model-suggested fixes (translation/definition/category)")
     p.add_argument("--batch-size", type=int, default=review.DEFAULT_BATCH_SIZE, metavar="N",
-                   help="glossary entries per model review call (default 40)")
+                   help="(subject=glossary) entries per model review call (default 40)")
+    p.add_argument("--glossary", metavar="PATH", default="review-report.md",
+                   help="(subject=fix) path to the review report (default review-report.md)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="(subject=fix) print each command without invoking")
+    p.add_argument("--exit-on-error", action="store_true",
+                   help="(subject=fix) stop at the first failed command (default: continue past failures)")
     p.set_defaults(func=cmd_review)
 
     p = sub.add_parser("util", parents=[common],
