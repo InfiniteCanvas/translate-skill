@@ -274,10 +274,13 @@ def _signals_chapter_change(out: str) -> bool:
     """True when a successful `glossary replace` rewrote at least one
     chapter. The existing console line is "[replace] Chapter_NNNN.md: N
     occurrence(s)"; the summary "[ok] replaced X occurrence(s) in Y
-    chapter(s)" carries the Y count."""
-    if "replaced 0 occurrence" in out.lower():
+    chapter(s)" carries the Y count. The zero-match warning ("no
+    occurrences of ... chapter(s) scanned") mentions both words while
+    nothing was rewritten, so it is excluded explicitly."""
+    lower = out.lower()
+    if "replaced 0 occurrence" in lower or "no occurrences of" in lower:
         return False
-    return "occurrence" in out.lower() or "chapter" in out.lower()
+    return "occurrence" in lower or "chapter" in lower
 
 
 def format_command_line(argv: list[str]) -> str:
