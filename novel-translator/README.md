@@ -125,6 +125,12 @@ seeding:
 
     uv run scripts/translate.py seed --project .
 
+To find entries before editing them (read-only; see Bulk review fixes for
+the matching semantics):
+
+    uv run scripts/translate.py glossary search --project . TERM \
+        [--max-distance N]
+
 To audit entry quality (nothing else does -- the balance check only
 counts occurrences, cleanup only judges drift-flagged terms):
 
@@ -242,6 +248,8 @@ The new subcommands enabled for the batch flow:
         [--alt-translations "A,B"] [--add-alt A] [--remove-alt A]
     uv run scripts/translate.py glossary merge --project . --keep K --remove R
     uv run scripts/translate.py glossary retire --project . --source X
+    uv run scripts/translate.py glossary search --project . TERM \
+        [--max-distance N]
 
 `glossary set` applies any combination of `--translation`, `--definition`,
 `--category`, `--add-variant` / `--remove-variant`,
@@ -264,6 +272,15 @@ for a single source; already-retired sources print
 
 `glossary replace` gains `--no-build` to skip the post-success epub
 build for batch callers (the replace behavior itself is unchanged).
+
+`glossary search TERM` is the read-only lookup that pairs with the editing
+subcommands: it matches TERM case-insensitively against every entry's
+`source`, `variants`, `translation`, and `alt_translations` (both sides) --
+substring containment always hits, and Levenshtein within `--max-distance`
+(default 2; `0` = substring only) matches whole values or single words with
+no separator special-casing (`grand elder` finds `grand-elder`). Retired
+matches print `[glossary] retired match: ...` info lines. Exit 0 with
+matches, 1 none, 2 error.
 
 ## Shipping
 

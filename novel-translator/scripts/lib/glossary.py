@@ -29,9 +29,9 @@ import re
 from pathlib import Path
 
 try:
-    from . import project
+    from . import project, balance
 except ImportError:  # imported with scripts/lib directly on sys.path
-    import project
+    import project, balance
 
 CATEGORIES = ("place", "person", "org", "skill", "technique", "level",
               "state", "item", "honorific", "other")
@@ -74,6 +74,88 @@ def find(g: dict, source: str) -> dict | None:
         if entry.get("source") == source or source in (entry.get("variants") or []):
             return entry
     return None
+
+
+def _entry_fields(entry: dict) -> list[tuple[str, str]]:
+    """(kind, text) pairs for every searchable field, in display order:
+    source, variants, translation, alt_translations. Skips non-str/empty."""
+    fields: list[tuple[str, str]] = []
+    for kind, values in (
+        ("source", [entry.get("source")]),
+        ("variant", entry.get("variants") or []),
+        ("translation", [entry.get("translation")]),
+        ("alt", entry.get("alt_translations") or []),
+    ):
+        for value in values:
+            if isinstance(value, str) and value:
+                fields.append((kind, value))
+    return fields
+
+
+def _match_value(q: str, value: str, max_distance: int) -> int | None:
+    """Distance for one field value against casefolded query `q`, or None.
+
+    0 = substring containment (always active). Fuzzy tier (only when
+    max_distance > 0 and len(q) > max_distance): whole-value or
+    whitespace-token levenshtein within max_distance.
+    """
+    low = value.casefold()
+    if q in low:
+        return 0
+    if max_distance <= 0 or len(q) <= max_distance:
+        return None
+    candidates = [low] + low.split()
+    best = min(balance.levenshtein(q, c, band=max_distance) for c in candidates)
+    return best if best <= max_distance else None
+
+
+def search(g: dict, query: str, max_distance: int = 2) -> dict:
+    """Case-insensitive substring + Levenshtein lookup across every
+    entry's source, variants, translation and alt_translations.
+
+    Matching is uniform edit distance on casefolded strings — separators
+    get no special casing, so 'grand elder' finds 'grand-elder',
+    'grand_elder' and 'grandxelder' each at distance 1, and 'grand-elder'
+    finds 'grand elder'. Substring hits are distance 0. Token-level fuzzy
+    is what catches single-word typos inside multi-word values
+    ('Foundaition' -> 'Foundation Establishment'). Retired sources are
+    matched the same way but returned separately — informational only
+    (never re-seed a retired source), never counted as matches.
+
+    Returns {"matches": [{"entry": ..., "hits": [(kind, text, distance),
+    ...]}, ...], "retired": [(source, distance), ...]} where kind is one
+    of "source" | "variant" | "translation" | "alt". Entries with a
+    substring hit sort first, then fuzzy hits by smallest distance, ties
+    in glossary file order; hits within an entry keep field order. Pure
+    function — never writes.
+    """
+    q = query.casefold()
+    if not q:
+        return {"matches": [], "retired": []}
+
+    ranked: list[tuple[tuple[int, int], dict]] = []
+    for entry in g.get("terms", []):
+        hits: list[tuple[str, str, int]] = []
+        for kind, value in _entry_fields(entry):
+            distance = _match_value(q, value, max_distance)
+            if distance is not None:
+                hits.append((kind, value, distance))
+        if hits:
+            distances = [d for _kind, _text, d in hits]
+            rank = (0 if 0 in distances else 1, min(distances))
+            ranked.append((rank, {"entry": entry, "hits": hits}))
+    ranked.sort(key=lambda pair: pair[0])  # stable: file order survives ties
+    matches = [match for _rank, match in ranked]
+
+    retired: list[tuple[str, int]] = []
+    for source in g.get("retired") or []:
+        if not isinstance(source, str):
+            continue
+        distance = _match_value(q, source, max_distance)
+        if distance is not None:
+            retired.append((source, distance))
+
+    return {"matches": matches, "retired": retired}
 
 
 def retired_sources(g: dict) -> set[str]:

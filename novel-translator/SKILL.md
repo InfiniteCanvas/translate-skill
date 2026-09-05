@@ -254,7 +254,8 @@ background build too.
   Template files missing from a project's `templates/` dir fall back to
   the skill's `assets/templates/`, so newly shipped templates work in old
   projects.
-- **Glossary upkeep**: hand-fix bad entries any time; the balance check reads
+- **Glossary upkeep**: hand-fix bad entries any time (`glossary search` is
+  the read-only lookup — see Bulk review fixes); the balance check reads
   `glossary.json` fresh for every chapter. Nothing in the pipeline audits
   ENTRY quality — `uv run "$SCRIPT" review glossary --project .` does: a
   deterministic heuristic tier (cross-entry duplicate/variant collisions;
@@ -398,3 +399,11 @@ The new subcommands enabled for the batch flow:
   --translation T [--keep-alt] [--no-build] [--dry-run]` — `--no-build` is
   new and skips the auto epub build for batch runs; the replace behavior
   itself is unchanged.
+- `uv run "$SCRIPT" glossary search --project . TERM [--max-distance N]` —
+  read-only lookup across `source`, `variants`, `translation`, and
+  `alt_translations` (both sides) to find entries before the editing
+  subcommands above: case-insensitive substring always hits, plus fuzzy
+  Levenshtein within `--max-distance` (default 2; `0` = substring only)
+  against whole values or single words, with no separator special-casing
+  (`grand elder` finds `grand-elder`); retired matches print `[glossary]
+  retired match: ...` info lines. Exit 0 with matches, 1 none, 2 error.

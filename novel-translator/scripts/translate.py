@@ -8,7 +8,7 @@
 Subcommands: init, ping, seed, profile, styles, status, translate, retry,
 mark, review, util, glossary, build-epub.
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
-had failures, 2 usage or setup error.
+had failures / glossary search found nothing, 2 usage or setup error.
 """
 
 from __future__ import annotations
@@ -855,7 +855,7 @@ def cmd_util(args: argparse.Namespace, project_dir: Path) -> int:
 
 
 def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
-    """Dispatch on args.action: replace / set / merge / retire."""
+    """Dispatch on args.action: replace / set / merge / retire / search."""
     if args.action == "replace":
         return _cmd_glossary_replace(args, project_dir)
     if args.action == "set":
@@ -864,6 +864,8 @@ def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
         return _cmd_glossary_merge(args, project_dir)
     if args.action == "retire":
         return _cmd_glossary_retire(args, project_dir)
+    if args.action == "search":
+        return _cmd_glossary_search(args, project_dir)
     raise CliError(f"unknown glossary action: {args.action}")
 
 
@@ -991,6 +993,49 @@ def _cmd_glossary_retire(args: argparse.Namespace, project_dir: Path) -> int:
     if not removed:
         raise CliError(f"no glossary entry for '{args.source}'")
     print(f"[glossary] retired: {args.source}")
+    return 0
+
+
+def _cmd_glossary_search(args: argparse.Namespace, project_dir: Path) -> int:
+    """Read-only lookup: case-insensitive substring plus fuzzy Levenshtein
+    (<= --max-distance, default 2) across source/variants/translation/
+    alt_translations. Exit 0 with matches, 1 with none (grep convention)."""
+    if args.max_distance < 0:
+        raise CliError("--max-distance must be >= 0")
+    term = args.term.strip()
+    if not term:
+        raise CliError("search term must be non-empty")
+    _probe_glossary(project_dir)
+    g = glossary.load(project_dir)
+    result = glossary.search(g, term, max_distance=args.max_distance)
+    matches = result["matches"]
+    retired = result["retired"]
+
+    if not matches:
+        for src, distance in retired:
+            note = f" (distance {distance})" if distance > 0 else ""
+            print(f"[glossary] retired match: '{src}'{note}")
+        print(f"[glossary] no matches for '{term}'")
+        return 1
+
+    n = len(matches)
+    note = f" (fuzzy distance <= {args.max_distance})" if args.max_distance > 0 else ""
+    print(f"[glossary] {n} match{'es' if n != 1 else ''} for '{term}'{note}")
+    for match in matches:
+        entry = match["entry"]
+        source = entry.get("source") or ""
+        translation = entry.get("translation") or ""
+        category = entry.get("category") or "other"
+        bits = []
+        for kind, text, distance in match["hits"]:
+            label = kind if kind in ("source", "translation") else f"{kind} '{text}'"
+            bits.append(
+                f"= {label}" if distance == 0 else f"~ {label} (distance {distance})"
+            )
+        print(f"  {source} -> {translation} [{category}]  {'; '.join(bits)}")
+    for src, distance in retired:
+        note = f" (distance {distance})" if distance > 0 else ""
+        print(f"[glossary] retired match: '{src}'{note}")
     return 0
 
 
@@ -1129,7 +1174,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_util)
 
     p = sub.add_parser("glossary", parents=[common],
-                       help="glossary upkeep (replace | set | merge | retire)")
+                       help="glossary upkeep (replace | set | merge | retire | search)")
     gloss_sub = p.add_subparsers(dest="action", required=True, metavar="action")
 
     pr = gloss_sub.add_parser("replace",
@@ -1181,6 +1226,14 @@ def _build_parser() -> argparse.ArgumentParser:
     pt.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term to retire (matched by source or variants)")
     pt.set_defaults(func=cmd_glossary)
+
+    pse = gloss_sub.add_parser("search",
+                               help="find entries by source or translation (substring + fuzzy)")
+    pse.add_argument("term", metavar="TERM",
+                     help="text to look for in source, variants, translation and alts")
+    pse.add_argument("--max-distance", type=int, default=2, metavar="N",
+                     help="max Levenshtein distance for fuzzy matches (default 2; 0 = substring only)")
+    pse.set_defaults(func=cmd_glossary)
 
     p = sub.add_parser("build-epub", parents=[common], help="assemble translated chapters into an EPUB")
     p.add_argument("--skip-check", action="store_true", help="skip the epubcheck validation")
