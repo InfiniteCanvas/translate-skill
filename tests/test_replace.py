@@ -3,8 +3,10 @@
 Covers build_matcher's Latin/CJK split and \\b-bounded multi-word semantics,
 replace_text's capitalization and inflection-suffix polish, replace_chapters'
 manifest-driven surgical rewrite (frontmatter byte-verbatim, [^N] markers,
-dry-run, missing files, untouched files never rewritten), and glossary_replace's
-source-or-variant lookup, alt pruning, noop short-circuit, and dry-run.
+dry-run, missing files, untouched files never rewritten), glossary_replace's
+source-or-variant lookup, alt pruning, noop short-circuit, and dry-run, and
+the matcher pre-flight: a deterministic build_matcher failure (an old
+translation of bare punctuation) must fire BEFORE the glossary save.
 
 All chapter/glossary fixtures are built inside tempfile.TemporaryDirectory()
 sandboxes per case — repo fixtures are never touched. Files are written with
@@ -457,6 +459,42 @@ def case_5_guards() -> None:
         check("5f guards: corrupt manifest -> ReplaceError (no raw ValueError)", ok)
 
 
+def case_6_preflight() -> None:
+    """Matcher pre-flight: build_matcher(old) runs BEFORE glossary.save, so
+    a deterministic setup failure leaves glossary.json byte-unchanged. Only
+    hyphen/whitespace-only old translations fail ('-' has no matchable
+    words); '...' escapes into a valid regex and the run proceeds."""
+    # Case A: old translation '-' -> ReplaceError, glossary bytes untouched
+    with tempfile.TemporaryDirectory() as td:
+        root, _before = make_glossary_project(td)
+        entry = load_glossary_entry(root)
+        entry["translation"] = "-"
+        write_lf(root / "glossary.json", json.dumps({"terms": [entry]}, ensure_ascii=False, indent=2) + "\n")
+        hyphen_bytes = (root / "glossary.json").read_bytes()
+        ok = raises_replace_error(lambda: R.glossary_replace(root, "灵根", "new rendering"))
+        check("6a pre-flight: '-' old translation -> ReplaceError", ok)
+        check("6b pre-flight: glossary.json byte-identical after the '-' failure",
+              (root / "glossary.json").read_bytes() == hyphen_bytes)
+
+    # Case B: old '...' builds a valid regex -> no pre-flight failure; the
+    # glossary save lands and the (match-free) chapter rewrite completes.
+    with tempfile.TemporaryDirectory() as td:
+        root, _before = make_glossary_project(td)
+        entry = load_glossary_entry(root)
+        entry["translation"] = "..."
+        write_lf(root / "glossary.json", json.dumps({"terms": [entry]}, ensure_ascii=False, indent=2) + "\n")
+        rep = R.glossary_replace(root, "灵根", "new rendering")
+        entry = load_glossary_entry(root)
+        check("6c pre-flight: '...' old translation does NOT fail (run completes)",
+              rep["glossary"]["old"] == "..."
+              and rep["glossary"]["new"] == "new rendering"
+              and rep["glossary"]["noop"] is False
+              and rep["chapters"]["occurrences"] == 0,
+              f"rep={rep}")
+        check("6d pre-flight: '...' run saved the new translation on disk",
+              entry["translation"] == "new rendering", f"entry={entry}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -467,6 +505,7 @@ def main() -> int:
     case_3_replace_chapters()
     case_4_glossary_replace()
     case_5_guards()
+    case_6_preflight()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

@@ -189,8 +189,11 @@ def build(
     paths = project.paths(project_dir)
     manifest = project.load_manifest(project_dir)
 
+    # Iterate in `order` like every other manifest consumer (see
+    # replace.replace_chapters): spine/TOC order must follow chapter order
+    # even when chapters.json was hand-edited or reordered on disk.
     chapter_paths: list[Path] = []
-    for entry in manifest:
+    for entry in sorted(manifest, key=lambda e: int(e.get("order", 0))):
         if entry.get("status") != "translated":
             continue
         path = Path(paths["translated"]) / entry["file"]

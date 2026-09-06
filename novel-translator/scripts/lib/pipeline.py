@@ -564,7 +564,11 @@ def _estimate_output_tokens(lines: list[str]) -> int:
     output genuinely cannot fit the per-call cap.
     """
     text = "\n".join(lines)
-    cjk = len(re.findall(r"[\u3000-\u9fff\uff00-\uffef]", text))
+    # balance.CJK_RE is the skill-wide CJK class (slightly wider than the old
+    # local range: adds CJK compat ideographs + halfwidth katakana) — an
+    # estimate only tolerates the delta, and sharing one regex keeps the
+    # chunker and the balance checks speaking the same language.
+    cjk = len(balance.CJK_RE.findall(text))
     return int(cjk * 1.0 + (len(text) - cjk) / 4) + len(lines) * 10 + 256
 
 

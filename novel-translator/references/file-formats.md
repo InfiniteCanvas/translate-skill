@@ -27,7 +27,8 @@ hand-fix.
 ```
 
 Chapter file names must match `Chapter_NNNN.md` (1-4 digit zero-padded
-number), optionally with a lowercase letter suffix for extras/bonus chapters:
+number, matching is case-insensitive), optionally with a letter suffix for
+extras/bonus chapters:
 `Chapter_0042a.md` sorts between `Chapter_0042.md` and `Chapter_0043.md`.
 Chapter order = position in the file list sorted numerically by the parsed
 `(number, suffix)` — so `Chapter_999` sorts before `Chapter_1000`; that order
@@ -81,7 +82,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   },
   "seed_min_count": 3,           // catalogue term must appear >= N times in source/ to seed
   "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; 0 renderings with src>=2 is a drift signal handed to the FAITH reviewer
-  "fuzzy_max_distance": 2,       // Levenshtein tolerance for single-word targets (phrases match verbatim; hyphens/space are equivalent on both sides)
+  "fuzzy_max_distance": 2,       // Levenshtein tolerance for single-word targets of >= 5 letters; multi-word phrases match case-insensitively with hyphen/space equivalence plus an optional inflection on the final word
   "glossary_auto_cleanup": true, // balance drift signals: retire mundane terms via a cleanup judgment; kept signals go to the FAITH reviewer; false = skip the judgment
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "tn_keep_low_confidence": false, // keep threshold:"low" notes instead of dropping them (default drops)
@@ -177,7 +178,7 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
       "first_seen_chapter": 12           // order index where a model-proposed term first appeared
     }
   ],
-  "retired": ["灵气"]                    // optional; sources removed by balance auto-cleanup — seed and glossary expansion skip them, delete a source here to allow re-adding
+  "retired": ["灵气"]                    // optional; sources removed from the glossary (balance auto-cleanup, glossary merge/retire) — always the entry's CANONICAL source, even when the term was matched via a variant; seed and glossary expansion skip them, delete a source here to allow re-adding
 }
 ```
 
@@ -212,9 +213,8 @@ merge-borrowed from the model; heuristic findings also carry **optional**
 `variant_to_remove` (variant finding) and `merge_with` (duplicate finding)
 keys whose value is the structured string the writer needs to emit a
 machine-applicable Command, so downstream consumers never have to parse
-free-form reason text. Each `variants` / `alt_translations` array on an
-applied fix record is the after-state. The `--fix`
-  results `applied: [{source, field, old, new}]` /
+free-form reason text. The `--fix`
+  results `applied: [{source, field, kind, old, new}]` /
   `skipped: [{source, field, reason}]`.
 - Hand-editing entries between runs is safe and encouraged — the file is read
   fresh before every chapter. Hand-added entries need at least `source` and
@@ -318,6 +318,13 @@ when the fix is **fully determined by the finding's structured fields**
 | heuristic `duplicate` (has `merge_with`)             | `glossary merge --keep M --remove S` |
 | model-tier `duplicate` / `variant`, suggestion-less `collision`, `other` | _(no Command bullet — decision item)_ |
 
+`review fix` pre-validates each command before running it: a `glossary
+replace` / `set --translation` whose suggested value still contains
+source-script characters for a CJK-source entry is skipped in-process
+(console: `[review fix] skipped [N]: suggestion not in target language`)
+and counted as needing a decision — the same guard `review glossary
+--fix` applies to its own fixes.
+
 Older reports (no `- Command:` bullets, `- Command:` header that
 records the generating command) remain fully supported: `review fix`
 synthesises the same commands from the heading + `- Suggestion:` bullet
@@ -357,7 +364,7 @@ For `Chapter_0001.md` the pipeline creates:
 |---|---|
 | `Chapter_0001.md` | human-readable current translation draft (frontmatter + lines) |
 | `Chapter_0001.lines.json` | `{"title": "...", "lines": [...]}` — written per attempt as a debug artifact; nothing reads it back |
-| `Chapter_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "feedback": [...], "notes": [...], "updated_at"}` — `title`/`lines` hold the draft translation (crash-resume past TRANSLATE) |
+| `Chapter_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "feedback": [...], "notes": [...], "updated_at", "pipeline"}` — `pipeline` is the state-schema version; `title`/`lines` hold the draft translation (crash-resume past TRANSLATE) |
 
 `stage` is one of `TRANSLATE, VALIDATE, BALANCE, FAITH, GLOSSARY_EXPAND,
 TN_GENERATE, TN_DEDUP, ASSEMBLE`. `feedback` accumulates everything the gates

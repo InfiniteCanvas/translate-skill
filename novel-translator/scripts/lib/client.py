@@ -109,7 +109,7 @@ def probe(provider_cfg: dict, timeout: int = 30) -> str:
 
 
 def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
-         temperature: float | None = None, max_tokens: int | None = None,
+         max_tokens: int | None = None,
          meta_hook: Callable[[dict], None] | None = None) -> str:
     """One chat completion against an OpenAI-compatible server; returns
     choices[0].message.content.strip().
@@ -142,7 +142,9 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     body: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": temperature if temperature is not None else provider_cfg.get("temperature", 0.2),
+        # Temperature comes from the provider block only — every job bakes
+        # its sampling profile into config defaults (translator 0.7, etc.).
+        "temperature": provider_cfg.get("temperature", 0.2),
         "max_tokens": max_tokens or provider_cfg.get("max_tokens", 16384),
     }
     # Optional sampling knobs: a key is sent only when the provider block

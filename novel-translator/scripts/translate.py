@@ -118,6 +118,20 @@ def _maybe_autobuild(project_dir: Path, cfg: dict | None, reason: str, changed: 
         print(f"[warn] epub auto-build failed: {type(exc).__name__}: {exc}")
 
 
+def _load_novel_info(project_dir: Path) -> dict:
+    """Strict novel_info.json read for commands that rewrite or build from it
+    (profile, build-epub): missing file or a corrupt JSON body is a setup
+    error (exit 2), never a mid-command traceback. cmd_status deliberately
+    stays lenient ({}) so chapter status remains visible when this file dies."""
+    paths = project.paths(project_dir)
+    if not paths["novel_info"].is_file():
+        raise CliError(f"{paths['novel_info']} not found - run 'init' first")
+    try:
+        return json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
+        raise CliError(f"novel_info.json is corrupt: {exc}") from exc
+
+
 def _print_replacement(result: dict, dry_run: bool, old: str) -> None:
     """Shared console report for util/glossary replace chapter rewrites."""
     prefix = "[dry-run] " if dry_run else ""
@@ -244,6 +258,18 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     )
     print(f"[init] wrote {paths['novel_info'].name}")
 
+    # The reset below silently discards model-grown state (months of
+    # GLOSSARY_EXPAND terms and translator's-note history) whenever a
+    # glossary.json is already there -- including the odd case of a deleted
+    # config.json beside a surviving glossary. Announce the loss; the term
+    # count comes from a best-effort parse (corrupt file -> no count).
+    if paths["glossary"].is_file():
+        try:
+            terms = glossary.load(project_dir).get("terms", [])
+            note = f" ({len(terms)} term(s))" if isinstance(terms, list) else ""
+        except (OSError, ValueError):
+            note = ""
+        print(f"[init] --force: resetting glossary.json{note} and tn_history.json")
     glossary.save(project_dir, glossary.empty())
     paths["tn_history"].write_text("{}\n", encoding="utf-8")
     print(f"[init] initialized {paths['glossary'].name} and {paths['tn_history'].name}")
@@ -443,10 +469,8 @@ def cmd_seed(args: argparse.Namespace, project_dir: Path) -> int:
 
 def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
-    paths = project.paths(project_dir)
-    if not paths["novel_info"].is_file():
-        raise CliError(f"{paths['novel_info']} not found - run 'init' first")
-    novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+    paths = project.paths(project_dir)  # write-back target after generation
+    novel_info = _load_novel_info(project_dir)
 
     sample_chapters = (
         int(args.chapters) if args.chapters is not None
@@ -694,18 +718,38 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     except fix.FixError as exc:
         raise CliError(str(exc)) from exc
 
-    # Dry-run: list every spec + summary, apply nothing.
+    # Dry-run: list every spec + summary, apply nothing. Specs whose command
+    # would be rejected as an invalid translation (e.g. a suggestion that is
+    # still source-language CJK) get a SKIP annotation through a defensive
+    # hook -- invalid_translation_reason is landing in fix.py concurrently,
+    # so its absence (or an unreadable glossary) just means plain lines.
     if args.dry_run:
+        reason_of = getattr(fix, "invalid_translation_reason", None)
+        g = None
+        if reason_of is not None:
+            try:
+                g = glossary.load(project_dir)
+            except (OSError, ValueError):
+                g = None
+        n_skip = 0
         for i, spec in enumerate(specs, 1):
             f = spec.finding
             tag = f.get("kind", "?")
             src = f.get("source", "?")
             line = " ".join(shlex.quote(t) for t in spec.argv)
-            print(f"[review fix] [{i}] {tag} {src}: {line}")
-        needs_decision = max(findings_count - len(specs), 0)
+            reason = reason_of(spec.argv, g) if reason_of is not None and g is not None else None
+            if reason:
+                n_skip += 1
+                print(f"[review fix] [{i}] SKIP ({reason}): {line}")
+            else:
+                print(f"[review fix] [{i}] {tag} {src}: {line}")
+        # Skipped specs never execute, so (like the real run's specs_run)
+        # they still count as findings awaiting a decision.
+        needs_decision = max(findings_count - (len(specs) - n_skip), 0)
         print(
-            f"[review fix] dry-run: {len(specs)} command(s), "
-            f"{needs_decision} finding(s) need a decision"
+            f"[review fix] dry-run: {len(specs)} command(s)"
+            + (f", {n_skip} would be skipped (invalid suggestion)" if n_skip else "")
+            + f", {needs_decision} finding(s) need a decision"
         )
         return 0
 
@@ -718,6 +762,10 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     applied = result["applied"]
     noop = result["noop"]
     failed = result["failed"]
+    # .get, not []: run_commands gains "skipped_invalid" (commands rejected
+    # before execution, e.g. CJK suggestion for a CJK-source entry) alongside
+    # fix.py's skip guard; versions without the guard report 0 via the default.
+    invalid = int(result.get("skipped_invalid", 0))
     changed_chapters = result["changed_chapters"]
     needs_decision = max(findings_count - result["specs_run"], 0)
 
@@ -727,13 +775,14 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
         "applied": applied,
         "noop": noop,
         "failed": failed,
+        "skipped_invalid": invalid,
         "changed_chapters": changed_chapters,
         "needs_decision": needs_decision,
     })
 
     print(
         f"[review fix] applied {applied} / no-op {noop} / failed {failed}"
-        f" of {result['specs_run']} command(s); "
+        f" / skipped {invalid} of {result['specs_run']} command(s); "
         f"{needs_decision} finding(s) need a decision"
     )
 
@@ -796,14 +845,10 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
         for s in skipped:
             print(f"[glossary] warn fix skipped for '{s['source']}' ({s['field']}): {s['reason']}")
 
-    # A fix resolves every finding on the same entry FIELD, not just the
-    # finding kind it came from (e.g. a mistranslation fix also resolves the
-    # wrong_language warn it superseded).
-    resolved = {(a["source"], a["field"]) for a in applied}
-
-    def outstanding(f: dict) -> bool:
-        field = review.field_for_kind(f["kind"])
-        return field is None or (f["source"], field) not in resolved
+    # A fix resolves every finding on the same entry FIELD (see
+    # review.outstanding_filter) -- shared with write_report so the console
+    # tallies and the report's outstanding indices never drift.
+    outstanding = review.outstanding_filter(applied)
 
     warns = sum(1 for f in findings if f["severity"] == "warn" and outstanding(f))
     infos = sum(1 for f in findings if f["severity"] == "info" and outstanding(f))
@@ -1041,10 +1086,7 @@ def _cmd_glossary_search(args: argparse.Namespace, project_dir: Path) -> int:
 
 def cmd_build_epub(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
-    paths = project.paths(project_dir)
-    if not paths["novel_info"].is_file():
-        raise CliError(f"{paths['novel_info']} not found - run 'init' first")
-    novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+    novel_info = _load_novel_info(project_dir)
 
     try:
         epub_path, ok, output = epub.build(project_dir, novel_info, cfg, bool(args.skip_check))
@@ -1076,7 +1118,9 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Staged, resumable novel translation pipeline (CJK -> target language).",
     )
     # Accept --project both before and after the subcommand (separate dests so
-    # the subparser default can't clobber a value given before it).
+    # the subparser default can't clobber a value given before it); nested
+    # glossary actions carry a third dest (see glossary block). Resolution
+    # order in main(): closest to the action wins.
     parser.add_argument("--project", dest="project_global", default=None,
                         help="project directory (default: current directory)")
     sub = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -1177,7 +1221,17 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="glossary upkeep (replace | set | merge | retire | search)")
     gloss_sub = p.add_subparsers(dest="action", required=True, metavar="action")
 
-    pr = gloss_sub.add_parser("replace",
+    # Nested action parsers also accept --project (documented examples put it
+    # AFTER the action verb: 'glossary search --project . TERM'), but under a
+    # SEPARATE dest: since 3.7 argparse runs each subparser in a fresh
+    # namespace and copies the result over unconditionally, so a shared dest
+    # would let the nested default None clobber a --project already consumed
+    # by the outer glossary parser (observed: 'glossary --project DIR search
+    # T' lost DIR). main() resolves nested > action-level > global.
+    nested = argparse.ArgumentParser(add_help=False)
+    nested.add_argument("--project", dest="project_action", default=None,
+                        help="project directory (default: current directory)")
+    pr = gloss_sub.add_parser("replace", parents=[nested],
                               help="change a term's translation and rewrite chapters")
     pr.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term (matched by source or variants)")
@@ -1191,7 +1245,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="skip the auto epub build after chapter rewrites (batch callers only)")
     pr.set_defaults(func=cmd_glossary)
 
-    ps = gloss_sub.add_parser("set",
+    ps = gloss_sub.add_parser("set", parents=[nested],
                               help="edit metadata fields on a single entry (atomic, idempotent)")
     ps.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term (matched by source or variants)")
@@ -1213,7 +1267,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="remove A from alt_translations (repeatable, no-op when absent)")
     ps.set_defaults(func=cmd_glossary)
 
-    pm = gloss_sub.add_parser("merge",
+    pm = gloss_sub.add_parser("merge", parents=[nested],
                               help="merge --remove into --keep; retire --remove")
     pm.add_argument("--keep", required=True, metavar="TERM",
                     help="source of the entry to keep (variants/alts unioned into)")
@@ -1221,13 +1275,13 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="source of the entry to absorb (also appended to 'retired')")
     pm.set_defaults(func=cmd_glossary)
 
-    pt = gloss_sub.add_parser("retire",
+    pt = gloss_sub.add_parser("retire", parents=[nested],
                               help="retire a single source from the glossary")
     pt.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term to retire (matched by source or variants)")
     pt.set_defaults(func=cmd_glossary)
 
-    pse = gloss_sub.add_parser("search",
+    pse = gloss_sub.add_parser("search", parents=[nested],
                                help="find entries by source or translation (substring + fuzzy)")
     pse.add_argument("term", metavar="TERM",
                      help="text to look for in source, variants, translation and alts")
@@ -1245,7 +1299,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    project_dir = Path(getattr(args, "project", None) or args.project_global or ".").resolve()
+    project_dir = Path(
+        getattr(args, "project_action", None)  # nested glossary action level
+        or getattr(args, "project", None)      # subcommand level
+        or args.project_global                 # before the subcommand
+        or "."
+    ).resolve()
     try:
         return int(args.func(args, project_dir))
     except CliError as exc:

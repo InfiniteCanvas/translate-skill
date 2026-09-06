@@ -118,13 +118,15 @@ sorted by frequency):
 2. **VALIDATE** — line count must match the source exactly; empty lines stay
    empty. Structural violations go back as feedback.
 3. **BALANCE** — for every contextual glossary term: count occurrences in
-   source vs translation (fuzzy, Levenshtein ≤ 2; cross-entry longest-first,
-   so a term nested inside a longer glossary compound — e.g. 仙界 inside
-   修仙界 — is credited to the longer term only). Fully advisory: nothing
-   fails here. All three tiers (drift signals, under-use warnings, over-count
-   info) surface as `balance_advisory` trace events; only drift signals and
-   under-use warnings also print console `[warn]`s (over-count is
-   trace-only).
+   source vs translation (Levenshtein tolerance ≤ 2 on single-word targets
+   of ≥ 5 letters; multi-word phrases match case-insensitively with
+   hyphen/space equivalence plus an optional inflection on the final word;
+   cross-entry longest-first, so a term nested inside a longer glossary
+   compound — e.g. 仙界 inside 修仙界 — is credited to the longer term
+   only). Fully advisory: nothing fails here. All three tiers (drift
+   signals, under-use warnings, over-count info) surface as
+   `balance_advisory` trace events; only drift signals and under-use
+   warnings also print console `[warn]`s (over-count is trace-only).
    Drift signals (canonical rendering absent while the term appears ≥2× in
    the source) first run the same cleanup judgment as before (one
    `glossary`-provider call, `templates/glossary_cleanup.md`): KEEP terms
@@ -280,16 +282,11 @@ background build too.
   Action line (model-written when available, else a per-kind template); the
   findings whose fix is fully determined by their structured fields also
   carry a `- Command:` bullet (skill-level, novel-agnostic). Tell an agent
-  "fix items 1,4,5 in review-report.md doing what was suggested", or for the
-  offline machine-actionable path run
+  "fix items 1,4,5 in review-report.md doing what was suggested", or run
   `uv run "$SCRIPT" review fix --glossary review-report.md [--dry-run]
-  [--exit-on-error]`: it runs every machine-determinable `- Command:` bullet
-  as a subprocess, in order, and exits 0 on full success / no-op, 1 if any
-  command failed (continues past failures by default; `--exit-on-error` to
-  stop), 2 on a missing/unreadable report or a report with no machine-
-  applicable commands. Legacy reports (no `- Command:` bullets, old `- Command:`
-  header that records the generating command) are synthesized on the fly
-  from the structured parts alone — no `review glossary` re-run needed.
+  [--exit-on-error]` for the offline machine-actionable path (it applies
+  every `- Command:` bullet as a subprocess; exit codes, pre-validation,
+  and legacy-report handling are specified in Bulk review fixes below).
   When a glossary translation changes (hand edit or `review
   glossary --fix`), already-translated chapters still carry the old
   rendering — fix them with `glossary replace`, not expensive retranslation
@@ -347,9 +344,10 @@ background build too.
 - **Cost/cadence**: each chapter ≈ 4 model calls + retries; one glossary
   review pass ≈ ceil(N/40) calls for N entries. `status` before long
   batches; run `ping` first if the server was restarted.
-- Script output is plain ASCII on purpose (`[ok]`/`[FAIL]` markers) — parse
-  it, don't guess. Exit code is non-zero when any chapter ends
-  `needs-review`.
+- Script output is UTF-8 (CJK terms appear in glossary/replace/search
+  lines) with stable `[ok]`/`[FAIL]`/`[warn]` markers prefixing status
+  lines — parse the markers, don't guess. Exit code is non-zero when any
+  chapter ends `needs-review`.
 
 ## Bulk review fixes
 
@@ -364,7 +362,13 @@ machine-actionable path, run
 merge | retire`), in order, and exits 0 on full success or full no-op, 1 if
 any command failed (continues past failures by default; `--exit-on-error` to
 stop at the first), 2 on a missing/unreadable report or a report with no
-machine-applicable commands. **The `- Command:` bullet is the contract**:
+machine-applicable commands. Commands are pre-validated: a `glossary
+replace`/`set` command whose `--translation` value contains source-script
+(CJK) characters for a CJK-source entry is skipped in-process (console:
+`[review fix] skipped [N]: suggestion not in target language` — the same
+rule `review glossary --fix` already enforces) and excluded from the run
+count, so skipped specs surface as findings that need a decision, not
+runtime failures. **The `- Command:` bullet is the contract**:
 `write_report()` emits it on every finding whose fix is fully determined by
 its structured fields, and `review fix` reads it; the closed vocabulary is
 documented in `references/file-formats.md` (per-finding `glossary replace`
@@ -379,7 +383,7 @@ applying, one final `build-epub` runs when chapters changed and
 `auto_build_epub` is on; the `- Command:` lines in the report never carry
 `--no-build`, so they remain human-copyable.
 
-The new subcommands enabled for the batch flow:
+The batch-flow subcommands:
 
 - `uv run "$SCRIPT" glossary set --project . --source S [--translation T]
   [--definition D] [--category C] [--add-variant V] [--remove-variant V]
@@ -393,12 +397,14 @@ The new subcommands enabled for the batch flow:
   no-op exit 0). Translation / category / origin / first_seen_chapter of
   the kept entry are preserved.
 - `uv run "$SCRIPT" glossary retire --project . --source X` — thin wrapper
-  over `glossary.retire()` for a single source. Already-retired sources
-  print `[glossary] already retired: X` and exit 0.
+  over `glossary.retire()` for a single source. Re-running with the
+  entry's canonical source prints `[glossary] already retired: X` and
+  exits 0; a variant spelling of an already-retired entry behaves like an
+  unknown term (exit 2).
 - `uv run "$SCRIPT" glossary replace --project . --source S
-  --translation T [--keep-alt] [--no-build] [--dry-run]` — `--no-build` is
-  new and skips the auto epub build for batch runs; the replace behavior
-  itself is unchanged.
+  --translation T [--keep-alt] [--no-build] [--dry-run]` — `--no-build`
+  skips the auto epub build for batch runs; the replace behavior itself is
+  unchanged.
 - `uv run "$SCRIPT" glossary search --project . TERM [--max-distance N]` —
   read-only lookup across `source`, `variants`, `translation`, and
   `alt_translations` (both sides) to find entries before the editing

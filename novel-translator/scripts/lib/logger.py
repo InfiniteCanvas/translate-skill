@@ -29,8 +29,23 @@ _run_path: Path | None = None
 
 
 def _command_tag() -> str:
-    """Best-effort CLI subcommand for the run filename (e.g. 'translate')."""
+    """Best-effort CLI subcommand for the run filename (e.g. 'translate').
+
+    Skips `--project DIR` (both `--project DIR` and `--project=DIR` forms) so
+    a project directory's name is never mistaken for the command -- fix.py
+    and autobuild.py always spawn children with `--project DIR` first. Other
+    flag values are indistinguishable from positionals without a real parse,
+    hence best-effort."""
+    skip_value = False
     for arg in sys.argv[1:]:
+        if skip_value:  # the directory consumed by a preceding --project
+            skip_value = False
+            continue
+        if arg == "--project":
+            skip_value = True
+            continue
+        if arg.startswith("--project="):
+            continue
         if not arg.startswith("-"):
             tag = re.sub(r"[^a-z0-9-]+", "", arg.lower()) or "run"
             return tag[:24]

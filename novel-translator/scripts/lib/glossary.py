@@ -36,12 +36,6 @@ except ImportError:  # imported with scripts/lib directly on sys.path
 CATEGORIES = ("place", "person", "org", "skill", "technique", "level",
               "state", "item", "honorific", "other")
 
-# Same CJK range used by lib.review._CJK_RE; mirrored here so the glossary
-# set/merge helpers don't need to import review (review already imports
-# glossary — a back-edge would be circular). Validates translations on
-# CJK-source entries exactly like apply_fixes() does.
-_CJK_RE = re.compile(r"[\u3000-\u9fff\uff00-\uffef]")
-
 
 def empty() -> dict:
     """A fresh, empty glossary."""
@@ -166,11 +160,16 @@ def retired_sources(g: dict) -> set[str]:
 
 def retire(project_dir: Path, sources: list[str]) -> list[str]:
     """Remove the entries matching sources from glossary.json and record each
-    removed source in its "retired" list (deduped, order-preserving).
+    removed entry's canonical source in its "retired" list (deduped,
+    order-preserving) — even when the match came via a variant, so
+    seed()/GLOSSARY_EXPAND can never re-add the term under its canonical
+    spelling.
 
     Matching uses find() (source OR variants). Returns only the sources that
-    actually removed an entry; sources with no matching entry are silently
-    ignored (and not added to "retired").
+    actually removed an entry, echoing the caller-supplied key (not the
+    canonical source) so console messages match what the user typed;
+    sources with no matching entry are silently ignored (and nothing is
+    added to "retired").
     """
     g = load(project_dir)
     retired = [s for s in (g.get("retired") or []) if isinstance(s, str)]
@@ -184,8 +183,14 @@ def retire(project_dir: Path, sources: list[str]) -> list[str]:
             if item is entry:
                 del terms[idx]
                 break
-        if source not in retired:
-            retired.append(source)
+        # Record the ENTRY's canonical source, not the user-supplied lookup
+        # key: retiring via a variant (靈根) must retire the canonical source
+        # (灵根) or seed()/GLOSSARY_EXPAND would immediately re-add the term.
+        # merge_entries() — the other writer of "retired" — records
+        # canonical sources the same way; the two must agree.
+        canonical = entry.get("source")
+        if isinstance(canonical, str) and canonical and canonical not in retired:
+            retired.append(canonical)
         removed.append(source)
     if removed:
         g["retired"] = retired
@@ -227,11 +232,15 @@ def set_fields(
         if not new_translation:
             raise ValueError("empty --translation")
         source = entry.get("source") or ""
+        # balance.CJK_RE replaces the old local mirror so every source-script
+        # check pipeline-wide shares one (slightly wider) character range —
+        # compat ideographs U+F900-FAFF and halfwidth katakana U+FF66-FF9F
+        # included.
         if (
             isinstance(source, str)
             and source
-            and _CJK_RE.search(source)
-            and _CJK_RE.search(new_translation)
+            and balance.CJK_RE.search(source)
+            and balance.CJK_RE.search(new_translation)
         ):
             raise ValueError(
                 f"translation '{new_translation}' still contains source-language "

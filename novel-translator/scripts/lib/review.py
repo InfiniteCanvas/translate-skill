@@ -9,13 +9,12 @@ exists solely for the CLI's opt-in --fix (in-review fix path)."""
 from __future__ import annotations
 
 import json
-import re
 import shlex
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from lib import client, config, glossary, logger, project
+from lib import balance, client, config, glossary, logger, project
 from lib.pipeline import LANG_NAMES, fill
 
 # Fallback template source: the skill's shipped assets. Projects initialized
@@ -51,8 +50,10 @@ REVIEW_SCHEMA: dict[str, Any] = {
     "required": ["findings"],
 }
 
-# Same CJK range as the pipeline's output estimator.
-_CJK_RE = re.compile(r"[\u3000-\u9fff\uff00-\uffef]")
+# CJK detection uses balance.CJK_RE -- the widest CJK class in the skill
+# (adds CJK compat ideographs and halfwidth katakana), shared with glossary.py
+# so all "is this string CJK?" answers agree.
+_CJK_RE = balance.CJK_RE
 
 # Model kinds apply_fixes may act on; duplicate/collision/variant/other are
 # report-only.
@@ -316,6 +317,23 @@ def field_for_kind(kind: str) -> str | None:
     return _FIELD_BY_KIND.get(kind)
 
 
+def outstanding_filter(applied: list[dict]) -> Callable[[dict], bool]:
+    """Predicate over findings: still outstanding after `applied` fixes?
+
+    A fix resolves every finding on the same entry FIELD, not just the
+    finding kind it came from (e.g. a mistranslation fix also resolves the
+    wrong_language warn it superseded); report-only kinds (field None) are
+    always outstanding. Shared by the CLI's warn/info tally and
+    write_report's index so the two can never drift."""
+    resolved = {(a["source"], a["field"]) for a in applied}
+
+    def outstanding(f: dict) -> bool:
+        field = _FIELD_BY_KIND.get(f.get("kind"))
+        return field is None or (f.get("source"), field) not in resolved
+
+    return outstanding
+
+
 REPORT_NAME = "review-report.md"
 
 
@@ -478,11 +496,10 @@ def write_report(
         if isinstance(src, str) and src not in by_source:
             by_source[src] = entry
 
-    resolved = {(a["source"], a["field"]) for a in applied}
-
-    def outstanding(f: dict) -> bool:
-        field = _FIELD_BY_KIND.get(f.get("kind"))
-        return field is None or (f.get("source"), field) not in resolved
+    # Same fix-resolution rule as the CLI's warn/info tally (see
+    # outstanding_filter) -- one implementation so the report's indices and
+    # the console totals always agree.
+    outstanding = outstanding_filter(applied)
 
     open_findings = [f for f in findings if outstanding(f)]
     n_warn = sum(1 for f in open_findings if f["severity"] == "warn")

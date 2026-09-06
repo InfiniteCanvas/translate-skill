@@ -44,7 +44,11 @@ through uv automatically):
    This writes `config.json`, `novel_info.json`, an empty `glossary.json`
    and `tn_history.json`, copies prompt templates into `templates/`,
    copies a style guide to `style.md`, seeds the glossary from any
-   matching asset catalogues, and prepares a cover.
+   matching asset catalogues, and prepares a cover (scraped from the
+   source URL or generated; `--cover-url URL` points at a cover image
+   directly). `init` refuses to overwrite an existing `config.json`;
+   `--force` reinitializes, resetting `glossary.json` and
+   `tn_history.json` to empty.
 
    Style is preset-based -- zero LLM calls at init. Pick with
    `--style <name|path>`: `classic` (default; standard xianxia/wuxia
@@ -82,7 +86,8 @@ like `1,3-5,Chapter_0007.zh.md`) picks chapters explicitly. Chapters run
 strictly in sequence on purpose: the glossary and note history build up as
 you go. Ctrl-C is safe at any point -- per-chapter state is saved and a
 rerun resumes where it stopped. Chapters in `needs-review` are skipped by
-`--next`; they wait for `retry` or `mark`.
+`--next`; they wait for `retry` or `mark`. Already-`translated` chapters
+are skipped too; pass `--force` to retranslate them.
 
 ## Human review
 
@@ -124,6 +129,10 @@ the next `translate` run picks the changes up. To re-run catalogue
 seeding:
 
     uv run scripts/translate.py seed --project .
+
+`--min-count N` overrides the seed threshold for the run;
+`--catalogue PATH` (repeatable) seeds from explicit catalogue files,
+bypassing the language filter.
 
 To find entries before editing them (read-only; see Bulk review fixes for
 the matching semantics):
@@ -219,10 +228,15 @@ the offline path:
 
 `review fix` parses every `- Command:` bullet in `review-report.md` and
 runs each as a subprocess (`glossary replace | set | merge | retire`), in
-order. Exit codes: 0 on full success or full no-op, 1 if any command
-failed (continues past failures by default; `--exit-on-error` to stop at
-the first), 2 on a missing/unreadable report or a report with no
-machine-applicable commands. `--dry-run` prints each command with its
+order. Commands are pre-validated: a `glossary replace` / `set
+--translation` whose suggested value contains source-script characters
+for a CJK-source entry is skipped in-process (`[review fix] skipped [N]:
+suggestion not in target language`) and counted as needing a decision --
+the same guard `review glossary --fix` enforces. Exit codes: 0 on full
+success or full no-op, 1 if any command failed (continues past failures
+by default; `--exit-on-error` to stop at the first), 2 on a
+missing/unreadable report or a report with no machine-applicable
+commands. `--dry-run` prints each command with its
 finding index plus a summary (`applied/failed/needs-decision`) and applies
 nothing. The `- Command:` bullet is the contract: `write_report()` emits
 it on every finding whose fix is fully determined by its structured
@@ -240,7 +254,7 @@ final `build-epub` runs when chapters changed and `auto_build_epub` is on;
 the `- Command:` lines in the report never carry `--no-build`, so they
 remain human-copyable.
 
-The new subcommands enabled for the batch flow:
+The batch-flow subcommands:
 
     uv run scripts/translate.py glossary set --project . --source S \
         [--translation T] [--definition D] [--category C]
@@ -258,6 +272,8 @@ all-or-nothing -- and is idempotent (exit 0 when nothing actually
 changed); `--category` is whitelisted against the same list `apply_fixes`
 uses, `--translation` is CJK-checked against the source like `apply_fixes`
 (definitions may legitimately quote CJK terms and are stored as-is).
+`--alt-translations "A,B"` REPLACES the existing list;
+`--add-alt` / `--remove-alt` edit it in place.
 
 `glossary merge --keep K --remove R` transfers `variants` /
 `alt_translations` / `definition` from R to K (definition only fills K
@@ -267,10 +283,13 @@ exit 0). The kept entry's `translation` / `category` / `origin` /
 `first_seen_chapter` are preserved.
 
 `glossary retire --source X` is a thin wrapper over `glossary.retire()`
-for a single source; already-retired sources print
-`[glossary] already retired: X` and exit 0.
+for a single source; X matches by source or variants, and the entry's
+canonical source is what gets recorded in `retired`. Re-running with
+the entry's canonical source prints `[glossary] already retired: X` and
+exits 0; re-running with a variant spelling of an already-retired entry
+behaves like an unknown term (no match, exit 2).
 
-`glossary replace` gains `--no-build` to skip the post-success epub
+`glossary replace` accepts `--no-build` to skip the post-success epub
 build for batch callers (the replace behavior itself is unchanged).
 
 `glossary search TERM` is the read-only lookup that pairs with the editing
@@ -353,8 +372,9 @@ Pipeline attempts, `balance_advisory` events (which now carry drift
 signals alongside under-use warnings and over-count info),
 `glossary_cleanup` events, `glossary_review` events (entries, batches,
 batch_errors, findings, applied, skipped), and `review_fix` events
-(specs_run, applied, noop, failed, changed_chapters, needs_decision -- one
-per `review fix` run) are interleaved in the same stream. The console is a
+(specs_run, applied, noop, failed, skipped_invalid, changed_chapters,
+needs_decision -- one per `review fix` run) are interleaved in the same
+stream. The console is a
 summary, the log is truth.
 Each run prunes older logs to the newest `log_llm_keep_runs` (default 5);
 disable the LLM lines with `log_llm: false` in config.json.

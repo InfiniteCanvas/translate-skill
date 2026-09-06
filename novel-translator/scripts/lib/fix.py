@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from . import review
+from . import balance, glossary, review
 
 
 # Subset of glossary verbs the parser accepts from a "- Command:" bullet.
@@ -183,74 +183,143 @@ def _parse_legacy_synthesis(lines: list[str]) -> list[CommandSpec]:
     return specs
 
 
+def _argv_value(argv: list[str], flag: str) -> str | None:
+    """Value of a `--flag X` / `--flag=X` option anywhere in argv, else None
+    (both forms are argparse-legal and report writers may use either)."""
+    for i, token in enumerate(argv):
+        if token == flag:
+            return argv[i + 1] if i + 1 < len(argv) else None
+        if token.startswith(flag + "="):
+            return token[len(flag) + 1:]
+    return None
+
+
+def invalid_translation_reason(argv: list[str], g: dict) -> str | None:
+    """Why this `glossary replace` / `glossary set` argv would write a
+    source-script suggestion into a CJK entry's translation, else None.
+
+    review.apply_fixes() already refuses such suggestions ("suggestion not
+    in target language"), but `review fix` shells the report's commands
+    out to the CLI where nothing re-checked them — a wrong-language model
+    suggestion would land in glossary.json and be rewritten across every
+    translated chapter. Mirrors the review check (CJK source AND CJK
+    suggested value) on balance.CJK_RE so every module shares one range.
+
+    None (guard not applicable) when: not a replace/set command, no
+    --translation flag (definitions/categories may legitimately quote
+    source text), no --source, or no matching entry — the subprocess
+    reports those cases itself.
+    """
+    if argv[:2] not in (["glossary", "replace"], ["glossary", "set"]):
+        return None
+    value = _argv_value(argv, "--translation")
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return "empty translation"
+    source = _argv_value(argv, "--source")
+    if not source:
+        return None
+    entry = glossary.find(g, source)
+    if entry is None:
+        return None
+    entry_source = entry.get("source")
+    if (
+        isinstance(entry_source, str)
+        and balance.CJK_RE.search(entry_source)
+        and balance.CJK_RE.search(value)
+    ):
+        return "suggestion not in target language"
+    return None
+
+
 def run_commands(
     project_dir: Path,
     script_path: Path,
     specs: Iterable[CommandSpec],
     *,
     exit_on_error: bool = False,
-    dry_run: bool = False,
 ) -> dict:
     """Execute each spec via the skill's CLI as a subprocess.
 
     Appends --no-build to every `glossary replace` argv when absent so the
     executor can run a single batch-wide epub build at the end. Captures
-    stdout/stderr per call, returns counts.
+    stdout/stderr per call, returns counts. Every spec is first checked
+    against a freshly loaded glossary so wrong-language suggestions are
+    skipped in-process (see invalid_translation_reason).
     """
     specs = list(specs)
     applied = 0
     noop = 0
     failed = 0
+    specs_run = 0  # subprocesses actually started (skipped guards excluded)
+    skipped_invalid = 0
     changed_chapters = False
-    per_spec: list[tuple[CommandSpec, str, int, str]] = []
-    # per_spec holds (spec, action, exit_code, combined_output) for logging.
 
     for i, spec in enumerate(specs, 1):
-        argv = _prepare_argv(spec.argv)
-        if dry_run:
-            per_spec.append((spec, "dry-run", 0, ""))
+        # Reload per spec: earlier subprocesses mutate glossary.json, so a
+        # single up-front load would guard against a stale glossary. A
+        # corrupt file defers to the subprocess — the guard's verdict is
+        # moot when the verb itself cannot run.
+        try:
+            reason = invalid_translation_reason(
+                spec.argv, glossary.load(project_dir)
+            )
+        except ValueError:
+            reason = None
+        if reason is not None:
+            skipped_invalid += 1
+            print(
+                f"[review fix] skipped [{i}]: {reason}"
+                f" ({' '.join(shlex.quote(t) for t in spec.argv)})"
+            )
             continue
-        # --project is the GLOBAL flag (registered on the top-level parser
-        # with dest="project_global"); argparse only accepts it BEFORE the
-        # subcommand, matching how scripts/lib/autobuild.py invokes
-        # build-epub. Putting it after the subcommand's args is a parse error.
+        argv = _prepare_argv(spec.argv)
+        # The executor always prepends --project at the top level (the
+        # GLOBAL flag, dest="project_global"). Writer-generated Command
+        # lines never carry --project: the nested glossary action
+        # subparsers also register it (dest="project_action"), and a
+        # nested --project would silently override the prepended one by
+        # argparse precedence — which is why the writer never emits it.
         full_argv = [
             sys.executable, str(script_path),
             "--project", str(project_dir),
             *argv,
         ]
-        proc = subprocess.run(full_argv, capture_output=True, text=True, check=False)
+        # The child (translate.py) reconfigures its stdout/stderr to UTF-8
+        # before printing CJK terms, so decode with the same codec — the
+        # Windows locale default (cp1252) raises UnicodeDecodeError here.
+        proc = subprocess.run(
+            full_argv, capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",
+        )
+        specs_run += 1
         out = (proc.stdout or "") + (proc.stderr or "")
         if proc.returncode != 0:
             failed += 1
-            action = "failed"
             print(f"[review fix] failed at [{i}]: {' '.join(shlex.quote(t) for t in argv)}")
             if out.strip():
                 # Surface the last useful line of output for diagnostics.
                 tail = out.strip().splitlines()[-1]
                 print(f"[review fix] {tail}")
-            per_spec.append((spec, action, proc.returncode, out))
             if exit_on_error:
                 break
             continue
         if _looks_like_noop(out):
             noop += 1
-            action = "noop"
         else:
             applied += 1
-            action = "applied"
         if argv[:2] == ["glossary", "replace"] and _signals_chapter_change(out):
             changed_chapters = True
-        per_spec.append((spec, action, proc.returncode, out))
 
     return {
         "applied": applied,
         "noop": noop,
         "failed": failed,
         "changed_chapters": changed_chapters,
-        "specs_run": len(per_spec) if not dry_run else len(specs),
-        "needs_decision": 0,  # filled in by the caller (needs the total findings count)
-        "per_spec": per_spec,
+        "specs_run": specs_run,
+        "skipped_invalid": skipped_invalid,
     }
 
 
@@ -281,9 +350,3 @@ def _signals_chapter_change(out: str) -> bool:
     if "replaced 0 occurrence" in lower or "no occurrences of" in lower:
         return False
     return "occurrence" in lower or "chapter" in lower
-
-
-def format_command_line(argv: list[str]) -> str:
-    """Render an argv back to a copy-paste-able CLI line (used by dry-run
-    output and trace events)."""
-    return " ".join(shlex.quote(t) for t in argv)

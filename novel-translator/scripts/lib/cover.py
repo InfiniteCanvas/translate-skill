@@ -65,7 +65,9 @@ _TEXT_SHADOW = (8, 8, 16)
 
 
 def _ascii(text: str) -> str:
-    """Keep printed lines ASCII-only (project convention)."""
+    """Replace non-ASCII with '?' before printing. The CLI already forces
+    UTF-8 consoles, so this is a belt-and-braces guard for cover diagnostics
+    (URLs may carry arbitrary bytes) -- not an output convention."""
     return str(text).encode("ascii", "replace").decode("ascii")
 
 

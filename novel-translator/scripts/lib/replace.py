@@ -196,6 +196,13 @@ def glossary_replace(
         manifest = project.load_manifest(project_dir)
     except (OSError, ValueError) as exc:
         raise ReplaceError(f"cannot read manifest: {exc}") from exc
+    # Pre-flight the deterministic part of replace_chapters: build_matcher is
+    # pure, but replace_text rebuilds it per chapter and can raise (an old
+    # translation of bare punctuation like '...' or '-' has no matchable
+    # words). Failing it here keeps the promise above -- otherwise the
+    # glossary save below would already have landed while every chapter
+    # stays unrewritten (and balance then flags the whole book as drift).
+    build_matcher(old)
 
     pruned: list[str] = []
     if not keep_alt:
