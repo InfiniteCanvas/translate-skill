@@ -44,7 +44,7 @@ TRANSLATION_SCHEMA: dict[str, Any] = {
         # Numbered line protocol: each translated line echoes the 1-based
         # index of its source line. Explicit indices make dropped/merged
         # lines structurally detectable instead of off-by-one guesswork.
-        # Deliberately NO nested "additionalProperties": false — the strict
+        # Deliberately NO nested "additionalProperties": false -- the strict
         # grammar intermittently truncates sglang's guided decoding on
         # longer generations (verified empirically); the pipeline validates
         # shape and index coverage itself.
@@ -131,7 +131,7 @@ MERGE_SCHEMA: dict[str, Any] = {
 }
 
 # Glossary-cleanup verdicts on balance drift signals. NO
-# additionalProperties inside items — strict nested schemas truncated
+# additionalProperties inside items -- strict nested schemas truncated
 # sglang guided decoding historically.
 CLEANUP_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -256,11 +256,13 @@ def _name_matches(item: str, entry: dict) -> bool:
 
 
 def parse_range(spec: str, manifest: list[dict]) -> list[str]:
-    """Resolve a spec ("1,3-5,Chapter_0007.zh.md") to file names in manifest order.
+    """Resolve a spec ("1,3-5,Chapter_0007.md") to file names in manifest order.
 
     Items may be chapter numbers ("7"), inclusive ranges ("3-5"), or exact
-    file names matched suffix-insensitively ("Chapter_0007.md" matches
-    "Chapter_0007.zh.md"). Raises PipelineError when nothing matches an item.
+    file names matched suffix-insensitively (an item like
+    "Chapter_0007.zh.md" -- a retired source-naming convention -- still
+    matches the manifest's "Chapter_0007.md"). Raises PipelineError when
+    nothing matches an item.
     """
     if not manifest:
         raise PipelineError("manifest is empty - run 'init' first")
@@ -472,7 +474,7 @@ def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
     advisory drift signals, not gate failures. Returns (signals_to_keep,
     pending_cleanup): pending_cleanup is None when nothing is to be retired,
     else {"retirements": [{source, reason}], "kept_sources": [str]}. The
-    CALLER applies the retirements only after the translation is accepted —
+    CALLER applies the retirements only after the translation is accepted --
     retiring on a rejected attempt could delete good terms based on a bad
     translation. On any error keeps every signal, retires nothing."""
     try:
@@ -565,7 +567,7 @@ def _estimate_output_tokens(lines: list[str]) -> int:
     """
     text = "\n".join(lines)
     # balance.CJK_RE is the skill-wide CJK class (slightly wider than the old
-    # local range: adds CJK compat ideographs + halfwidth katakana) — an
+    # local range: adds CJK compat ideographs + halfwidth katakana) -- an
     # estimate only tolerates the delta, and sharing one regex keeps the
     # chunker and the balance checks speaking the same language.
     cjk = len(balance.CJK_RE.findall(text))
@@ -614,6 +616,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         for artifact in (f"{stem}.state.json", f"{stem}.md", f"{stem}.lines.json"):
             (paths["draft"] / artifact).unlink(missing_ok=True)
         (paths["translated"] / file).unlink(missing_ok=True)
+        (tn.notes_path(project_dir, file)).unlink(missing_ok=True)
         print(f"{tag} [init] force: removed previous draft and translated artifacts")
 
     state = load_state(paths["draft"], file)
@@ -998,7 +1001,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                         # being naturally rephrased; ask the glossary job
                         # whether each flagged term deserves enforcement.
                         # The retirement itself is DEFERRED to the accepted
-                        # attempt (applied alongside GLOSSARY_EXPAND) — this
+                        # attempt (applied alongside GLOSSARY_EXPAND) -- this
                         # split only filters which signals reach the FAITH
                         # reviewer, which owns the verdict.
                         drift_signals, pending_cleanup = _cleanup_drift_signals(
@@ -1053,7 +1056,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             # Runs only on the attempt FAITH just accepted: new terms lock in
             # after the translation is accepted, never from a rejected one.
             # Deferred BALANCE retirements land here too (a crash-resume
-            # entering at this stage finds no pending decisions — nothing is
+            # entering at this stage finds no pending decisions -- nothing is
             # retired, the fail-safe direction).
             if pending_cleanup is not None:
                 if _apply_pending_cleanup(project_dir, pending_cleanup, file, tag):
@@ -1130,9 +1133,11 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             # ---------------- ASSEMBLE ----------------
             advance("ASSEMBLE")
             out_path = paths["translated"] / file
-            assemble.assemble(
-                out_path, fm, state["title"] or "", list(lines), list(state["notes"] or [])
-            )
+            assemble.assemble(out_path, fm, state["title"] or "", list(lines))
+            # Notes live in the sidecar now, not in the markdown; save_notes
+            # validates line indexes against the same lines list assemble
+            # joined and drops stale entries with a warning.
+            tn.save_notes(project_dir, file, list(lines), list(state["notes"] or []))
             (paths["draft"] / f"{stem}.state.json").unlink(missing_ok=True)
             project.set_status(manifest, file, "translated")
             project.save_manifest(project_dir, manifest)

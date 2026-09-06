@@ -16,9 +16,9 @@ from pathlib import Path
 from ebooklib import epub
 
 try:  # package-style import when scripts/lib is imported as a package
-    from . import project
+    from . import project, tn
 except ImportError:  # flat import when scripts/lib is on sys.path
-    import project
+    import project, tn
 
 
 class EpubError(Exception):
@@ -57,35 +57,80 @@ def _convert(text: str) -> str:
     return _inline(_esc(text))
 
 
-def chapter_md_to_xhtml(md_path: Path) -> tuple[str, str, bool]:
-    """Parse a translated chapter -> (title, xhtml <body> inner, has_notes)."""
+def chapter_md_to_xhtml(md_path: Path, notes: list[dict] | None = None) -> tuple[str, str, bool]:
+    """Parse a translated chapter -> (title, xhtml <body> inner, has_notes).
+
+    notes=None keeps the legacy path (existing projects): "[^N]" markers and
+    a trailing "## Translator's Notes" section baked into the markdown are
+    parsed back out. notes=<sidecar content> (tn.load_notes) renders the
+    per-chapter notes sidecar instead: stray markers still embedded in the
+    file are stripped defensively, each note's stored line index is
+    re-resolved against the body (the note's anchor re-locates the line
+    when hand-edits shifted it), and everything downstream -- noteref
+    anchors, the footnote asides -- is identical to the legacy rendering.
+    """
     fm, body = project.read_chapter(Path(md_path))
     lines = body.split("\n")
 
-    # Split off the trailing Translator's Notes section.
-    tn_start = None
-    for i, line in enumerate(lines):
-        if line.strip() == _TN_HEADING:
-            tn_start = i
-            break
-    body_lines = lines if tn_start is None else lines[:tn_start]
-    note_lines = [] if tn_start is None else lines[tn_start + 1 :]
-
-    # Definitions: [^3]: **term** — note text
-    definitions: dict[int, str] = {}
-    for line in note_lines:
-        match = _DEFINITION_RE.match(line.strip())
-        if match:
-            definitions[int(match.group(1))] = match.group(2).strip()
-
-    # Strip footnote markers from body lines, remembering which line owns them.
     markers: dict[int, list[int]] = {}
-    cleaned: list[str] = []
-    for i, line in enumerate(body_lines):
-        ids = [int(n) for n in _MARKER_RE.findall(line)]
-        if ids:
-            markers[i] = ids
-        cleaned.append(_MARKER_RE.sub("", line))
+    definitions: dict[int, str] = {}
+    if notes is None:
+        # Split off the trailing Translator's Notes section.
+        tn_start = None
+        for i, line in enumerate(lines):
+            if line.strip() == _TN_HEADING:
+                tn_start = i
+                break
+        body_lines = lines if tn_start is None else lines[:tn_start]
+        note_lines = [] if tn_start is None else lines[tn_start + 1 :]
+
+        # Definitions: [^3]: **term** — note text
+        for line in note_lines:
+            match = _DEFINITION_RE.match(line.strip())
+            if match:
+                definitions[int(match.group(1))] = match.group(2).strip()
+
+        # Strip footnote markers from body lines, remembering which line owns them.
+        cleaned: list[str] = []
+        for i, line in enumerate(body_lines):
+            ids = [int(n) for n in _MARKER_RE.findall(line)]
+            if ids:
+                markers[i] = ids
+            cleaned.append(_MARKER_RE.sub("", line))
+    else:
+        # Sidecar path: strip any stray legacy markers defensively (their
+        # ids are NOT collected -- the sidecar owns the note numbering).
+        body_lines = lines
+        cleaned = [_MARKER_RE.sub("", line) for line in body_lines]
+        for pos, note in enumerate(notes, start=1):
+            term = note.get("term") if isinstance(note, dict) else None
+            line_idx = note.get("line") if isinstance(note, dict) else None
+            anchor = note.get("anchor") if isinstance(note, dict) else None
+            anchor = anchor.strip() if isinstance(anchor, str) else ""
+            note_text = note.get("note", "") if isinstance(note, dict) else ""
+            resolved: int | None = None
+            if (
+                isinstance(line_idx, int) and not isinstance(line_idx, bool)
+                and 0 <= line_idx < len(body_lines)
+                and (not anchor or body_lines[line_idx].strip().startswith(anchor))
+            ):
+                resolved = line_idx
+            elif anchor:
+                # The stored line no longer matches (hand-edited body):
+                # re-resolve via the anchor snapshot.
+                resolved = next(
+                    (i for i, line in enumerate(body_lines) if line.strip().startswith(anchor)),
+                    None,
+                )
+            if resolved is None:
+                print(
+                    f"[warn] {md_path.name}: dropped note for "
+                    f"'{term if isinstance(term, str) else '?'}' "
+                    "(line out of range or anchor not found)"
+                )
+                continue
+            definitions[pos] = f"**{term}** \u2014 {note_text}"
+            markers.setdefault(resolved, []).append(pos)
 
     # Render body elements.
     elements: list[dict] = []
@@ -171,7 +216,7 @@ _UNSAFE_FS_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 def _slugify(title: str) -> str:
     """Filename slug for an epub: ASCII words joined by hyphens. When the
     title has no ASCII words (e.g. a pure CJK title), fall back to the title
-    itself minus filesystem-unsafe characters — named after the title beats
+    itself minus filesystem-unsafe characters -- named after the title beats
     collapsing to 'novel'."""
     parts = re.findall(r"[A-Za-z0-9]+", title)
     if parts:
@@ -229,7 +274,11 @@ def build(
 
     items = []
     for i, path in enumerate(chapter_paths, start=1):
-        ch_title, body_xhtml, _has_notes = chapter_md_to_xhtml(path)
+        # An empty sidecar means "no notes" -- `or None` then selects the
+        # legacy marker-parsing path for chapters that still bake them in.
+        ch_title, body_xhtml, _has_notes = chapter_md_to_xhtml(
+            path, notes=tn.load_notes(project_dir, path.name) or None
+        )
         item = epub.EpubHtml(
             title=ch_title, file_name=f"chapter_{i:04d}.xhtml", lang=lang
         )

@@ -82,7 +82,7 @@ through uv automatically):
     uv run scripts/translate.py translate --next 3 --project .
 
 `--next N` takes the next N pending chapters; `--chapters A-B` (or a spec
-like `1,3-5,Chapter_0007.zh.md`) picks chapters explicitly. Chapters run
+like `1,3-5,Chapter_0007.md`) picks chapters explicitly. Chapters run
 strictly in sequence on purpose: the glossary and note history build up as
 you go. Ctrl-C is safe at any point -- per-chapter state is saved and a
 rerun resumes where it stopped. Chapters in `needs-review` are skipped by
@@ -214,6 +214,27 @@ unknown term). The epub rebuilds once after changed chapters when
 itself and runs exactly one final epub build at the end). Build failures
 are warnings only.
 
+Translator's notes have their own re-evaluation path: they live in
+`notes/<chapter>.json` sidecars next to the chapters, never in the chapter
+markdown, so re-running the annotator can't disturb chapter prose. Point it
+at a chapter range:
+
+    uv run scripts/translate.py tn --project . --chapters 1-5 [--dry-run] [--no-build]
+
+`tn` re-runs the annotator over the range (translated chapters only;
+untranslated ones are skipped with a warning) and regenerates each
+`notes/<chapter>.json` from scratch through the same prompt and dedup as
+the pipeline (low-threshold gate, within-chapter dedup, cross-chapter gap
+rule vs `tn_history.json` — a term annotated within `tn_gap_chapters` in an
+earlier chapter stays suppressed). Chapter prose is never rewritten, with
+one exception: chapters from before the sidecar migration (notes baked into
+the markdown as `[^N]` markers + a Translator's Notes section) are cleaned
+once, on their first re-evaluation. Afterwards the epub rebuilds
+automatically unless `--no-build`. `--dry-run` still makes the annotator LLM
+calls but writes nothing (not even the legacy cleanup). Exit 0 success,
+1 failed chapters (annotator call or unreadable chapter) or no eligible
+chapters in range, 2 usage error.
+
 ## Bulk review fixes
 
 `review glossary` may leave dozens of machine-determinable findings
@@ -237,8 +258,10 @@ success or full no-op, 1 if any command failed (continues past failures
 by default; `--exit-on-error` to stop at the first), 2 on a
 missing/unreadable report or a report with no machine-applicable
 commands. `--dry-run` prints each command with its
-finding index plus a summary (`applied/failed/needs-decision`) and applies
-nothing. The `- Command:` bullet is the contract: `write_report()` emits
+finding index — annotating `SKIP` on commands that would be rejected as
+invalid suggestions — plus a one-line summary (`N command(s), M would be
+skipped (invalid suggestion), K finding(s) need a decision`, skip count
+only when nonzero) and applies nothing. The `- Command:` bullet is the contract: `write_report()` emits
 it on every finding whose fix is fully determined by its structured
 fields; the closed vocabulary is documented in
 `references/file-formats.md` (per-finding `glossary replace` for

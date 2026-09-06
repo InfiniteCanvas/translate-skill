@@ -1,6 +1,6 @@
 ---
 name: novel-translator
-description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, reviews glossary quality, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, translation glossaries, glossary quality, translation notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters", "review the glossary", or "rebuild the epub".
+description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, reviews glossary quality, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, translation glossaries, glossary quality, translation notes, re-evaluating translator's notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters", "review the glossary", "recheck the translation notes", or "rebuild the epub".
 ---
 
 # Novel Translator
@@ -161,10 +161,11 @@ sorted by frequency):
    notes are dropped by default (set `tn_keep_low_confidence` true to keep
    them); a note is kept only if the term wasn't annotated
    within the last `tn_gap_chapters` (default 10) chapters (`tn_history.json`).
-7. **ASSEMBLE** — write `translated/Chapter_NNNN.md` with epub3-ready
-   footnote markers; auto-promote. On gate failure the chapter retried up to
-   `max_attempts` (default 3) with all accumulated feedback injected into each
-   retry; then it becomes `needs-review`.
+7. **ASSEMBLE** — write `translated/Chapter_NNNN.md` as clean markdown (no
+   footnote markers, no notes section) plus the `notes/<stem>.json` sidecar
+   carrying the kept notes; auto-promote. On gate failure the chapter retried
+   up to `max_attempts` (default 3) with all accumulated feedback injected
+   into each retry; then it becomes `needs-review`.
 
 Gates pass → the chapter is accepted automatically. The user fixes residue by
 hand if any turns up later.
@@ -188,7 +189,9 @@ Read the feedback, then choose:
   by status, so hand-marked chapters are included).
 - **Translate by hand**: write the final chapter to
   `translated/Chapter_0007.md` following the translated-chapter format
-  (frontmatter + one paragraph per line + `[^N]` markers + TN section), then
+  (frontmatter + one paragraph per line; translator's notes, if any, go in
+  the `notes/Chapter_0007.json` sidecar — see
+  `references/file-formats.md`), then
   `uv run "$SCRIPT" mark --project . --chapters 7 --status translated`.
 
 `translate --next` deliberately skips `needs-review` chapters.
@@ -204,7 +207,9 @@ Builds `export/<title-slug>.epub` (filename from `novel_info.json`'s
 title is preserved verbatim, with a console hint): flat epub3 TOC (one entry per chapter,
 sorted by manifest order), metadata from `novel_info.json`, cover from
 `covers/`, translation notes as real epub3 footnotes
-(`epub:type="noteref"`/`"footnote"`), then validates with the epubcheck
+(`epub:type="noteref"`/`"footnote"`, rendered from each chapter's
+`notes/<stem>.json` sidecar, with a fallback to legacy markers baked into
+the markdown), then validates with the epubcheck
 docker image. The build fails loudly if epubcheck reports errors — show the
 report to the user and fix the chapter(s) named in it. To run epubcheck
 manually from Git Bash:
@@ -311,8 +316,9 @@ background build too.
   preserved and the inflection re-appended (Spirit root → Spiritual root;
   spirit roots → spiritual roots); CJK phrases replace as exact literal
   substrings; footnote markers `[^N]` are never disturbed. Only the chapter
-  body is rewritten (everything after the frontmatter, Translator's Notes
-  included; frontmatter stays byte-verbatim; only files with matches are
+  body is rewritten (everything after the frontmatter, a legacy baked-in
+  Translator's Notes section included; frontmatter stays byte-verbatim;
+  only files with matches are
   rewritten, atomically, LF); chapters are enumerated from the manifest
   (status `translated`), listed-but-missing files reported as warnings.
   `--dry-run` reports the glossary diff and per-chapter occurrence counts,
@@ -348,6 +354,29 @@ background build too.
   lines) with stable `[ok]`/`[FAIL]`/`[warn]` markers prefixing status
   lines — parse the markers, don't guess. Exit code is non-zero when any
   chapter ends `needs-review`.
+
+## Translator's-note re-evaluation
+
+Notes are stored per chapter in `notes/<stem>.json` sidecars (the chapter
+markdown stays clean; `build-epub` renders them, falling back to parsing
+legacy baked-in markers when a sidecar is absent). To re-decide which notes
+a translated chapter range deserves — after swapping the annotator model,
+tuning `max_notes_per_chapter` / `tn_gap_chapters` / `tn_keep_low_confidence`,
+or updating the `tn_generate.md` template — run:
+
+- `uv run "$SCRIPT" tn --project . --chapters SPEC [--dry-run] [--no-build]` —
+  re-evaluate translator's notes on already-translated chapters: re-runs the
+  annotator over the range (untranslated chapters are skipped with a
+  warning) and regenerates each `notes/<chapter>.json` sidecar from scratch
+  through the same prompt and dedup as the pipeline (low-threshold gate,
+  within-chapter dedup, cross-chapter gap rule vs `tn_history.json` — a term
+  annotated within `tn_gap_chapters` in an earlier chapter stays
+  suppressed); chapter prose is never rewritten except the one-time
+  stripping of legacy baked-in notes/markers, then the epub rebuilds unless
+  `--no-build` (`--dry-run` still makes the annotator LLM calls but writes
+  nothing). Exit 0 success, 1 failed chapters (annotator call or unreadable
+  chapter) or no eligible chapters in
+  range, 2 usage error.
 
 ## Bulk review fixes
 

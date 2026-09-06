@@ -19,6 +19,7 @@ hand-fix.
 ├── source/              Chapter_NNNN[a].md — untouched source chapters
 ├── draft/               working area per chapter (see Draft artifacts)
 ├── translated/          finalized chapters, exactly what the epub is built from
+├── notes/               per-chapter translator's-note sidecars (notes/<stem>.json)
 ├── covers/cover.jpg     scraped or generated cover
 ├── templates/           per-project copies of the prompt templates (editable)
 ├── styles/              optional per-project style presets (add/override .md files)
@@ -356,6 +357,37 @@ chapter first). `last_order`/`times` are managed by the tool. Notes the model
 self-assessed as `threshold: "low"` are dropped before all of this unless
 `tn_keep_low_confidence` is true.
 
+## notes/<stem>.json (translator's-note sidecar)
+
+```jsonc
+{
+  "chapter": "Chapter_0042.md",
+  "updated_at": "2026-09-06T12:00:00+00:00",
+  "notes": [
+    { "line": 17, "term": "筑基",
+      "note": "Foundation Establishment (筑基) is the second realm of cultivation.",
+      "anchor": "His breakthrough settled at dawn, and the whole courtyard" }
+  ]
+}
+```
+
+One JSON sidecar per translated chapter (`notes/Chapter_0042.json` for
+`translated/Chapter_0042.md`), holding the translator's notes the epub
+renders as footnotes — the chapter markdown itself stays clean. Written by
+the pipeline's ASSEMBLE stage and by the `tn` command; read per chapter by
+`build-epub`, which falls back to parsing legacy baked-in `[^N]` markers
+when the sidecar is absent (chapters translated before the sidecar
+existed). Each note is exactly `{line, term, note, anchor}`: `line` is a
+0-based index into the translated body lines as normalized by
+`read_chapter` (leading/trailing blank lines stripped), and `anchor`
+snapshots the first 80 characters of that line so the epub build can
+re-resolve the note onto the right paragraph after hand-edits shift line
+numbers — the stored index wins when its line still starts with the
+anchor, else the first line starting with the anchor wins, else the note
+is dropped with a warning. Entries are validated on save (`line` in range,
+non-empty string `term`/`note`); a save that keeps zero notes DELETES the
+sidecar (absent = no notes). `updated_at` is managed by the tool.
+
 ## Draft artifacts (`draft/`)
 
 For `Chapter_0001.md` the pipeline creates:
@@ -388,26 +420,27 @@ author: 忘语
 order: 1
 ---
 
-One translated paragraph per line, same count as the source.[^1]
-
-## Translator's Notes
-
-[^1]: **筑基** — Foundation Establishment is the second realm of cultivation.
+One translated paragraph per line, same count as the source.
 ```
 
-- Footnote markers `[^N]` sit at the END of the line (paragraph) they annotate;
-  the epub builder turns them into inline epub3 footnotes
-  (`<a epub:type="noteref">` → `<aside epub:type="footnote">`).
+- Clean markdown only: no footnote markers, no Translator's Notes section.
+  Translator's notes live in the per-chapter sidecar (`notes/<stem>.json`,
+  previous section); the epub builder renders them as inline epub3 footnotes
+  (`<a epub:type="noteref">` → `<aside epub:type="footnote">`). Chapters
+  from older projects that still bake `[^N]` markers + a
+  `## Translator's Notes` section into the markdown keep building — the
+  builder falls back to parsing them out of the file — and the `tn`
+  command migrates them (rewrites the markdown clean, notes move to the
+  sidecar) on their next re-evaluation.
 - One translated line per source body line. Exception: when the source body
   opened with a line identical to `chapter_title`, the pipeline strips it and
   carries the translated title in the frontmatter `title` field only — such
   chapters have one fewer body line than their source file.
-- The `## Translator's Notes` section is always last if present.
 - TOC label = `title` (falls back to `chapter_title`, then the file stem).
 - `util replace` / `glossary replace` rewrite the body (everything after the
-  frontmatter, Translator's Notes included) in place when a rendering
-  changes: frontmatter stays byte-verbatim, only files with matches are
-  rewritten, atomically, LF.
+  frontmatter, a legacy baked-in Translator's Notes section included) in
+  place when a rendering changes: frontmatter stays byte-verbatim, only
+  files with matches are rewritten, atomically, LF.
 
 During `translate`/`retry`, `build-epub` also runs automatically after every
 chapter reaches `translated`: per-chapter rebuilds are serialized (with a

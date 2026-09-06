@@ -6,7 +6,7 @@
 """novel-translator: staged, resumable CJK novel translation CLI.
 
 Subcommands: init, ping, seed, profile, styles, status, translate, retry,
-mark, review, util, glossary, build-epub.
+mark, tn, review, util, glossary, build-epub.
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
 had failures / glossary search found nothing, 2 usage or setup error.
 """
@@ -35,7 +35,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, cover, epub, fix, glossary, logger, pipeline, project, replace, review, tn  # noqa: E402
+from lib import client, config, cover, epub, fix, glossary, logger, pipeline, project, replace, review, tn, tn_recheck  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
@@ -94,7 +94,7 @@ def _load_config_lenient(project_dir: Path) -> dict | None:
 
 def _maybe_autobuild(project_dir: Path, cfg: dict | None, reason: str, changed: bool) -> None:
     """One synchronous epub rebuild after in-place chapter edits, honoring
-    auto_build_epub — same 'export/ always current' philosophy as the
+    auto_build_epub -- same 'export/ always current' philosophy as the
     translate-time auto-build. Build problems warn and never fail a replace."""
     if not changed:
         return
@@ -338,7 +338,7 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         f"({total_skipped} skipped as duplicates)"
     )
 
-    # Style profile (legacy '--style auto' path): sample the opening chapters
+    # Style profile (legacy '--style auto' path): sample random chapters
     # and have the model describe the narrative voice; stored as
     # novel_info.json:style_profile and used by later prompts. Preset styles
     # read project style.md instead and skip this LLM call. Failures only
@@ -655,6 +655,7 @@ def cmd_retry(args: argparse.Namespace, project_dir: Path) -> int:
         for artifact in (f"{stem}.state.json", f"{stem}.md", f"{stem}.lines.json"):
             (paths["draft"] / artifact).unlink(missing_ok=True)
         (paths["translated"] / file).unlink(missing_ok=True)
+        (tn.notes_path(project_dir, file)).unlink(missing_ok=True)
         project.set_status(manifest, file, "pending")
         print(f"[init] {file}: cleared artifacts, status pending")
     project.save_manifest(project_dir, manifest)
@@ -693,6 +694,31 @@ def cmd_mark(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def cmd_tn(args: argparse.Namespace, project_dir: Path) -> int:
+    cfg = _load_config(project_dir)
+    manifest = _load_manifest(project_dir)
+    files = pipeline.parse_range(args.chapters, manifest)
+    result = tn_recheck.recheck_chapters(
+        project_dir, manifest, files, cfg, dry_run=bool(args.dry_run)
+    )
+    logger.log_event(project_dir, {"event": "tn_recheck", **result})
+    prefix = "[dry-run] " if args.dry_run else ""
+    print(
+        f"{prefix}[ok] tn re-check: {result['scanned']} chapter(s) scanned, "
+        f"{result['changed']} changed, "
+        f"{result['notes_before']} -> {result['notes_after']} note(s)"
+    )
+    if not args.dry_run and not args.no_build:
+        _maybe_autobuild(project_dir, cfg, "tn", result["changed"] > 0)
+    if result["failed"]:
+        _fail(f"tn re-check: could not re-evaluate: {', '.join(result['failed'])}")
+        return 1
+    if result["scanned"] == 0:
+        _fail("tn re-check: no eligible translated chapters in range")
+        return 1
+    return 0
+
+
 def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     """Post-hoc fixer driver: parse review-report.md and run every machine-
     applicable finding as a glossary subcommand. Pure Python, no LLM calls.
@@ -720,24 +746,21 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
 
     # Dry-run: list every spec + summary, apply nothing. Specs whose command
     # would be rejected as an invalid translation (e.g. a suggestion that is
-    # still source-language CJK) get a SKIP annotation through a defensive
-    # hook -- invalid_translation_reason is landing in fix.py concurrently,
-    # so its absence (or an unreadable glossary) just means plain lines.
+    # still source-language CJK) get a SKIP annotation via the same guard
+    # run_commands applies before executing (an unreadable glossary just
+    # means plain lines).
     if args.dry_run:
-        reason_of = getattr(fix, "invalid_translation_reason", None)
-        g = None
-        if reason_of is not None:
-            try:
-                g = glossary.load(project_dir)
-            except (OSError, ValueError):
-                g = None
+        try:
+            g = glossary.load(project_dir)
+        except (OSError, ValueError):
+            g = None
         n_skip = 0
         for i, spec in enumerate(specs, 1):
             f = spec.finding
             tag = f.get("kind", "?")
             src = f.get("source", "?")
             line = " ".join(shlex.quote(t) for t in spec.argv)
-            reason = reason_of(spec.argv, g) if reason_of is not None and g is not None else None
+            reason = fix.invalid_translation_reason(spec.argv, g) if g is not None else None
             if reason:
                 n_skip += 1
                 print(f"[review fix] [{i}] SKIP ({reason}): {line}")
@@ -762,10 +785,7 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     applied = result["applied"]
     noop = result["noop"]
     failed = result["failed"]
-    # .get, not []: run_commands gains "skipped_invalid" (commands rejected
-    # before execution, e.g. CJK suggestion for a CJK-source entry) alongside
-    # fix.py's skip guard; versions without the guard report 0 via the default.
-    invalid = int(result.get("skipped_invalid", 0))
+    invalid = result["skipped_invalid"]
     changed_chapters = result["changed_chapters"]
     needs_decision = max(findings_count - result["specs_run"], 0)
 
@@ -949,7 +969,7 @@ def _cmd_glossary_replace(args: argparse.Namespace, project_dir: Path) -> int:
 
 def _cmd_glossary_set(args: argparse.Namespace, project_dir: Path) -> int:
     """Atomic multi-field metadata edit on a single entry; idempotent and
-    metadata-only (never rewrites chapters — use `glossary replace` for that).
+    metadata-only (never rewrites chapters -- use `glossary replace` for that).
     A no-op diff exits 0 without saving."""
     _probe_glossary(project_dir)
     g = glossary.load(project_dir)
@@ -1028,7 +1048,7 @@ def _cmd_glossary_merge(args: argparse.Namespace, project_dir: Path) -> int:
 
 def _cmd_glossary_retire(args: argparse.Namespace, project_dir: Path) -> int:
     """Single-source retire. Distinguishes 'already retired' (no-op exit 0)
-    from 'no matching entry' (exit 2) — glossary.retire() collapses both."""
+    from 'no matching entry' (exit 2) -- glossary.retire() collapses both."""
     _probe_glossary(project_dir)
     g = glossary.load(project_dir)
     if args.source in glossary.retired_sources(g):
@@ -1174,7 +1194,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("translate", parents=[common], help="run the translation pipeline on chapters")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--chapters", metavar="SPEC",
-                   help="chapter spec, e.g. 1,3-5,Chapter_0007.zh.md")
+                   help="chapter spec, e.g. 1,3-5,Chapter_0007.md")
     g.add_argument("--next", type=int, metavar="N", help="next N untranslated chapters")
     p.add_argument("--force", action="store_true", help="retranslate even if already translated")
     p.set_defaults(func=cmd_translate)
@@ -1182,7 +1202,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("retry", parents=[common], help="wipe chapter artifacts and translate from scratch")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--chapters", metavar="SPEC",
-                   help="chapter spec, e.g. 1,3-5,Chapter_0007.zh.md")
+                   help="chapter spec, e.g. 1,3-5,Chapter_0007.md")
     g.add_argument("--failed", action="store_true",
                    help="retry every needs-review chapter (max attempts reached)")
     p.set_defaults(func=cmd_retry)
@@ -1191,6 +1211,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--chapters", metavar="SPEC", required=True, help="chapter spec")
     p.add_argument("--status", required=True, choices=list(MARK_STATUSES))
     p.set_defaults(func=cmd_mark)
+
+    p = sub.add_parser(
+        "tn", parents=[common],
+        help="re-evaluate translator's notes on already-translated chapters (writes the notes/ sidecar)")
+    p.add_argument("--chapters", metavar="SPEC", required=True,
+                   help="chapter spec, e.g. 1,3-5,Chapter_0007.md")
+    p.add_argument("--dry-run", action="store_true",
+                   help="run the annotator evaluation but write nothing (LLM calls still happen)")
+    p.add_argument("--no-build", action="store_true",
+                   help="skip the post-run auto epub rebuild")
+    p.set_defaults(func=cmd_tn)
 
     p = sub.add_parser("review", parents=[common],
                        help="advisory quality review (glossary: source-translation alignment audit; fix: apply a report's machine-applicable findings)")
