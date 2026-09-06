@@ -1,10 +1,10 @@
 """Per-invocation JSONL trace logs with retention: logs/llm-* runs.
 
-Each CLI process writes one file — llm-YYYYMMDD-HHMMSS-<command>-<pid>.jsonl
-— decided once at the process's first logged event; every LLM call lands
+Each CLI process writes one file -- llm-YYYYMMDD-HHMMSS-<command>-<pid>.jsonl
+-- decided once at the process's first logged event; every LLM call lands
 there with the full prompt, raw response, finish_reason, usage, sampling
 params, and elapsed time, alongside the pipeline's stage/gate events. This
-is the debugging ground truth — the console output is a summary, the log is
+is the debugging ground truth -- the console output is a summary, the log is
 what actually happened.
 
 At first write the process also prunes logs/llm-*.jsonl (including files

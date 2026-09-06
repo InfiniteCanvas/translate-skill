@@ -2,7 +2,7 @@
 
 Smart phrase matching reuses the balance checker's multi-word semantics
 (case-insensitive, words joined by whitespace or hyphens, optional inflection
-on the last word) minus the fuzzy/stem tier — a rewrite must not guess.
+on the last word) minus the fuzzy/stem tier -- a rewrite must not guess.
 Chapter files are rewritten surgically: the YAML frontmatter block is kept
 byte-verbatim and only the body (everything after the closing '---') is
 touched, so [^N] footnote markers and the Translator's Notes section keep
@@ -30,7 +30,7 @@ def build_matcher(phrase: str) -> tuple[str, Any]:
 
     The regex mirrors balance.count_in_target's phrase branch: \\b-bounded,
     case-insensitive, words joined by [\\s-]+, optional inflection on the
-    last word — captured (group 1) so the replacement can re-append it.
+    last word -- captured (group 1) so the replacement can re-append it.
     """
     phrase = phrase.strip()
     if not phrase:
@@ -82,7 +82,7 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
     '---' line, preserved byte-for-byte; tail is everything after it.
 
     Same detection rule as project.read_chapter (first line '---', next
-    bare '---' closes), but no YAML parse/re-serialize — a replace must not
+    bare '---' closes), but no YAML parse/re-serialize -- a replace must not
     reformat what it doesn't touch.
     """
     lines = text.split("\n")
@@ -149,7 +149,7 @@ def glossary_replace(
     """Change a glossary entry's translation (keyed by source or variant)
     and rewrite the old rendering in every translated chapter.
 
-    By default the old rendering is pruned from alt_translations — a stale
+    By default the old rendering is pruned from alt_translations -- a stale
     alt would let balance.count_in_target keep counting it as a valid hit,
     masking future drift. keep_alt=True leaves the alt list untouched for
     renderings that should stay accepted variants. dry_run reports the

@@ -3,7 +3,7 @@
 Glossary file (glossary.json) layout:
 
     {"terms": [entry, ...],
-     "retired": [<source>, ...]  # optional — sources that must never be
+     "retired": [<source>, ...]  # optional -- sources that must never be
                                  # re-added by seed/expansion}
 
 Entry schema:
@@ -107,13 +107,13 @@ def search(g: dict, query: str, max_distance: int = 2) -> dict:
     """Case-insensitive substring + Levenshtein lookup across every
     entry's source, variants, translation and alt_translations.
 
-    Matching is uniform edit distance on casefolded strings — separators
+    Matching is uniform edit distance on casefolded strings -- separators
     get no special casing, so 'grand elder' finds 'grand-elder',
     'grand_elder' and 'grandxelder' each at distance 1, and 'grand-elder'
     finds 'grand elder'. Substring hits are distance 0. Token-level fuzzy
     is what catches single-word typos inside multi-word values
     ('Foundaition' -> 'Foundation Establishment'). Retired sources are
-    matched the same way but returned separately — informational only
+    matched the same way but returned separately -- informational only
     (never re-seed a retired source), never counted as matches.
 
     Returns {"matches": [{"entry": ..., "hits": [(kind, text, distance),
@@ -121,7 +121,7 @@ def search(g: dict, query: str, max_distance: int = 2) -> dict:
     of "source" | "variant" | "translation" | "alt". Entries with a
     substring hit sort first, then fuzzy hits by smallest distance, ties
     in glossary file order; hits within an entry keep field order. Pure
-    function — never writes.
+    function -- never writes.
     """
     q = query.casefold()
     if not q:
@@ -161,7 +161,7 @@ def retired_sources(g: dict) -> set[str]:
 def retire(project_dir: Path, sources: list[str]) -> list[str]:
     """Remove the entries matching sources from glossary.json and record each
     removed entry's canonical source in its "retired" list (deduped,
-    order-preserving) — even when the match came via a variant, so
+    order-preserving) -- even when the match came via a variant, so
     seed()/GLOSSARY_EXPAND can never re-add the term under its canonical
     spelling.
 
@@ -186,7 +186,7 @@ def retire(project_dir: Path, sources: list[str]) -> list[str]:
         # Record the ENTRY's canonical source, not the user-supplied lookup
         # key: retiring via a variant (靈根) must retire the canonical source
         # (灵根) or seed()/GLOSSARY_EXPAND would immediately re-add the term.
-        # merge_entries() — the other writer of "retired" — records
+        # merge_entries() -- the other writer of "retired" -- records
         # canonical sources the same way; the two must agree.
         canonical = entry.get("source")
         if isinstance(canonical, str) and canonical and canonical not in retired:
@@ -213,14 +213,14 @@ def set_fields(
 
     Validates exactly like apply_fixes(): unknown category -> ValueError;
     translation still containing CJK characters for a CJK-source entry ->
-    ValueError (definitions deliberately skip the CJK check — they may
+    ValueError (definitions deliberately skip the CJK check -- they may
     legitimately quote source-language terms). Removing an absent variant
     or alt is a silent no-op (the entry stays byte-identical, so callers
     can detect "no change" via the empty `changes` list).
 
     Returns (new_entry, [(field, old, new), ...]) where each tuple is one
     field that actually differs from the input. Caller decides whether to
-    save based on the changes list — this function never writes.
+    save based on the changes list -- this function never writes.
     """
     if not isinstance(entry, dict):
         raise ValueError("entry must be a dict")
@@ -233,7 +233,7 @@ def set_fields(
             raise ValueError("empty --translation")
         source = entry.get("source") or ""
         # balance.CJK_RE replaces the old local mirror so every source-script
-        # check pipeline-wide shares one (slightly wider) character range —
+        # check pipeline-wide shares one (slightly wider) character range --
         # compat ideographs U+F900-FAFF and halfwidth katakana U+FF66-FF9F
         # included.
         if (
@@ -310,16 +310,16 @@ def merge_entries(
     """Merge the `remove_source` entry into the `keep_source` entry in place.
 
     Union `remove`'s `variants` and `alt_translations` into the kept entry
-    (keep-first, deduped — set semantics). Fill the kept entry's
+    (keep-first, deduped -- set semantics). Fill the kept entry's
     `definition` only when it is empty AND the removed entry has one. Append
-    `remove_source` to the top-level `retired` list (set semantics — no
+    `remove_source` to the top-level `retired` list (set semantics -- no
     duplicates). Drop the removed entry from `terms`. The kept entry's
     `translation`, `category`, `origin`, and `first_seen_chapter` are
     preserved verbatim.
 
     Returns (kept_entry, remove_source_key, variants_added, alt_added,
     definition_filled). Raises ValueError when either entry is missing or
-    the two resolve to the same entry. Never writes — caller saves.
+    the two resolve to the same entry. Never writes -- caller saves.
 
     Pre-condition: callers should detect "remove already retired" up front
     via retired_sources(g) for a friendly no-op message; this helper does
@@ -429,7 +429,7 @@ def contextual(g: dict, body: str, cap: int) -> list[tuple[dict, int]]:
     Counting is cross-entry and longest-first: every matchable string
     (source + variants) across ALL entries is combined into a single
     longest-first alternation, so a longer compound consumes its characters
-    and a shorter nested term is never also credited for that occurrence —
+    and a shorter nested term is never also credited for that occurrence --
     e.g. when both 修仙 and 仙界 are glossary entries, the 仙界 inside
     修仙界 counts only for 修仙, not for 仙界. A string owned by several
     entries (one entry's source is another entry's variant) credits each

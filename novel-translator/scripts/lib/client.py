@@ -130,7 +130,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     and once with the response (raw content, finish_reason, usage, elapsed,
     error) after it completes or exhausts retries. Both metas carry the same
     call_id and an "event" field ("llm_request" / "llm_response") so they
-    pair up as two JSONL lines per call — a call that hits the 400 fallback
+    pair up as two JSONL lines per call -- a call that hits the 400 fallback
     (retry without response_format) adds one extra "llm_request" line for
     the retried request.
     """
@@ -142,7 +142,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     body: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        # Temperature comes from the provider block only — every job bakes
+        # Temperature comes from the provider block only -- every job bakes
         # its sampling profile into config defaults (translator 0.7, etc.).
         "temperature": provider_cfg.get("temperature", 0.2),
         "max_tokens": max_tokens or provider_cfg.get("max_tokens", 16384),

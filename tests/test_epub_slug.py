@@ -14,7 +14,7 @@ run via uv (deps declared inline below):
 
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["ebooklib>=0.18", "pillow>=10.0", "pyyaml>=6.0"]
+# dependencies = ["ebooklib>=0.18", "pyyaml>=6.0"]
 # ///
 from __future__ import annotations
 

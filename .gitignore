@@ -1,11 +1,3 @@
-# Generated translation test projects (fixtures are recreated by
-# tests/make_fixture.py; the others contain copied novel chapters and
-# generated artifacts that do not belong in version control)
-tests/fixture-project/
-tests/realtest-project/
-tests/sotn-project/
-tests/scratch_epub/
-
 # Python
 __pycache__/
 *.pyc
@@ -13,11 +5,6 @@ __pycache__/
 # Build artifacts
 *.epub
 export/
-tests/a-b/
-tests/advisory-live/
-tests/style-mock/
-tests/style-auto/
-tests/balance-e2e/
 
 # Local agent/tooling session state
 .zcode/

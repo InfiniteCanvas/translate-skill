@@ -107,15 +107,15 @@ def check(pairs: list[tuple[dict, int]],
     Returns (drift_signals, warnings, over_count):
     - drift_signals (advisory, surfaced to the FAITH reviewer, who owns the
       pass/fail verdict): one dict per term whose canonical rendering is
-      absent entirely while the term appears src >= 2 times — the reliable
+      absent entirely while the term appears src >= 2 times -- the reliable
       drift/omission heuristic, though nested-term counting false positives
       are possible, and dismissing those is the reviewer's job. Dict keys:
       "source", "translation", "src_count", "tgt_count", and "message"
       (the human-readable line used for feedback/console output).
     - warnings (advisory, console + trace log): canonical rendering below
-      the usage floor ceil(min_coverage * src) — possible under-use, but
+      the usage floor ceil(min_coverage * src) -- possible under-use, but
       natural English legitimately repeats nouns less than Chinese.
-    - over_count (trace log only): target count above src + max(2, src) — the
+    - over_count (trace log only): target count above src + max(2, src) -- the
       most false-positive-prone direction; recorded for the human, never
       blocking.
     """

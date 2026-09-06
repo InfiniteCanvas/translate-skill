@@ -312,11 +312,6 @@ def review_glossary(
     }
 
 
-def field_for_kind(kind: str) -> str | None:
-    """The glossary field a fixable kind amends (None = report-only kind)."""
-    return _FIELD_BY_KIND.get(kind)
-
-
 def outstanding_filter(applied: list[dict]) -> Callable[[dict], bool]:
     """Predicate over findings: still outstanding after `applied` fixes?
 
@@ -590,9 +585,9 @@ def write_report(
 def apply_fixes(project_dir: Path, findings: list[dict]) -> dict:
     """Apply guarded model-suggested fixes to glossary.json.
 
-    Only warn findings carrying a model-sourced suggestion are considered —
+    Only warn findings carrying a model-sourced suggestion are considered --
     origin "model", or a heuristic finding flagged "fixable" by the merge
-    (the suggestion was borrowed from a model finding) — and only kinds with
+    (the suggestion was borrowed from a model finding) -- and only kinds with
     a target field (_FIELD_BY_KIND); conflicts on the same entry field skip
     every side. Returns
     {"applied": [{"source","field","kind","old","new"}],

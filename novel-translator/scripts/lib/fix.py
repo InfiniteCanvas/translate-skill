@@ -4,7 +4,7 @@ bullet through the skill's CLI as a subprocess. Supports two parser modes:
   1. Explicit: extract every "- Command: <cli-line>" line and shlex.split() it.
   2. Legacy synthesis: when zero explicit Command lines are present, walk the
      finding blocks (### [N] warn|info / kind / source) and synthesize commands
-     via review.command_for_finding() — kind from heading, source from heading,
+     via review.command_for_finding() -- kind from heading, source from heading,
      suggestion from - Suggestion: bullet, plus the two exact heuristic reason
      templates for variant_to_remove / merge_with.
 
@@ -47,7 +47,7 @@ _NOOP_SIGNALS = (
 )
 
 # Exact, full-line templates for heuristic reason lines. Anchored, no
-# free-form prose is matched anywhere — the parser refuses to interpret
+# free-form prose is matched anywhere -- the parser refuses to interpret
 # model-written reasons.
 _HEURISTIC_DUP_RE = re.compile(r"^(source|variant) '(.+?)' also belongs to entry '(.+?)'$")
 _HEURISTIC_VARIANT_RE = re.compile(r"^variant '(.+?)' contains no CJK characters$")
@@ -128,7 +128,7 @@ def _parse_explicit(lines: list[str]) -> list[CommandSpec]:
 def _parse_legacy_synthesis(lines: list[str]) -> list[CommandSpec]:
     """Walk finding blocks and synthesize commands through the same
     mapping the writer uses. Heuristic structured fields are recovered
-    by regexing the two exact reason templates — never by parsing
+    by regexing the two exact reason templates -- never by parsing
     model prose."""
     specs: list[CommandSpec] = []
     current: dict | None = None
@@ -200,14 +200,14 @@ def invalid_translation_reason(argv: list[str], g: dict) -> str | None:
 
     review.apply_fixes() already refuses such suggestions ("suggestion not
     in target language"), but `review fix` shells the report's commands
-    out to the CLI where nothing re-checked them — a wrong-language model
+    out to the CLI where nothing re-checked them -- a wrong-language model
     suggestion would land in glossary.json and be rewritten across every
     translated chapter. Mirrors the review check (CJK source AND CJK
     suggested value) on balance.CJK_RE so every module shares one range.
 
     None (guard not applicable) when: not a replace/set command, no
     --translation flag (definitions/categories may legitimately quote
-    source text), no --source, or no matching entry — the subprocess
+    source text), no --source, or no matching entry -- the subprocess
     reports those cases itself.
     """
     if argv[:2] not in (["glossary", "replace"], ["glossary", "set"]):
@@ -260,7 +260,7 @@ def run_commands(
     for i, spec in enumerate(specs, 1):
         # Reload per spec: earlier subprocesses mutate glossary.json, so a
         # single up-front load would guard against a stale glossary. A
-        # corrupt file defers to the subprocess — the guard's verdict is
+        # corrupt file defers to the subprocess -- the guard's verdict is
         # moot when the verb itself cannot run.
         try:
             reason = invalid_translation_reason(
@@ -281,14 +281,14 @@ def run_commands(
         # lines never carry --project: the nested glossary action
         # subparsers also register it (dest="project_action"), and a
         # nested --project would silently override the prepended one by
-        # argparse precedence — which is why the writer never emits it.
+        # argparse precedence -- which is why the writer never emits it.
         full_argv = [
             sys.executable, str(script_path),
             "--project", str(project_dir),
             *argv,
         ]
         # The child (translate.py) reconfigures its stdout/stderr to UTF-8
-        # before printing CJK terms, so decode with the same codec — the
+        # before printing CJK terms, so decode with the same codec -- the
         # Windows locale default (cp1252) raises UnicodeDecodeError here.
         proc = subprocess.run(
             full_argv, capture_output=True, text=True, check=False,
