@@ -7,7 +7,9 @@ source must be in the batch), the heuristic-wins merge with borrowed
 suggestions, per-batch failure resilience, and apply_fixes()' full guard
 matrix (origin/severity/kind gating, conflict detection, category and
 target-language validation, in-place mutation preserving every other
-field).
+field). The model-tier "mundane" kind gets its own case: it survives
+normalization, maps to `glossary retire`, never auto-fixes, and always
+stays outstanding.
 
 Model-tier cases stub lib.client.chat via review.client (the call site is
 a module-attribute lookup, so the swap takes effect); no network, no
@@ -19,6 +21,7 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 """
 
 import json
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -516,6 +519,97 @@ def case_10_report() -> None:
               "clean report wrong")
 
 
+def case_11_mundane() -> None:
+    """The model-tier 'mundane' kind: normalization passthrough, the
+    glossary-retire command mapping, report rendering, and the
+    never-auto-fix contract."""
+    source = "灵石"
+    with tempfile.TemporaryDirectory() as td:
+        project_dir = Path(td)
+        terms = [{"source": source, "translation": "spirit stone", "category": "item"}]
+        write_glossary(project_dir, terms)
+
+        # 11a: a valid mundane warn row passes through verbatim -- a known
+        # kind is never collapsed to "other", even with an empty suggestion
+        rows = {"findings": [
+            {"source": source, "kind": "mundane", "severity": "warn",
+             "reason": "ordinary word, not a novel-specific term",
+             "suggestion": "", "action": ""},
+        ]}
+        result, _prompts = run_with_fake_chat(project_dir, [rows])
+        fs = pick(result["findings"], source, "mundane")
+        check("11a mundane: model warn row kept as mundane (not 'other')",
+              len(fs) == 1 and fs[0]["severity"] == "warn"
+              and fs[0]["origin"] == "model" and fs[0]["suggestion"] == ""
+              and not pick(result["findings"], source, "other"),
+              f"findings={[(f['source'], f['kind']) for f in result['findings']]}")
+
+        # 11b: the retire mapping holds for any origin and ignores the
+        # suggestion entirely (no suggestion is needed to retire)
+        spec = review.command_for_finding(
+            {"source": source, "kind": "mundane", "suggestion": "", "origin": "model"})
+        check("11b mundane: command_for_finding -> glossary retire --source",
+              spec == {"name": "glossary retire", "args": {"source": source}},
+              f"spec={spec}")
+        spec = review.command_for_finding(
+            {"source": source, "kind": "mundane", "suggestion": "anything",
+             "origin": "heuristic"})
+        check("11b2 mundane: suggestion irrelevant (heuristic + suggestion still retires)",
+              spec == {"name": "glossary retire", "args": {"source": source}},
+              f"spec={spec}")
+
+        # 11c: the per-kind Action template points at the retired list
+        action = review._action_text({"kind": "mundane", "suggestion": ""},
+                                     "Chinese", "English")
+        check("11c mundane: action text mentions the top-level retired list",
+              "retired" in action and "Retire this term" in action,
+              f"action={action!r}")
+
+        # 11d: the report renders the finding with a retire Command bullet
+        # whose CJK source is shlex-quoted and round-trips back to argv
+        finding = {"source": source, "kind": "mundane", "severity": "warn",
+                   "reason": "ordinary word, not a novel-specific term",
+                   "suggestion": "", "action": "", "origin": "model"}
+        path = review.write_report(
+            project_dir, findings=[finding], terms=terms, applied=[], skipped=[],
+            ran_fix=False, batches=1, batch_errors=[],
+            cfg={"source_lang": "zh", "target_lang": "en"},
+        )
+        text = path.read_text(encoding="utf-8")
+        retire_lines = [ln for ln in text.splitlines()
+                        if ln.startswith("- Command: glossary retire")]
+        check("11d mundane: warn indexed, exactly one retire Command bullet",
+              "### [1] warn / mundane / 灵石" in text and len(retire_lines) == 1,
+              f"lines={retire_lines}")
+        argv = shlex.split(retire_lines[0][len("- Command: "):]) if retire_lines else []
+        check("11d2 mundane: CJK source survives the shlex round-trip",
+              argv == ["glossary", "retire", "--source", source], f"argv={argv}")
+
+        # 11e: mundane has no target field, so a warn model finding is never
+        # eligible -- not applied and not even listed in skipped (the
+        # suggestion is non-empty on purpose: kind gating, not emptiness)
+        fixes = review.apply_fixes(project_dir, [
+            {"source": source, "kind": "mundane", "severity": "warn",
+             "reason": "retire me", "suggestion": "never used", "origin": "model"},
+        ])
+        check("11e mundane: apply_fixes ignores it (nothing applied, nothing skipped)",
+              fixes["applied"] == [] and fixes["skipped"] == [], f"fixes={fixes}")
+        g = glossary.load(project_dir)
+        check("11e2 mundane: glossary on disk untouched by the fix attempt",
+              g["terms"][0]["translation"] == "spirit stone", f"terms={g['terms']}")
+
+        # 11f: report-only kinds stay outstanding even after the same entry's
+        # translation was fixed (a mundane fix is retirement, not an edit)
+        outstanding = review.outstanding_filter(
+            [{"source": source, "field": "translation"}])
+        check("11f mundane: still outstanding after a translation fix on the source "
+              "(unlike a field-kind finding on the same field)",
+              outstanding(finding)
+              and not outstanding({"source": source, "kind": "mistranslation",
+                                   "severity": "warn"}),
+              "outstanding_filter verdict wrong")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -531,6 +625,7 @@ def main() -> int:
     case_8_batch_resilience()
     case_9_apply_fixes_guards()
     case_10_report()
+    case_11_mundane()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

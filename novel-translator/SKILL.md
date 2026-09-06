@@ -129,11 +129,10 @@ sorted by frequency):
    warnings also print console `[warn]`s (over-count is trace-only).
    Drift signals (canonical rendering absent while the term appears ≥2× in
    the source) first run the same cleanup judgment as before (one
-   `glossary`-provider call, `templates/glossary_cleanup.md`): KEEP terms
-   whose consistent rendering matters (names of people/places/sects/
-   techniques/titles/artifacts/cultivation realms, culturally loaded
-   concepts), REMOVE mundane ones (everyday words, common nouns/verbs,
-   generic objects, transient phrases whose natural translation varies).
+   `glossary`-provider call, `templates/glossary_cleanup.md`): KEEP named
+   entities and named actions (people/places/sects/techniques/titles/named
+   artifacts/named realms, plus honorifics), REMOVE class nouns (everyday
+   words, common nouns/verbs, generic objects, transient phrases).
    The retirement itself is DEFERRED: flagged terms are only dropped from
    `glossary.json` into its `retired` list after FAITH accepts the
    translation (applied alongside GLOSSARY_EXPAND; console: `[glossary]
@@ -149,8 +148,11 @@ sorted by frequency):
    legitimate counting false positives (nested compounds,
    inflections/hyphenations, generic words). FAILURE reasons become
    feedback.
-5. **GLOSSARY_EXPAND** — the model proposes new drift-prone terms (names,
-   places, skills, orgs...); identical duplicates are skipped, conflicting
+5. **GLOSSARY_EXPAND** — the model proposes new terms that are named
+   entities or named actions (names, places, orgs, titled positions, named
+   artifacts, techniques, named realms/states, honorifics — a term must
+   name one specific referent; class nouns like 麦穗 "wheat stalks" never
+   qualify); identical duplicates are skipped, conflicting
    ones are merged by the model into the existing entry. Runs only on the
    attempt FAITH just accepted — new terms lock in after the translation is
    accepted, never from a rejected one (a chapter that ends needs-review
@@ -261,6 +263,30 @@ background build too.
   Template files missing from a project's `templates/` dir fall back to
   the skill's `assets/templates/`, so newly shipped templates work in old
   projects.
+- **Upgrading projects (`migrate`)**: `uv run "$SCRIPT" migrate --project .
+  [--dry-run] [--force]` upgrades an existing project to the current
+  skill version — non-destructive, re-runnable, and it never resets
+  `glossary.json`/`tn_history.json` (unlike `init --force`). Steps live
+  in `scripts/migrations/` as `v001.py`, `v002.py`, ... — one module per
+  version, zero-padded so sort order = version order; the chain is
+  discovered from the files present (current version = highest), so a
+  skill update that needs project-side changes ships a new
+  `scripts/migrations/v<NNN>.py` and nothing else. The project's
+  position is the top-level integer `version` in `config.json` —
+  written by `init` (fresh projects are born current) and by `migrate`
+  after each successfully applied step (immediate per-step stamping, so
+  a crash mid-chain resumes at the failed step), never merged from
+  defaults; absent = 0. `migrate` runs only steps with a higher version,
+  in order. v001 (the only step today) materializes merged config
+  defaults onto disk (keys introduced after the project's init, e.g.
+  `glossary_auto_cleanup`, `min_term_coverage`, plus provider-job
+  normalization; user-set values always preserved) and copies shipped
+  templates missing from the project's `templates/` dir; templates that
+  exist but differ from the shipped ones are reported with a `[warn]`
+  and left untouched (they may be user-customized) unless `--force`
+  overwrites them. `--dry-run` reports without writing. A project
+  already current is a clean no-op. Exit 0 ok/no-op, 2 usage error
+  (missing config.json, broken chain, project newer than the skill).
 - **Glossary upkeep**: hand-fix bad entries any time (`glossary search` is
   the read-only lookup — see Bulk review fixes); the balance check reads
   `glossary.json` fresh for every chapter. Nothing in the pipeline audits
@@ -269,15 +295,20 @@ background build too.
   a translation shared by other entries (info); translation still in the
   source language or equal to the source; unknown category; non-CJK text
   in a CJK entry's variants (info)) plus the `glossary` provider judging
-  source-translation alignment, definitions, categories, and cross-entry
-  conflicts in batches of 40 (`--batch-size N`) through
-  `templates/glossary_review.md`. Report-only: one `[glossary] warn|info`
-  line per finding, never touching glossary.json unless `--fix`; `--fix`
+  source-translation alignment, definitions, categories, cross-entry
+  conflicts, and mundane terms (entries that are not named entities or
+  named actions — class nouns like 麦穗 "wheat stalks" never belonged;
+  seeded/catalogue entries exempt) in batches of 40 (`--batch-size N`)
+  through `templates/glossary_review.md`. Report-only: one
+  `[glossary] warn|info` line per finding, never touching glossary.json
+  unless `--fix`; `--fix`
   applies only model-suggested fixes (direct model-tier warn findings,
   or a suggestion the merge borrowed onto a heuristic finding), to
   translation/definition/category only, validated (valid category, no
   source-language text), skipping conflicting suggestions (console:
   `[glossary] fixed '<source>': <field> '<old>' -> '<new>'` per change).
+  Mundane findings carry no suggestion — `--fix` never retires them; the
+  report's `glossary retire` Command bullet does (see Bulk review fixes).
   Exit 0 clean or info-only (or every warn fixed), 1 warns remain,
   2 usage/setup error; empty glossary exits 0. Cost ceil(N/40) model
   calls; model-tier failures fail safe per batch — heuristic findings
@@ -382,9 +413,9 @@ or updating the `tn_generate.md` template — run:
 
 `review glossary` may leave dozens of machine-determinable findings behind
 (field-kind fixes with a suggestion, heuristic duplicate / variant
-collisions with structured merge data); applying them one at a time by hand
-or by an agent is tedious and prone to drift. For the offline
-machine-actionable path, run
+collisions with structured merge data, mundane terms to retire); applying
+them one at a time by hand or by an agent is tedious and prone to drift.
+For the offline machine-actionable path, run
 `uv run "$SCRIPT" review fix --glossary review-report.md [--dry-run]
 [--exit-on-error]`: it parses every `- Command:` bullet in
 `review-report.md` and runs each as a subprocess (`glossary replace | set |
@@ -405,7 +436,10 @@ for mistranslation / wrong_language / collision with a suggestion;
 `glossary set --definition` / `--category` for definition / category
 findings with a suggestion; `glossary set --remove-variant` for heuristic
 variants; `glossary merge --keep ... --remove ...` for heuristic
-duplicates). Legacy reports (no `- Command:` bullets, old `- Command:`
+duplicates; `glossary retire --source S` for mundane findings — retiring
+deletes the entry and appends the source to the top-level `retired` list,
+so `seed` / GLOSSARY_EXPAND never re-add it). Legacy reports (no
+`- Command:` bullets, old `- Command:`
 header that records the generating command) are synthesized on the fly from
 the structured parts alone — no `review glossary` re-run needed. After
 applying, one final `build-epub` runs when chapters changed and

@@ -15,6 +15,12 @@ invalid spec is skipped in-process (skipped_invalid=1, no subprocess, no
 glossary write) while the benign read-only spec (glossary search) runs and
 applies.
 
+The mundane cases cover the model-tier 'mundane' kind in both parser
+modes: a legacy finding block (### [1] warn / mundane / 灵根) and an
+explicit "- Command: glossary retire --source '灵根'" bullet both yield
+the retire spec (retire is a supported verb, so the bullet is parsed,
+never warned-and-ignored), and run_commands executes it as applied.
+
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
     python tests/test_fix_guard.py
@@ -151,6 +157,74 @@ def case_5_run_commands_integration() -> None:
               (root / "glossary.json").read_bytes() == before)
 
 
+def case_6_mundane_report_parsing() -> None:
+    """Both parser modes map a mundane finding to `glossary retire`: legacy
+    synthesis from the finding block, and the explicit (shlex-quoted)
+    Command bullet -- a supported verb, so parsed, not warned-and-ignored."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        report = root / "review-report.md"
+
+        # legacy mode: zero - Command: lines -> synthesis from finding blocks
+        report.write_text(
+            "# Glossary Review Report\n"
+            "\n"
+            "### [1] warn / mundane / 灵根\n"
+            "\n"
+            "- Reason: ordinary word, not a novel-specific term\n"
+            "- Tier: model\n",
+            encoding="utf-8",
+        )
+        specs, count = fix.parse_report(report)
+        check("6a legacy mundane: one finding, one synthesized command",
+              count == 1 and len(specs) == 1,
+              f"count={count} specs={len(specs)}")
+        check("6b legacy mundane: synthesized spec retires the CJK source",
+              bool(specs) and specs[0].argv == ["glossary", "retire",
+                                                "--source", "灵根"]
+              and specs[0].line_no == 0,
+              f"argv={specs[0].argv if specs else None}")
+
+        # explicit mode: the writer's quoted bullet parses back to argv
+        report.write_text(
+            "- Command: glossary retire --source '灵根'\n",
+            encoding="utf-8",
+        )
+        specs, count = fix.parse_report(report)
+        check("6c explicit mundane: retire bullet parsed as a supported verb",
+              len(specs) == 1
+              and specs[0].argv == ["glossary", "retire", "--source", "灵根"]
+              and specs[0].line_no == 1
+              and specs[0].raw == "glossary retire --source '灵根'",
+              f"specs={[s.argv for s in specs]}")
+
+
+def case_7_mundane_retire_run() -> None:
+    """run_commands executes the parsed retire spec as applied (guard not
+    applicable to retire, exit 0, not a noop) and the entry is retired
+    on disk."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "灵根", "variants": [], "translation": "spirit root"},
+        ]})
+        report = root / "review-report.md"
+        report.write_text(
+            "- Command: glossary retire --source '灵根'\n",
+            encoding="utf-8",
+        )
+        specs, _count = fix.parse_report(report)
+        result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        check("7a run mundane: retire ran and counted as applied",
+              result["specs_run"] == 1 and result["applied"] == 1
+              and result["failed"] == 0 and result["noop"] == 0
+              and result["skipped_invalid"] == 0, f"result={result}")
+        g = glossary.load(root)
+        check("7b run mundane: entry removed, 灵根 recorded in 'retired'",
+              g.get("terms") == [] and g.get("retired") == ["灵根"],
+              f"terms={g.get('terms')} retired={g.get('retired')}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -161,6 +235,8 @@ def main() -> int:
     case_3_empty_and_missing()
     case_4_out_of_scope()
     case_5_run_commands_integration()
+    case_6_mundane_report_parsing()
+    case_7_mundane_retire_run()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

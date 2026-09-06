@@ -50,6 +50,16 @@ through uv automatically):
    `--force` reinitializes, resetting `glossary.json` and
    `tn_history.json` to empty.
 
+   After updating the skill itself, upgrade existing projects in place:
+
+       uv run scripts/translate.py migrate --project .
+
+   `migrate` is non-destructive and re-runnable: it brings a project up
+   to the current skill version (new config keys, templates shipped
+   since the project's init; an up-to-date project is a clean no-op)
+   and never touches `glossary.json` or `tn_history.json` -- that reset
+   is `init --force`'s job.
+
    Style is preset-based -- zero LLM calls at init. Pick with
    `--style <name|path>`: `classic` (default; standard xianxia/wuxia
    register), `transmigration` (modern protagonist voice + internet
@@ -149,15 +159,19 @@ Two tiers: deterministic heuristics (duplicate/variant collisions, a
 translation shared by several entries, translation still in the source
 language or equal to the source, unknown category, non-CJK text in a
 CJK entry's variants) plus the glossary model judging alignment,
-definitions, categories, and cross-entry conflicts in batches of 40
-(`--batch-size N`). Report-only by default -- one
+definitions, categories, cross-entry conflicts, and mundane entries --
+class nouns like 麦穗 "wheat stalks" that never belonged in the glossary
+(seeded/catalogue entries exempt) -- in batches of 40 (`--batch-size N`).
+Report-only by default -- one
 `[glossary] warn|info '<source>' -> '<translation>': <kind> - <reason>`
 line per finding plus a summary; `--fix` opts in to guarded fixes
 (model-suggested fixes only: direct model-tier warn findings, or a
 suggestion the merge borrowed onto a heuristic finding;
 translation/definition/category only; validated; conflicting suggestions
-skipped; prints `[glossary] fixed ...` per change). Exit 0 clean or
-info-only, 1 warns remain, 2 usage error. Cost ceil(N/40) model calls.
+skipped; prints `[glossary] fixed ...` per change). Mundane findings carry
+no suggestion -- `--fix` never retires them; their `- Command:` bullet
+does. Exit 0 clean or info-only, 1 warns remain, 2 usage error. Cost
+ceil(N/40) model calls.
 
 Every run also writes `<project>/review-report.md` (overwritten each run,
 clean runs included; console: `[glossary] report: <path>`): numbered
@@ -165,7 +179,10 @@ outstanding findings -- warnings first, then info -- each with its reason,
 suggestion, tier, the full glossary entry as JSON, an Action line
 (model-written when available, else a per-kind template), and a
 `- Command:` bullet on every finding whose fix is fully determined by its
-structured fields. Findings fixed by `--fix` drop out of the numbering into
+structured fields -- a mundane entry's bullet is `glossary retire --source
+S`, which deletes the entry and appends its source to glossary.json's
+top-level `retired` list so seeding and glossary expansion never re-add
+it. Findings fixed by `--fix` drop out of the numbering into
 a "Fixed automatically" section; guarded-out suggestions sit under "Fixes
 skipped (need a decision)", and a footer walks the next steps (hand-edit
 glossary.json, `review fix --glossary review-report.md` for the offline
@@ -240,9 +257,9 @@ chapters in range, 2 usage error.
 `review glossary` may leave dozens of machine-determinable findings
 behind (every `mistranslation` / `wrong_language` / `collision` /
 `definition` / `category` finding with a suggestion, plus heuristic
-duplicate / variant collisions with structured merge data). Applying them
-one at a time by hand or by an agent is tedious and prone to drift. For
-the offline path:
+duplicate / variant collisions with structured merge data and mundane
+terms to retire). Applying them one at a time by hand or by an agent is
+tedious and prone to drift. For the offline path:
 
     uv run scripts/translate.py review fix --glossary review-report.md \
         [--dry-run] [--exit-on-error]
@@ -268,7 +285,8 @@ fields; the closed vocabulary is documented in
 mistranslation / wrong_language / collision with a suggestion; `glossary
 set --definition` / `--category` for definition / category findings with
 a suggestion; `glossary set --remove-variant` for heuristic variants;
-`glossary merge --keep ... --remove ...` for heuristic duplicates).
+`glossary merge --keep ... --remove ...` for heuristic duplicates;
+`glossary retire --source S` for mundane findings).
 Delete any `- Command:` bullet to veto that finding; legacy reports
 without `- Command:` lines (and the old `- Command:` header that records
 the generating command) are synthesized on the fly from the structured

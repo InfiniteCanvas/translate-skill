@@ -22,7 +22,7 @@ from lib.pipeline import LANG_NAMES, fill
 _SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
 
 KINDS = ("mistranslation", "wrong_language", "definition", "category",
-         "variant", "duplicate", "collision", "other")
+         "variant", "duplicate", "collision", "mundane", "other")
 SEVERITIES = ("warn", "info")
 DEFAULT_BATCH_SIZE = 40
 
@@ -360,6 +360,10 @@ def _action_text(finding: dict, source_name: str, target_name: str) -> str:
     if kind == "collision":
         return ("Give this entry a `translation` distinct from the other entry's, "
                 "or move the shared rendering to `alt_translations`.")
+    if kind == "mundane":
+        return ("Retire this term: delete the entry and add its source to the "
+                'top-level "retired" list so seed/GLOSSARY_EXPAND will not '
+                "re-add it.")
     return "Review this entry and correct it as judged."
 
 
@@ -381,10 +385,12 @@ def command_for_finding(finding: dict) -> dict | None:
       -> ``glossary set --source S --remove-variant V``
     - heuristic `duplicate` carrying `merge_with`
       -> ``glossary merge --keep M --remove S``
+    - `mundane`
+      -> ``glossary retire --source S``
 
     Everything else (model-tier `duplicate` / `variant`, suggestion-less
-    kinds, `other`) returns None -- their fix is a judgment call living in
-    free-form Action prose, which this design deliberately refuses to parse.
+    field kinds, `other`) returns None -- their fix is a judgment call living
+    in free-form Action prose, which this design deliberately refuses to parse.
 
     Returned shape: ``{"name": "<verb phrase>", "args": {"<flag>": <value>, ...}}``
     where flag names use the same hyphens as the CLI (so `_command_argv`
@@ -432,6 +438,14 @@ def command_for_finding(finding: dict) -> dict | None:
         return {
             "name": "glossary merge",
             "args": {"keep": merge_with, "remove": source},
+        }
+
+    # A mundane-term finding needs no suggestion: the retirement is fully
+    # determined by the source alone.
+    if kind == "mundane" and source:
+        return {
+            "name": "glossary retire",
+            "args": {"source": source},
         }
 
     return None

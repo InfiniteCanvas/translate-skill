@@ -96,7 +96,8 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation (--style auto only)
   "style_sample_chars": 12000,   // rough source-character budget for the sample (--style auto only)
   "log_llm": true,               // full request/response LLM trace; false disables the LLM trace lines only
-  "log_llm_keep_runs": 5         // one llm-*.jsonl per CLI invocation; older logs pruned to the newest N (by mtime)
+  "log_llm_keep_runs": 5,        // one llm-*.jsonl per CLI invocation; older logs pruned to the newest N (by mtime)
+  "version": 1                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
 
@@ -270,7 +271,8 @@ the report lists.
                                              # omitted when the fix lives in
                                              # free-form Action prose only
                                              # (model-tier duplicate/variant,
-                                             # suggestion-less findings)
+                                             # suggestion-less collision,
+                                             # `other`)
 
 ## Info (optional improvements)             # numbering continues: [4], [5], ...
 
@@ -301,7 +303,9 @@ removed source to the top-level `"retired"` list; variant → remove the
 flagged string from `variants` (or move it to `alt_translations` if it is
 really an alternative translation); collision → give the entry a
 `translation` distinct from the other entry's, or move the shared rendering
-to `alt_translations`.
+to `alt_translations`; mundane → retire the term — delete the entry and add
+its source to the top-level `"retired"` list so seeding and glossary
+expansion never re-add it.
 
 The `- Command:` bullet — when present — is the contract `review fix`
 honors. Every value is `shlex.quote()`-escaped, so CJK source terms and
@@ -317,6 +321,7 @@ when the fix is **fully determined by the finding's structured fields**
 | `category` with suggestion                           | `glossary set --source S --category C` |
 | heuristic `variant` (has `variant_to_remove`)        | `glossary set --source S --remove-variant V` |
 | heuristic `duplicate` (has `merge_with`)             | `glossary merge --keep M --remove S` |
+| `mundane`                                            | `glossary retire --source S` |
 | model-tier `duplicate` / `variant`, suggestion-less `collision`, `other` | _(no Command bullet — decision item)_ |
 
 `review fix` pre-validates each command before running it: a `glossary
@@ -337,6 +342,34 @@ reports written by current and future versions. Legacy reports keep
 the older `- Command: review glossary` header; `review fix` ignores it
 because its argv (`review glossary`) does not start with a supported
 glossary verb.
+
+## Migrations (`scripts/migrations/` in the skill)
+
+Per-version upgrade steps for the `migrate` subcommand. One module per
+version, named `v001.py`, `v002.py`, ... — zero-padded so sort order =
+version order; the chain is discovered from the files present, and the
+skill's current version is the highest one. Each module exposes exactly:
+
+| Attribute | Meaning |
+|---|---|
+| `VERSION` | int; must equal the number in the module's filename |
+| `DESCRIPTION` | one-line summary of what the step does |
+| `migrate(project_dir, templates_src, dry_run, force) -> list[str]` | applies the step; returns the report lines to print |
+
+`migrate` reads the project's `config.json` `version` (a config without
+the key is version 0), runs only the steps with a higher version in
+order, and stamps `version` after each successfully applied step —
+immediate per-step stamping, so a crash mid-chain resumes at the failed
+step. `v001` — the only step so far — materializes merged config
+defaults onto disk (keys introduced after the project's init, e.g.
+`glossary_auto_cleanup` and `min_term_coverage`, plus provider-job
+normalization; user-set values always preserved) and copies shipped
+templates missing from the project's `templates/` dir; templates that
+exist but differ from the shipped ones are reported with a `[warn]` and
+left untouched (they may be user-customized) unless `--force` overwrites
+them (`--dry-run` reports without writing). Adding a new migration is
+nothing more than shipping the next `v<NNN>.py` — a skill update that
+needs project-side changes ships that module and nothing else.
 
 ## tn_history.json
 
@@ -453,7 +486,9 @@ disable with `auto_build_epub: false`.
 Copied from the skill's `assets/templates/` at `init`; edit freely per project.
 A template file missing from the project's `templates/` dir falls back to
 the skill's `assets/templates/`, so newly shipped templates work in
-existing projects. Plain `{{placeholder}}` substitution. The pipeline
+existing projects. `migrate` materializes missing templates onto disk,
+and `migrate --force` refreshes copies that differ from the shipped
+ones. Plain `{{placeholder}}` substitution. The pipeline
 errors out if a template still contains an unknown/leftover `{{...}}`
 after filling — typos fail fast.
 

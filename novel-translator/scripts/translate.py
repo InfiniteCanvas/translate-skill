@@ -5,8 +5,8 @@
 # ///
 """novel-translator: staged, resumable CJK novel translation CLI.
 
-Subcommands: init, ping, seed, profile, styles, status, translate, retry,
-mark, tn, review, util, glossary, build-epub.
+Subcommands: init, ping, seed, migrate, profile, styles, status, translate,
+retry, mark, tn, review, util, glossary, build-epub.
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
 had failures / glossary search found nothing, 2 usage or setup error.
 """
@@ -38,6 +38,10 @@ if str(SCRIPT_DIR) not in sys.path:
 from lib import client, config, cover, epub, fix, glossary, logger, pipeline, project, replace, review, tn, tn_recheck  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
+
+# Sibling package of lib/ (also under SCRIPT_DIR): the per-version project
+# migration scripts walked by cmd_migrate.
+import migrations  # noqa: E402
 
 SKILL_ROOT = SCRIPT_DIR.parent
 ASSETS_DIR = SKILL_ROOT / "assets"
@@ -236,6 +240,14 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         "providers": providers,
     }
     cfg.update(config.DEFAULTS)
+    # Fresh projects are born current: stamp the migration chain's head
+    # version. The key lives ONLY in the written file -- never in
+    # config.DEFAULTS -- so load_config's deep merge can never fake it for
+    # pre-versioning projects.
+    try:
+        cfg["version"] = migrations.current_version()
+    except Exception as exc:  # noqa: BLE001 - a broken chain is a setup error
+        raise CliError(f"invalid migration chain: {exc}") from exc
     config.save_config(project_dir, cfg)
     print(f"[init] wrote {paths['config'].name}")
 
@@ -464,6 +476,63 @@ def cmd_seed(args: argparse.Namespace, project_dir: Path) -> int:
         print(f"[warn] no catalogues matched (language={lang})")
         return 0
     print(f"[ok] seeded {total_added} terms ({total_skipped} skipped as duplicates) from {used} catalogue(s)")
+    return 0
+
+
+def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
+    """Upgrade a project to the current skill version by walking the
+    per-version scripts in migrations/ (v001, v002, ...).
+
+    The project's version comes from the RAW config.json "version" key --
+    never from the load_config merge, which deep-merges DEFAULTS and so
+    could not distinguish a stamped project from a defaulted one ("version"
+    deliberately never enters config.DEFAULTS for exactly that reason)."""
+    _load_config(project_dir)  # missing/corrupt config.json -> CliError (exit 2)
+    if not TEMPLATES_SRC_DIR.is_dir():
+        raise CliError(f"skill templates not found: {TEMPLATES_SRC_DIR}")
+
+    try:
+        raw = json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
+        src_version = int(raw.get("version", 0))
+    except (OSError, TypeError, ValueError) as exc:
+        raise CliError(
+            f"cannot read version from {project_dir / 'config.json'}: {exc}"
+        ) from exc
+
+    try:
+        steps = migrations.chain()
+        cur = migrations.current_version()
+    except Exception as exc:  # noqa: BLE001 - a broken chain is a setup error, not a mid-run traceback
+        raise CliError(f"invalid migration chain: {exc}") from exc
+
+    if src_version > cur:
+        raise CliError(
+            f"project config version {src_version} is newer than this skill's "
+            f"chain ({cur}) - update the skill"
+        )
+
+    pending = [step for step in steps if step.VERSION > src_version]
+    if not pending:
+        print(f"[ok] project already at version {cur}")
+        return 0
+
+    for step in pending:
+        verb = "would apply" if args.dry_run else "applying"
+        print(f"[migrate] {verb} v{step.VERSION:03d}: {step.DESCRIPTION}")
+        for line in step.migrate(project_dir, TEMPLATES_SRC_DIR, args.dry_run, args.force):
+            print(("[dry-run] " + line) if args.dry_run else line)
+        if not args.dry_run:
+            # Stamp immediately after each step, as a read-modify-write of
+            # the RAW file so the step's own config edits survive: a crash
+            # mid-chain resumes at the failed step instead of re-running
+            # completed ones.
+            stamped = json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
+            stamped["version"] = step.VERSION
+            config.save_config(project_dir, stamped)
+
+    verb = "would migrate" if args.dry_run else "migrated"
+    print(f"[ok] {verb} project: version {src_version} -> {pending[-1].VERSION}")
+    print("next step: 'seed' for new catalogue terms; 'review glossary' to re-audit the glossary")
     return 0
 
 
@@ -1174,6 +1243,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--catalogue", action="append", default=None, metavar="PATH",
                    help="explicit catalogue path (repeatable; bypasses language filter)")
     p.set_defaults(func=cmd_seed)
+
+    p = sub.add_parser(
+        "migrate", parents=[common],
+        help="upgrade a project to the current skill version (walks per-version migration scripts)")
+    p.add_argument("--force", action="store_true",
+                   help="overwrite templates that differ from the shipped ones")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would change without writing")
+    p.set_defaults(func=cmd_migrate)
 
     p = sub.add_parser("profile", parents=[common],
                        help="regenerate the style profile for an initialized project")

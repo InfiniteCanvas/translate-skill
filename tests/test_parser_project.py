@@ -11,7 +11,9 @@ main() resolves nested > action-level > global > ".".
 
 Every nested glossary action (replace/set/merge/retire/search) must parse
 and resolve the directory in all three positions; top-level commands
-(status) work both ways; the review/util paths still parse.
+(status) work both ways; the review/util paths still parse; migrate (the
+per-version upgrade command) parses in both --project positions with its
+--force/--dry-run flags round-tripping.
 
 Parsing only -- no project directories are created or touched. translate.py
 imports the whole lib package (requests, ebooklib, pillow, pyyaml).
@@ -192,6 +194,21 @@ def case_9_review_util() -> None:
           f"ns={ns}")
 
 
+def case_10_migrate() -> None:
+    """migrate: --project resolves before and after the verb; --force and
+    --dry-run round-trip to True; the parser binds cmd_migrate."""
+    ns = parse(["--project", DIR, "migrate"])
+    check("10a migrate: '--project DIR migrate' resolves DIR",
+          ns is not None and str(resolve_dir(ns)) == DIR, f"ns={ns}")
+    ns = parse(["migrate", "--project", DIR])
+    check("10b migrate: 'migrate --project DIR' resolves DIR",
+          ns is not None and str(resolve_dir(ns)) == DIR, f"ns={ns}")
+    ns = parse(["migrate", "--project", DIR, "--force", "--dry-run"])
+    check("10c migrate: --force/--dry-run round-trip to True, func == cmd_migrate",
+          ns is not None and ns.force is True and ns.dry_run is True
+          and ns.func is translate.cmd_migrate, f"ns={ns}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -206,6 +223,7 @@ def main() -> int:
     case_7_default()
     case_8_top_level()
     case_9_review_util()
+    case_10_migrate()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
