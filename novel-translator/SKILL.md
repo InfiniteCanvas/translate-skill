@@ -281,12 +281,26 @@ background build too.
   defaults onto disk (keys introduced after the project's init, e.g.
   `glossary_auto_cleanup`, `min_term_coverage`, plus provider-job
   normalization; user-set values always preserved) and copies shipped
-  templates missing from the project's `templates/` dir; templates that
-  exist but differ from the shipped ones are reported with a `[warn]`
-  and left untouched (they may be user-customized) unless `--force`
-  overwrites them. `--dry-run` reports without writing. A project
-  already current is a clean no-op. Exit 0 ok/no-op, 2 usage error
-  (missing config.json, broken chain, project newer than the skill).
+  templates missing from the project's `templates/` dir without
+  prompting (non-destructive; the runtime fallback would cover them
+  anyway). A template that exists but differs from the shipped one is
+  prompted for interactively, one prompt per template:
+  `overwrite templates/<name>.md with the shipped version? [y/N]` —
+  Enter/n keeps the project's version (the default; it may be a user
+  customization), y overwrites it with the shipped copy. `--force`
+  answers yes to all prompts (no prompting); non-interactive runs
+  (stdin not a TTY: piped, scripted, CI) never prompt and never
+  block — differing templates are kept with a `[warn]` line.
+  `--dry-run` reports differing templates without prompting or
+  writing. A project already current no longer just reports the
+  version and exits: `migrate` runs a read-only-when-clean template
+  maintenance pass (same prompt rules — missing templates copied,
+  differing ones prompted / `--force`-refreshed) that leaves the
+  version stamp untouched, so `migrate --force` on a current project
+  refreshes stale templates instead of silently doing nothing. The
+  chain still gates structural steps; template refresh is maintenance,
+  not a chain step. Exit 0 ok/no-op, 2 usage error (missing
+  config.json, broken chain, project newer than the skill).
 - **Glossary upkeep**: hand-fix bad entries any time (`glossary search` is
   the read-only lookup — see Bulk review fixes); the balance check reads
   `glossary.json` fresh for every chapter. Nothing in the pipeline audits

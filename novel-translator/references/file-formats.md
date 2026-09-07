@@ -354,7 +354,12 @@ skill's current version is the highest one. Each module exposes exactly:
 |---|---|
 | `VERSION` | int; must equal the number in the module's filename |
 | `DESCRIPTION` | one-line summary of what the step does |
-| `migrate(project_dir, templates_src, dry_run, force) -> list[str]` | applies the step; returns the report lines to print |
+| `migrate(project_dir, templates_src, dry_run, force, confirm=None) -> list[str]` | applies the step; returns the report lines to print |
+
+`confirm` is an optional `Callable[[str], bool]` supplied by
+`cmd_migrate` for interactive runs (`None` = non-interactive); steps
+never touch stdin directly, they just call `confirm(...)` and honor
+the boolean it returns.
 
 `migrate` reads the project's `config.json` `version` (a config without
 the key is version 0), runs only the steps with a higher version in
@@ -364,12 +369,23 @@ step. `v001` — the only step so far — materializes merged config
 defaults onto disk (keys introduced after the project's init, e.g.
 `glossary_auto_cleanup` and `min_term_coverage`, plus provider-job
 normalization; user-set values always preserved) and copies shipped
-templates missing from the project's `templates/` dir; templates that
-exist but differ from the shipped ones are reported with a `[warn]` and
-left untouched (they may be user-customized) unless `--force` overwrites
-them (`--dry-run` reports without writing). Adding a new migration is
-nothing more than shipping the next `v<NNN>.py` — a skill update that
-needs project-side changes ships that module and nothing else.
+templates missing from the project's `templates/` dir without prompting
+(non-destructive; the runtime fallback would cover them anyway). A
+template that exists but differs from the shipped one is asked about
+interactively, one prompt per template — `overwrite templates/<name>.md
+with the shipped version? [y/N]`: Enter/n keeps the project's version
+(the default; it may be user-customized), y overwrites it with the
+shipped copy. `--force` answers yes to all prompts (no prompting), and
+non-interactive runs (stdin not a TTY: piped, scripted, CI) never
+prompt and never block — differing templates are kept with a `[warn]`
+line (`--dry-run` reports differing templates without prompting or
+writing). A project already current is not a bare no-op: `migrate` runs
+a read-only-when-clean template maintenance pass (same prompt rules)
+that leaves the version stamp untouched — the chain gates structural
+steps, and template refresh is maintenance, not a chain step. Adding a
+new migration is nothing more than shipping the next `v<NNN>.py` — a
+skill update that needs project-side changes ships that module and
+nothing else.
 
 ## tn_history.json
 
@@ -486,9 +502,14 @@ disable with `auto_build_epub: false`.
 Copied from the skill's `assets/templates/` at `init`; edit freely per project.
 A template file missing from the project's `templates/` dir falls back to
 the skill's `assets/templates/`, so newly shipped templates work in
-existing projects. `migrate` materializes missing templates onto disk,
-and `migrate --force` refreshes copies that differ from the shipped
-ones. Plain `{{placeholder}}` substitution. The pipeline
+existing projects. `migrate` materializes missing templates onto disk
+and prompts for each copy that differs from the shipped one —
+`overwrite templates/<name>.md with the shipped version? [y/N]`
+(Enter/n keeps the project's copy, y overwrites; `--force` answers y
+to all prompts, and non-interactive runs keep differing copies with a
+`[warn]`); this template maintenance pass runs on already-current
+projects too, leaving the version stamp untouched. Plain
+`{{placeholder}}` substitution. The pipeline
 errors out if a template still contains an unknown/leftover `{{...}}`
 after filling — typos fail fast.
 

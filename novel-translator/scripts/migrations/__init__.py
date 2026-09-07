@@ -3,8 +3,11 @@
 Each sibling vNNN.py module is one project-schema version and exposes:
   VERSION      int, must equal the NNN in its filename
   DESCRIPTION  one-line summary printed while the step is applied
-  migrate(project_dir, templates_src, dry_run=False, force=False) -> list[str]
-               report lines (with [ok]/[warn] prefixes); never prints itself
+  migrate(project_dir, templates_src, dry_run=False, force=False,
+           confirm=None) -> list[str]
+               report lines (with [ok]/[warn] prefixes); never prints itself.
+               confirm is an optional Callable[[str], bool] the walker passes
+               for interactive template prompts (None = non-interactive run)
 
 chain() discovers the scripts, imports each as a submodule of this package,
 validates the VERSION/filename match (a misnamed script must fail loudly at
@@ -56,7 +59,7 @@ def chain() -> list[ModuleType]:
         if not callable(getattr(module, "migrate", None)):
             raise ValueError(
                 f"migrations/{path.name}: missing a migrate(project_dir, "
-                "templates_src, dry_run, force) function"
+                "templates_src, dry_run, force, confirm) function"
             )
         steps.append(module)
     return steps

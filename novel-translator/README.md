@@ -56,9 +56,17 @@ through uv automatically):
 
    `migrate` is non-destructive and re-runnable: it brings a project up
    to the current skill version (new config keys, templates shipped
-   since the project's init; an up-to-date project is a clean no-op)
-   and never touches `glossary.json` or `tn_history.json` -- that reset
-   is `init --force`'s job.
+   since the project's init) and never touches `glossary.json` or
+   `tn_history.json` -- that reset is `init --force`'s job. Templates
+   missing from the project are copied without asking; a copy that
+   differs from the shipped one prompts, per template,
+   `overwrite templates/<name>.md with the shipped version? [y/N]`
+   (Enter/n keeps the project's version, y overwrites; `--force`
+   answers y to all, and non-interactive runs (piped, scripted, CI)
+   keep differing templates with a `[warn]`). An up-to-date project
+   still gets this template maintenance pass (read-only when clean,
+   version stamp untouched), so `migrate --force` refreshes stale
+   templates on current projects too.
 
    Style is preset-based -- zero LLM calls at init. Pick with
    `--style <name|path>`: `classic` (default; standard xianxia/wuxia

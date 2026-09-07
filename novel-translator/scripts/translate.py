@@ -479,6 +479,24 @@ def cmd_seed(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def _confirm_template_refresh(question: str) -> bool:
+    """Interactive y/N prompt for overwriting a user-customized template.
+    The caller (cmd_migrate) has already established that stdin is a TTY.
+    y/yes refreshes; n/no or a bare Enter keeps the user's version (default
+    No); unknown input re-asks. EOF counts as No; KeyboardInterrupt
+    propagates (main() maps it to exit 130)."""
+    while True:
+        try:
+            answer = input(f"{question} [y/N] ").strip().lower()
+        except EOFError:
+            return False
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no", ""):
+            return False
+        print("please answer y or n")
+
+
 def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     """Upgrade a project to the current skill version by walking the
     per-version scripts in migrations/ (v001, v002, ...).
@@ -490,6 +508,13 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     _load_config(project_dir)  # missing/corrupt config.json -> CliError (exit 2)
     if not TEMPLATES_SRC_DIR.is_dir():
         raise CliError(f"skill templates not found: {TEMPLATES_SRC_DIR}")
+
+    # Interactivity is decided exactly once, here: a TTY gets the module's
+    # prompt function, pipes/CI get None (sync_templates then auto-keeps
+    # differing templates). _confirm_template_refresh is resolved as a
+    # MODULE global on each call, so tests monkeypatch
+    # translate._confirm_template_refresh instead of touching stdin.
+    confirm = _confirm_template_refresh if sys.stdin.isatty() else None
 
     try:
         raw = json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
@@ -514,12 +539,22 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     pending = [step for step in steps if step.VERSION > src_version]
     if not pending:
         print(f"[ok] project already at version {cur}")
+        # Interactive maintenance pass, not a chain step: template drift
+        # stays repairable on an already-current project -- the version
+        # gate used to return here before --force could ever act. Clean
+        # projects stay completely quiet (sync returns []); the version
+        # never moves and config is deliberately NOT re-materialized.
+        # migrations.common is bound by chain() above, which imported v001.
+        for line in migrations.common.sync_templates(
+                project_dir, TEMPLATES_SRC_DIR, args.dry_run, args.force, confirm):
+            print(("[dry-run] " + line) if args.dry_run else line)
         return 0
 
     for step in pending:
         verb = "would apply" if args.dry_run else "applying"
         print(f"[migrate] {verb} v{step.VERSION:03d}: {step.DESCRIPTION}")
-        for line in step.migrate(project_dir, TEMPLATES_SRC_DIR, args.dry_run, args.force):
+        for line in step.migrate(project_dir, TEMPLATES_SRC_DIR,
+                                 args.dry_run, args.force, confirm):
             print(("[dry-run] " + line) if args.dry_run else line)
         if not args.dry_run:
             # Stamp immediately after each step, as a read-modify-write of
