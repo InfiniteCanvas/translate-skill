@@ -504,7 +504,10 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     The project's version comes from the RAW config.json "version" key --
     never from the load_config merge, which deep-merges DEFAULTS and so
     could not distinguish a stamped project from a defaulted one ("version"
-    deliberately never enters config.DEFAULTS for exactly that reason)."""
+    deliberately never enters config.DEFAULTS for exactly that reason).
+    An already-current project still gets the interactive template
+    maintenance pass (missing copies, differing prompts); the version
+    stamp never moves."""
     _load_config(project_dir)  # missing/corrupt config.json -> CliError (exit 2)
     if not TEMPLATES_SRC_DIR.is_dir():
         raise CliError(f"skill templates not found: {TEMPLATES_SRC_DIR}")

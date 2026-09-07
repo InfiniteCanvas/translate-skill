@@ -271,7 +271,7 @@ the report lists.
                                              # omitted when the fix lives in
                                              # free-form Action prose only
                                              # (model-tier duplicate/variant,
-                                             # suggestion-less collision,
+                                             # suggestion-less field kinds,
                                              # `other`)
 
 ## Info (optional improvements)             # numbering continues: [4], [5], ...
@@ -322,7 +322,7 @@ when the fix is **fully determined by the finding's structured fields**
 | heuristic `variant` (has `variant_to_remove`)        | `glossary set --source S --remove-variant V` |
 | heuristic `duplicate` (has `merge_with`)             | `glossary merge --keep M --remove S` |
 | `mundane`                                            | `glossary retire --source S` |
-| model-tier `duplicate` / `variant`, suggestion-less `collision`, `other` | _(no Command bullet — decision item)_ |
+| model-tier `duplicate` / `variant`, suggestion-less field kinds, `other` | _(no Command bullet — decision item)_ |
 
 `review fix` pre-validates each command before running it: a `glossary
 replace` / `set --translation` whose suggested value still contains
@@ -372,10 +372,11 @@ normalization; user-set values always preserved) and copies shipped
 templates missing from the project's `templates/` dir without prompting
 (non-destructive; the runtime fallback would cover them anyway). A
 template that exists but differs from the shipped one is asked about
-interactively, one prompt per template — `overwrite templates/<name>.md
-with the shipped version? [y/N]`: Enter/n keeps the project's version
-(the default; it may be user-customized), y overwrites it with the
-shipped copy. `--force` answers yes to all prompts (no prompting), and
+interactively, one prompt per template — `templates ~ <name>.md
+differs from the shipped copy - overwrite it? [y/N]`: Enter/n keeps
+the project's version (the default; it may be user-customized), y
+overwrites it with the shipped copy. `--force` answers yes to all
+prompts (no prompting), and
 non-interactive runs (stdin not a TTY: piped, scripted, CI) never
 prompt and never block — differing templates are kept with a `[warn]`
 line (`--dry-run` reports differing templates without prompting or
@@ -504,10 +505,11 @@ A template file missing from the project's `templates/` dir falls back to
 the skill's `assets/templates/`, so newly shipped templates work in
 existing projects. `migrate` materializes missing templates onto disk
 and prompts for each copy that differs from the shipped one —
-`overwrite templates/<name>.md with the shipped version? [y/N]`
-(Enter/n keeps the project's copy, y overwrites; `--force` answers y
-to all prompts, and non-interactive runs keep differing copies with a
-`[warn]`); this template maintenance pass runs on already-current
+`templates ~ <name>.md differs from the shipped copy - overwrite it?
+[y/N]` (Enter/n keeps the project's copy, y overwrites; `--force`
+answers y to all prompts, and non-interactive runs keep differing
+copies with a `[warn]`); this template maintenance pass runs on
+already-current
 projects too, leaving the version stamp untouched. Plain
 `{{placeholder}}` substitution. The pipeline
 errors out if a template still contains an unknown/leftover `{{...}}`

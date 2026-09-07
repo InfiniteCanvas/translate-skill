@@ -285,9 +285,10 @@ background build too.
   prompting (non-destructive; the runtime fallback would cover them
   anyway). A template that exists but differs from the shipped one is
   prompted for interactively, one prompt per template:
-  `overwrite templates/<name>.md with the shipped version? [y/N]` —
-  Enter/n keeps the project's version (the default; it may be a user
-  customization), y overwrites it with the shipped copy. `--force`
+  `templates ~ <name>.md differs from the shipped copy - overwrite
+  it? [y/N]` — Enter/n keeps the project's version (the default; it
+  may be a user customization), y overwrites it with the shipped
+  copy. `--force`
   answers yes to all prompts (no prompting); non-interactive runs
   (stdin not a TTY: piped, scripted, CI) never prompt and never
   block — differing templates are kept with a `[warn]` line.
@@ -300,7 +301,8 @@ background build too.
   refreshes stale templates instead of silently doing nothing. The
   chain still gates structural steps; template refresh is maintenance,
   not a chain step. Exit 0 ok/no-op, 2 usage error (missing
-  config.json, broken chain, project newer than the skill).
+  config.json, missing skill templates dir, unreadable version key,
+  broken chain, project newer than the skill).
 - **Glossary upkeep**: hand-fix bad entries any time (`glossary search` is
   the read-only lookup — see Bulk review fixes); the balance check reads
   `glossary.json` fresh for every chapter. Nothing in the pipeline audits

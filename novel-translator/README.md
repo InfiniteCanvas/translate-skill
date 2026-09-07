@@ -60,10 +60,11 @@ through uv automatically):
    `tn_history.json` -- that reset is `init --force`'s job. Templates
    missing from the project are copied without asking; a copy that
    differs from the shipped one prompts, per template,
-   `overwrite templates/<name>.md with the shipped version? [y/N]`
-   (Enter/n keeps the project's version, y overwrites; `--force`
-   answers y to all, and non-interactive runs (piped, scripted, CI)
-   keep differing templates with a `[warn]`). An up-to-date project
+   `templates ~ <name>.md differs from the shipped copy - overwrite
+   it? [y/N]` (Enter/n keeps the project's version, y overwrites;
+   `--force` answers y to all, and non-interactive runs (piped,
+   scripted, CI) keep differing templates with a `[warn]`; `--dry-run`
+   reports without writing). An up-to-date project
    still gets this template maintenance pass (read-only when clean,
    version stamp untouched), so `migrate --force` refreshes stale
    templates on current projects too.
