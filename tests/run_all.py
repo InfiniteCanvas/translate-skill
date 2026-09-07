@@ -8,10 +8,18 @@ so the working directory only affects where a "." --project would resolve
 -- running from tests/ keeps that deterministic. Output is captured and
 printed only for failing scripts so the summary stays readable.
 
-Stdlib only, no pytest. Run from anywhere:
+Stdlib only, no pytest. The inline dependencies below are the union the
+test scripts themselves import (pyyaml, requests, ebooklib, pillow): uv
+materializes them for this interpreter, which the spawned children inherit.
+Run from anywhere:
 
-    python tests/run_all.py
+    uv run tests/run_all.py
 """
+
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# ///
 
 import subprocess
 import sys

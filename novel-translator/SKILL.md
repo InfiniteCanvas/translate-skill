@@ -1,6 +1,6 @@
 ---
 name: novel-translator
-description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, reviews glossary quality, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, translation glossaries, glossary quality, translation notes, re-evaluating translator's notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters", "review the glossary", "recheck the translation notes", or "rebuild the epub".
+description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, reviews glossary quality, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, downloading or scraping a novel from the web to set up a translation project, translation glossaries, glossary quality, translation notes, re-evaluating translator's notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters", "review the glossary", "recheck the translation notes", or "rebuild the epub".
 ---
 
 # Novel Translator
@@ -29,14 +29,26 @@ markdown contract).
 
 ## Project lifecycle
 
-### 1. Prepare source material
+### 1. Acquire and prepare source material
 
-The user provides `source/Chapter_NNNN.md` files (1-4 digit zero-padded; extras
-get a letter suffix: `Chapter_0042a.md`). Each file has YAML frontmatter with
-`source_url`, `novel_title`, `chapter_title`, `author`. If chapters arrive
-without frontmatter, create it from the info the user gives you — `init`
-fills `order` automatically. Do not renumber or rename chapter files; the
-pipeline depends on the naming scheme.
+Two ways source chapters arrive:
+
+- **Files provided**: the user hands you `source/Chapter_NNNN.md` files
+  (1-4 digit zero-padded; extras get a letter suffix, `Chapter_0042a.md`).
+  Frontmatter is optional - `init` backfills `novel_title`/`author`/
+  `source_url` and derives `chapter_title` from the first body line. Never
+  renumber or rename chapter files; the pipeline depends on the naming
+  scheme.
+- **URL given (the common case)**: scrape the table of contents for the
+  ordered chapter list, fetch each chapter with the environment's web
+  tooling (e.g. firecrawl), and write UTF-8 `source/Chapter_NNNN.md` files
+  - one paragraph per physical line, per-chapter frontmatter with
+  `chapter_title` + `source_url` when the site provides them - then `init`.
+  For long novels, work in batches: init on the first batch, then after
+  each new batch run `sync` (see below) and `translate --next N`.
+
+Full conversion rules, naming pitfalls, and a verification checklist are in
+`references/ingestion.md` - read it before ingesting from a URL.
 
 ### 2. Initialize (`init`)
 
@@ -61,6 +73,13 @@ skill's catalogues: every catalogue term appearing ≥ `seed_min_count`
 an existing project unless `--force`.
 
 Optional: `--cover-url` to point at a cover image directly.
+
+Downloading more chapters later? Drop them in `source/` and run
+`uv run "$SCRIPT" sync --project .` - it re-scans `source/`, backfills
+their frontmatter, and rebuilds `chapters.json` (added/removed chapters
+reported; statuses and titles preserved) without touching glossary.json
+or tn_history.json. Exit 0, no LLM calls; run it after every download
+batch.
 
 **Style selection** (`--style NAME|PATH|auto`, default `classic`): a preset
 name copies that guide from the skill's `assets/styles/` to

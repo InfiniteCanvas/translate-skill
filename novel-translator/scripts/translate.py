@@ -5,8 +5,8 @@
 # ///
 """novel-translator: staged, resumable CJK novel translation CLI.
 
-Subcommands: init, ping, seed, migrate, profile, styles, status, translate,
-retry, mark, tn, review, util, glossary, build-epub.
+Subcommands: init, ping, seed, migrate, profile, styles, status, sync,
+translate, retry, mark, tn, review, util, glossary, build-epub.
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
 had failures / glossary search found nothing, 2 usage or setup error.
 """
@@ -296,30 +296,10 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
 
     # Backfill missing frontmatter on bare source chapters (novel-level
     # fields from the CLI args; chapter_title from the first body line) so
-    # the manifest and translated copies carry proper metadata. Runs before
+    # the manifest and translated copies carry proper metadata. The shared
+    # helper lives in lib/project.py and is also used by `sync`. Runs before
     # sync_manifest so it can pick up the titles.
-    backfilled = 0
-    for chapter in chapters:
-        fm, body = project.read_chapter(chapter.path)
-        changed = False
-        for key, value in (
-            ("novel_title", args.title),
-            ("author", args.author),
-            ("source_url", args.source_url),
-        ):
-            if key not in fm and value:
-                fm[key] = value
-                changed = True
-        if "chapter_title" not in fm:
-            first_line = next(
-                (ln.strip(" \u3000#") for ln in body.split("\n") if ln.strip()), ""
-            )
-            if first_line:
-                fm["chapter_title"] = first_line
-                changed = True
-        if changed:
-            project.write_chapter(chapter.path, fm, body)
-            backfilled += 1
+    backfilled = project.backfill_frontmatter(chapters, args.title, args.author, args.source_url)
     if backfilled:
         print(f"[init] backfilled frontmatter on {backfilled} bare chapter(s)")
 
@@ -387,6 +367,53 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     if isinstance(prof, dict):
         print(f"     style:    auto profile ({str(prof.get('style_summary', ''))[:60]})")
     print("next step: translate --next N   (e.g. 'translate --next 3')")
+    return 0
+
+
+def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
+    """Re-scan source/ and rebuild the manifest after new chapters land."""
+    paths = project.paths(project_dir)
+    # project.load_manifest returns [] when chapters.json is missing, so
+    # _load_manifest's CliError never fires for a bare directory; gate here
+    # or sync would happily "rebuild" an uninitialized project into an
+    # empty manifest.
+    if not paths["manifest"].is_file():
+        raise CliError(f"manifest not found in {project_dir} - run 'init' first")
+    prev = _load_manifest(project_dir)
+    # Novel-level backfill defaults come from novel_info.json; a missing or
+    # corrupt file just means nothing to backfill, never a sync failure.
+    try:
+        info = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # json.JSONDecodeError is a ValueError
+        info = {}
+    if not isinstance(info, dict):
+        info = {}
+    # A scraped batch routinely contains a bad file (broken YAML frontmatter,
+    # non-UTF-8 bytes); surface it as a [FAIL] line with exit 2 instead of a
+    # traceback. read_chapter's message already names the offending file.
+    try:
+        chapters = project.discover(project_dir)
+        backfilled = project.backfill_frontmatter(
+            chapters,
+            str(info.get("title") or ""),
+            str(info.get("author") or ""),
+            str(info.get("source_url") or ""),
+        )
+        manifest = project.sync_manifest(project_dir)
+    except ValueError as exc:  # invalid YAML frontmatter / non-UTF-8 chapter
+        raise CliError(f"cannot sync - {exc}") from exc
+    if backfilled:
+        print(f"[sync] backfilled frontmatter on {backfilled} chapter(s)")
+
+    prev_files = {e.get("file") for e in prev if e.get("file")}
+    new_files = {e.get("file") for e in manifest if e.get("file")}
+    added = sorted(new_files - prev_files)
+    removed = sorted(prev_files - new_files)
+    if added:
+        print(f"[sync] added {len(added)} chapter(s): {', '.join(added)}")
+    if removed:
+        print(f"[sync] removed {len(removed)} chapter(s): {', '.join(removed)}")
+    print(f"[ok] manifest: {len(manifest)} chapter(s)")
     return 0
 
 
@@ -621,6 +648,16 @@ def cmd_styles(args: argparse.Namespace, project_dir: Path) -> int:
 def cmd_status(args: argparse.Namespace, project_dir: Path) -> int:
     manifest = _load_manifest(project_dir)
     paths = project.paths(project_dir)
+    # Read-only drift check: source/ vs manifest divergence means a stale
+    # manifest; `sync` rebuilds it while status stays visible here.
+    discovered = {c.file for c in project.discover(project_dir)}
+    manifest_files = {e.get("file") for e in manifest if e.get("file")}
+    untracked = sorted(discovered - manifest_files)
+    missing = sorted(manifest_files - discovered)
+    if untracked:
+        print(f"[warn] {len(untracked)} source file(s) not in manifest - run 'sync'")
+    if missing:
+        print(f"[warn] {len(missing)} manifest entry(ies) missing from source/ - run 'sync'")
     entries = sorted(manifest, key=lambda e: int(e.get("order", 0)))
 
     rows: list[tuple[str, str, str, str, str]] = []
@@ -1306,6 +1343,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--why", action="store_true",
                    help="show recent feedback for every needs-review chapter")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("sync", parents=[common],
+                       help="re-scan source/ for new or removed chapters and rebuild the manifest")
+    p.set_defaults(func=cmd_sync)
 
     p = sub.add_parser("translate", parents=[common], help="run the translation pipeline on chapters")
     g = p.add_mutually_exclusive_group(required=True)

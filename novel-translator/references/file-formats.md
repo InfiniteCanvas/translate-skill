@@ -12,7 +12,7 @@ hand-fix.
 ├── config.json          settings: languages, LLM providers, thresholds
 ├── novel_info.json      book metadata (title, author, source, tags)
 ├── style.md             active style guide (copied from a preset at init, hand-editable)
-├── chapters.json        manifest: every chapter, its order and status
+├── chapters.json        manifest: every chapter, its order and status (rebuilt by init and sync)
 ├── glossary.json        translation glossary (seeded + model-grown)
 ├── tn_history.json      translation-note history (powers the 10-chapter rule)
 ├── review-report.md     indexed `review glossary` findings (regenerated per run)
@@ -35,7 +35,9 @@ Chapter order = position in the file list sorted numerically by the parsed
 `(number, suffix)` — so `Chapter_999` sorts before `Chapter_1000`; that order
 is written into each source file's frontmatter and into `chapters.json` as
 `order` (0-based), and ALL chapter-distance logic (the translation-note gap)
-measures distance in `order` units.
+measures distance in `order` units. The manifest is rebuilt by `init` and
+`sync`; `sync` re-scans `source/` for added/removed files and preserves
+statuses by file name.
 
 ## Source chapter format
 

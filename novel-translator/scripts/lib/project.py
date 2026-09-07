@@ -160,6 +160,35 @@ def save_manifest(project_dir: Path, manifest: list[dict]) -> None:
     )
 
 
+def backfill_frontmatter(chapters: list[Chapter], novel_title: str, author: str, source_url: str) -> int:
+    """Fill missing novel-level frontmatter keys on source chapters and derive
+    chapter_title from the first non-empty body line when absent. Empty
+    novel-level values are skipped. Returns the number of chapters changed."""
+    backfilled = 0
+    for chapter in chapters:
+        fm, body = read_chapter(chapter.path)
+        changed = False
+        for key, value in (
+            ("novel_title", novel_title),
+            ("author", author),
+            ("source_url", source_url),
+        ):
+            if key not in fm and value:
+                fm[key] = value
+                changed = True
+        if "chapter_title" not in fm:
+            first_line = next(
+                (ln.strip(" \u3000#") for ln in body.split("\n") if ln.strip()), ""
+            )
+            if first_line:
+                fm["chapter_title"] = first_line
+                changed = True
+        if changed:
+            write_chapter(chapter.path, fm, body)
+            backfilled += 1
+    return backfilled
+
+
 def sync_manifest(project_dir: Path) -> list[dict]:
     """Rebuild the manifest from discover(), preserving status/title by file
     name, and write the recomputed 0-based order back into each source

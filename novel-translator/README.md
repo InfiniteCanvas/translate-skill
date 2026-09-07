@@ -34,6 +34,11 @@ through uv automatically):
    `Chapter_NNN[a].md` (1-4 digit zero-padded number, optional single-letter
    suffix, e.g. `Chapter_001.md`, `Chapter_0002a.md`). Frontmatter is
    optional; `init` backfills novel-level fields and chapter titles.
+   Starting from a website instead of files? `references/ingestion.md`
+   walks through scraping a novel: TOC discovery, converting pages to
+   chapter files, and the naming pitfalls. After init, newly downloaded
+   chapters are picked up with `uv run scripts/translate.py sync`, which
+   rebuilds `chapters.json` and preserves existing statuses.
 
 2. Initialize the project:
 
