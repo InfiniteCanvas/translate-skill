@@ -434,7 +434,11 @@ def case_9_apply_fixes_guards() -> None:
 
 
 def case_10_report() -> None:
-    """write_report: indexed findings, fix-resolution exclusion, sections."""
+    """write_report: frontmatter summary, the machine/manual section split
+    with continuous numbering, fix-resolution exclusion, and the fixed /
+    skipped sections. The suggestion-backed mistranslation warn is
+    machine-applicable; the heuristic variant finding (no structured
+    variant_to_remove on the dict) needs manual review."""
     with tempfile.TemporaryDirectory() as td:
         project_dir = Path(td)
         terms = [
@@ -462,7 +466,8 @@ def case_10_report() -> None:
              "suggestion": "", "origin": "heuristic"},
         ]
 
-        # report-only run: everything indexed, warns before info, continuous [1]..[2]
+        # report-only run: machine finding [1] under Machine-applicable,
+        # manual finding [2] under Needs manual review
         path = review.write_report(
             project_dir, findings=findings, terms=terms, applied=[], skipped=[],
             ran_fix=False, batches=1, batch_errors=[], cfg=cfg,
@@ -470,9 +475,43 @@ def case_10_report() -> None:
         check("10a report: written as review-report.md",
               path.name == review.REPORT_NAME and path.is_file(), f"path={path}")
         text = path.read_text(encoding="utf-8")
+        check("10a2 report: frontmatter opens the file, closes before the body",
+              text.startswith("---\nreport_type: glossary-review\n")
+              and "\n---\n\n# Glossary Review Report\n" in text,
+              "frontmatter frame missing")
+        check("10a3 report: frontmatter keys and fixture values",
+              "\ngenerated_by: review glossary\n" in text
+              and "\nsource_lang: zh\n" in text
+              and "\ntarget_lang: en\n" in text
+              and "\nentries_reviewed: 3\n" in text
+              and "\nbatch_errors: 0\n" in text
+              and "\noutcome:\n  warn: 1\n  info: 1\n" in text
+              and "\nmachine_applicable: 1\n" in text
+              and "\nmanual_review: 1\n" in text
+              and "\nmanual_review_indices: [2]\n" in text,
+              "frontmatter values wrong")
+        gen_fm = next(ln for ln in text.splitlines() if ln.startswith("generated: "))
+        gen_body = next(ln for ln in text.splitlines() if ln.startswith("- Generated: "))
+        check("10a4 report: frontmatter timestamp equals the body bullet",
+              gen_fm[len("generated: "):] == gen_body[len("- Generated: "):],
+              f"fm={gen_fm!r} body={gen_body!r}")
         check("10b report: warn indexed [1], info [2] (continuous)",
               "### [1] warn / mistranslation / 天雷宗" in text
               and "### [2] info / variant / 裴家村" in text, "headings missing")
+        check("10b2 report: machine section holds [1] before the manual section "
+              "holds [2]",
+              "## Machine-applicable (apply with `review fix`)" in text
+              and "## Needs manual review (decide yourself or hand to an agent)" in text
+              and text.index("## Machine-applicable")
+              < text.index("### [1] warn / mistranslation / 天雷宗")
+              < text.index("## Needs manual review")
+              < text.index("### [2] info / variant / 裴家村"),
+              "section order wrong")
+        check("10b3 report: only the machine finding carries a Command bullet",
+              text.count("\n- Command: glossary ") == 1
+              and "\n- Command: glossary replace --source '天雷宗' "
+                  "--translation 'Heavenly Thunder Sect'\n" in text,
+              "command bullets wrong")
         check("10c report: model action preferred, template fallback",
               "- Action: Rename the sect's translation to the suggested English name." in text
               and "- Action: Set the `translation` field of this entry" not in text
@@ -501,6 +540,13 @@ def case_10_report() -> None:
               and "### [2]" not in text
               and "bad rendering of the sect name" not in text,
               "numbering wrong")
+        check("10f2 report: post-fix frontmatter reflects the resolution",
+              "\ngenerated_by: review glossary --fix\n" in text
+              and "\noutcome:\n  warn: 0\n  info: 1\n" in text
+              and "\nmachine_applicable: 0\n" in text
+              and "\nmanual_review: 1\n" in text
+              and "\nmanual_review_indices: [1]\n" in text,
+              "frontmatter after --fix wrong")
         check("10g report: fixed-automatically section with old -> new",
               "Fixed automatically" in text
               and "`天雷宗`: translation 'river town' -> 'Heavenly Thunder Sect'" in text,
@@ -517,12 +563,18 @@ def case_10_report() -> None:
         check("10i report: clean report, nothing indexed",
               "No outstanding findings" in text and "[1]" not in text,
               "clean report wrong")
+        check("10i2 report: clean frontmatter is all zeros",
+              "\noutcome:\n  warn: 0\n  info: 0\n" in text
+              and "\nmachine_applicable: 0\n" in text
+              and "\nmanual_review: 0\n" in text
+              and "\nmanual_review_indices: []\n" in text,
+              "frontmatter on clean run wrong")
 
 
 def case_11_mundane() -> None:
     """The model-tier 'mundane' kind: normalization passthrough, the
-    glossary-retire command mapping, report rendering, and the
-    never-auto-fix contract."""
+    glossary-retire command mapping, report rendering (machine-applicable
+    section + frontmatter), and the never-auto-fix contract."""
     source = "灵石"
     with tempfile.TemporaryDirectory() as td:
         project_dir = Path(td)
@@ -584,6 +636,21 @@ def case_11_mundane() -> None:
         argv = shlex.split(retire_lines[0][len("- Command: "):]) if retire_lines else []
         check("11d2 mundane: CJK source survives the shlex round-trip",
               argv == ["glossary", "retire", "--source", source], f"argv={argv}")
+        # mundane maps to `glossary retire`, so it is machine-applicable and
+        # belongs in the Machine-applicable section (no manual section here)
+        check("11d3 mundane: finding lives in Machine-applicable, no manual section",
+              "## Machine-applicable (apply with `review fix`)" in text
+              and text.index("## Machine-applicable")
+              < text.index("### [1] warn / mundane / 灵石")
+              and "## Needs manual review" not in text,
+              "section placement wrong")
+        check("11d4 mundane: frontmatter counts it as machine-applicable",
+              "\nentries_reviewed: 1\n" in text
+              and "\noutcome:\n  warn: 1\n  info: 0\n" in text
+              and "\nmachine_applicable: 1\n" in text
+              and "\nmanual_review: 0\n" in text
+              and "\nmanual_review_indices: []\n" in text,
+              "frontmatter wrong")
 
         # 11e: mundane has no target field, so a warn model finding is never
         # eligible -- not applied and not even listed in skipped (the

@@ -349,11 +349,16 @@ background build too.
   calls; model-tier failures fail safe per batch — heuristic findings
   still report. Every run also writes indexed `<project>/review-report.md`
   (overwritten each run, clean runs too; console: `[glossary] report: <path>`)
-  — numbered OUTSTANDING findings only, each with the full entry JSON + an
-  Action line (model-written when available, else a per-kind template); the
-  findings whose fix is fully determined by their structured fields also
-  carry a `- Command:` bullet (skill-level, novel-agnostic). Tell an agent
-  "fix items 1,4,5 in review-report.md doing what was suggested", or run
+  — a YAML frontmatter block with the run's counts (entries reviewed, batch
+  errors, outstanding warn/info, machine-applicable vs manual-review
+  tallies, and the `[N]` indices of the manual-review findings), then the
+  numbered OUTSTANDING findings in two sections: `## Machine-applicable`
+  (apply with `review fix`) — each finding with the full entry JSON + an
+  Action line + a `- Command:` bullet — then `## Needs manual review`
+  (decide yourself or hand to an agent). Tell an agent
+  "fix items 1,4,5 in review-report.md doing what was suggested", or hand
+  the manual-review items — the ones under `## Needs manual review` — to
+  an agent as a section, or run
   `uv run "$SCRIPT" review fix --glossary review-report.md [--dry-run]
   [--exit-on-error]` for the offline machine-actionable path (it applies
   every `- Command:` bullet as a subprocess; exit codes, pre-validation,
@@ -452,9 +457,10 @@ collisions with structured merge data, mundane terms to retire); applying
 them one at a time by hand or by an agent is tedious and prone to drift.
 For the offline machine-actionable path, run
 `uv run "$SCRIPT" review fix --glossary review-report.md [--dry-run]
-[--exit-on-error]`: it parses every `- Command:` bullet in
-`review-report.md` and runs each as a subprocess (`glossary replace | set |
-merge | retire`), in order, and exits 0 on full success or full no-op, 1 if
+[--exit-on-error]`: it parses every `- Command:` bullet in the report's
+`Machine-applicable` section and runs each as a subprocess (`glossary
+replace | set | merge | retire`), in order, and exits 0 on full success or
+full no-op, 1 if
 any command failed (continues past failures by default; `--exit-on-error` to
 stop at the first), 2 on a missing/unreadable report or a report with no
 machine-applicable commands. Commands are pre-validated: a `glossary
@@ -473,8 +479,9 @@ findings with a suggestion; `glossary set --remove-variant` for heuristic
 variants; `glossary merge --keep ... --remove ...` for heuristic
 duplicates; `glossary retire --source S` for mundane findings — retiring
 deletes the entry and appends the source to the top-level `retired` list,
-so `seed` / GLOSSARY_EXPAND never re-add it). Legacy reports (no
-`- Command:` bullets, old `- Command:`
+so `seed` / GLOSSARY_EXPAND never re-add it). Legacy reports (the
+pre-split format: no frontmatter, findings grouped by severity, possibly
+no `- Command:` bullets, and the old `- Command:`
 header that records the generating command) are synthesized on the fly from
 the structured parts alone — no `review glossary` re-run needed. After
 applying, one final `build-epub` runs when chapters changed and

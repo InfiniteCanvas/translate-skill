@@ -36,8 +36,12 @@ case 10 (天雷宗 -> "river town", 裴家村, 灵石).
 - `review glossary` exits 1 with one warn (the mock's review tier flags the
   first glossary entry, 天雷宗, as a mistranslation suggesting "Mock Fix")
   plus one heuristic info (裴家村's English-string variant), and writes
-  `review-report.md` (with a `- Command: glossary replace ...` bullet) into
-  the project directory.
+  `review-report.md` into the project directory: YAML frontmatter with the
+  run's counts (`entries_reviewed: 3`, `batch_errors: 0`, `outcome` 1 warn
+  / 1 info, `machine_applicable: 2`, `manual_review: 0`,
+  `manual_review_indices: []`), then a `## Machine-applicable` section
+  holding both findings, including the `- Command: glossary replace ...`
+  bullet for the mistranslation.
 - `review glossary --fix` applies the suggestion in-process
   (天雷宗 -> "Mock Fix" in glossary.json) and exits 0.
 - `review fix --dry-run` lists both machine-applicable commands and exits 0.

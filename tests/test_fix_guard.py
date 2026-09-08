@@ -21,6 +21,13 @@ explicit "- Command: glossary retire --source '灵根'" bullet both yield
 the retire spec (retire is a supported verb, so the bullet is parsed,
 never warned-and-ignored), and run_commands executes it as applied.
 
+The new-format case hand-writes a report as the current writer emits it
+-- YAML frontmatter, then "## Machine-applicable (apply with `review
+fix`)" and "## Needs manual review" sections -- and checks the parser
+needs no changes: the explicit bullet is extracted, and a command-less
+variant falls back to legacy synthesis for the machine finding while
+findings_count still counts findings in BOTH sections.
+
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
     python tests/test_fix_guard.py
@@ -225,6 +232,94 @@ def case_7_mundane_retire_run() -> None:
               f"terms={g.get('terms')} retired={g.get('retired')}")
 
 
+def case_8_new_format_report_parsing() -> None:
+    """A report in the writer's current format (YAML frontmatter, then the
+    Machine-applicable / Needs manual review split) parses unchanged in both
+    modes: the explicit Command bullet is extracted verbatim, and a
+    command-less variant synthesizes the machine finding's command via
+    legacy synthesis while findings_count counts findings in BOTH sections
+    (the manual finding itself yields no spec -- command_for_finding -> None)."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        report = root / "review-report.md"
+
+        frontmatter = (
+            "---\n"
+            "report_type: glossary-review\n"
+            "generated: 2026-01-01T00:00:00+00:00\n"
+            "generated_by: review glossary\n"
+            "source_lang: zh\n"
+            "target_lang: en\n"
+            "entries_reviewed: 2\n"
+            "batch_errors: 0\n"
+            "outcome:\n"
+            "  warn: 1\n"
+            "  info: 1\n"
+            "machine_applicable: 1\n"
+            "manual_review: 1\n"
+            "manual_review_indices: [2]\n"
+            "---\n"
+            "\n"
+            "# Glossary Review Report\n"
+            "\n"
+        )
+        body = (
+            "## Machine-applicable (apply with `review fix`)\n"
+            "\n"
+            "### [1] warn / mistranslation / 灵根\n"
+            "\n"
+            "- Reason: wrong rendering of the term\n"
+            "- Suggestion: spiritual root\n"
+            "- Tier: model\n"
+            '- Action: Set the `translation` field to "spiritual root".\n'
+            "- Command: glossary replace --source '灵根' "
+            "--translation 'spiritual root'\n"
+            "\n"
+            "## Needs manual review (decide yourself or hand to an agent)\n"
+            "\n"
+            "### [2] info / variant / 天雷宗\n"
+            "\n"
+            "- Reason: model flagged the variant for a judgment call\n"
+            "- Tier: model\n"
+            "- Action: Decide what to do with the flagged variant.\n"
+            "\n"
+        )
+        full_text = frontmatter + body
+        command_line = ("- Command: glossary replace --source '灵根' "
+                        "--translation 'spiritual root'")
+
+        # explicit mode: the machine section's Command bullet is extracted
+        report.write_text(full_text, encoding="utf-8")
+        specs, count = fix.parse_report(report)
+        check("8a new format: findings counted across BOTH sections",
+              count == 2, f"count={count}")
+        check("8b new format: explicit Command bullet extracted (argv + line no)",
+              len(specs) == 1
+              and specs[0].argv == ["glossary", "replace", "--source", "灵根",
+                                    "--translation", "spiritual root"]
+              and specs[0].line_no
+              == full_text.splitlines().index(command_line) + 1,
+              f"specs={[(s.argv, s.line_no) for s in specs]}")
+
+        # legacy-synthesis mode: the same report minus every - Command:
+        # bullet -- the machine finding's command is synthesized from its
+        # block (kind + source from the heading, suggestion from the
+        # bullet), and the manual finding contributes nothing
+        report.write_text(
+            "\n".join(ln for ln in full_text.splitlines()
+                      if not ln.startswith("- Command: ")) + "\n",
+            encoding="utf-8",
+        )
+        specs, count = fix.parse_report(report)
+        check("8c new format: command-less variant synthesizes the machine "
+              "command, count still 2",
+              count == 2 and len(specs) == 1
+              and specs[0].argv == ["glossary", "replace", "--source", "灵根",
+                                    "--translation", "spiritual root"]
+              and specs[0].line_no == 0,
+              f"count={count} specs={[(s.argv, s.line_no) for s in specs]}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -237,6 +332,7 @@ def main() -> int:
     case_5_run_commands_integration()
     case_6_mundane_report_parsing()
     case_7_mundane_retire_run()
+    case_8_new_format_report_parsing()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

@@ -188,10 +188,16 @@ does. Exit 0 clean or info-only, 1 warns remain, 2 usage error. Cost
 ceil(N/40) model calls.
 
 Every run also writes `<project>/review-report.md` (overwritten each run,
-clean runs included; console: `[glossary] report: <path>`): numbered
-outstanding findings -- warnings first, then info -- each with its reason,
-suggestion, tier, the full glossary entry as JSON, an Action line
-(model-written when available, else a per-kind template), and a
+clean runs included; console: `[glossary] report: <path>`): a YAML
+frontmatter block with the run's counts (entries reviewed, batch errors,
+outstanding warn/info, machine-applicable vs manual-review tallies, and
+the `[N]` indices of the manual-review findings), then the numbered
+outstanding findings in two sections -- `## Machine-applicable` (apply
+with `review fix`) first, then `## Needs manual review` (decide yourself
+or hand to an agent); warn before info, source-ascending within a
+severity -- each finding with its reason, suggestion, tier, the full
+glossary entry as JSON, an Action line (model-written when available,
+else a per-kind template), and, in the machine-applicable section only, a
 `- Command:` bullet on every finding whose fix is fully determined by its
 structured fields -- a mundane entry's bullet is `glossary retire --source
 S`, which deletes the entry and appends its source to glossary.json's
@@ -208,14 +214,16 @@ delegating fixes by index:
 
 For the offline machine-actionable path, run
 `uv run scripts/translate.py review fix --glossary review-report.md
-[--dry-run] [--exit-on-error]`: it runs every `- Command:` bullet as a
-subprocess (`glossary replace | set | merge | retire`), in order, and exits
-0 on full success or full no-op, 1 if any command failed (continues past
-failures by default; `--exit-on-error` to stop at the first), 2 on a
-missing/unreadable report or a report with no machine-applicable commands.
-Legacy reports (no `- Command:` bullets, old `- Command:` header that
-records the generating command) are synthesized on the fly from the
-structured parts alone -- no `review glossary` re-run needed.
+[--dry-run] [--exit-on-error]`: it runs every `- Command:` bullet in the
+`Machine-applicable` section as a subprocess (`glossary replace | set |
+merge | retire`), in order, and exits 0 on full success or full no-op, 1
+if any command failed (continues past failures by default;
+`--exit-on-error` to stop at the first), 2 on a missing/unreadable report
+or a report with no machine-applicable commands. Legacy reports (the
+pre-split format: no frontmatter, severity-grouped findings, no
+`- Command:` bullets, old `- Command:` header that records the generating
+command) are synthesized on the fly from the structured parts alone -- no
+`review glossary` re-run needed.
 
 When a glossary translation changes (hand edit or `review glossary --fix`),
 chapters already translated still carry the old rendering. Rewrite it in
@@ -278,10 +286,11 @@ tedious and prone to drift. For the offline path:
     uv run scripts/translate.py review fix --glossary review-report.md \
         [--dry-run] [--exit-on-error]
 
-`review fix` parses every `- Command:` bullet in `review-report.md` and
-runs each as a subprocess (`glossary replace | set | merge | retire`), in
-order. Commands are pre-validated: a `glossary replace` / `set
---translation` whose suggested value contains source-script characters
+`review fix` parses every `- Command:` bullet in the report's
+`Machine-applicable` section and runs each as a subprocess (`glossary
+replace | set | merge | retire`), in order. Commands are pre-validated: a
+`glossary replace` / `set --translation` whose suggested value contains
+source-script characters
 for a CJK-source entry is skipped in-process (`[review fix] skipped [N]:
 suggestion not in target language`) and counted as needing a decision --
 the same guard `review glossary --fix` enforces. Exit codes: 0 on full
@@ -301,10 +310,11 @@ set --definition` / `--category` for definition / category findings with
 a suggestion; `glossary set --remove-variant` for heuristic variants;
 `glossary merge --keep ... --remove ...` for heuristic duplicates;
 `glossary retire --source S` for mundane findings).
-Delete any `- Command:` bullet to veto that finding; legacy reports
-without `- Command:` lines (and the old `- Command:` header that records
-the generating command) are synthesized on the fly from the structured
-parts alone -- no `review glossary` re-run needed. After applying, one
+Delete any `- Command:` bullet to veto that finding; legacy reports in the
+pre-split format (no frontmatter, findings grouped by severity, without
+`- Command:` lines, and the old `- Command:` header that records the
+generating command) are synthesized on the fly from the structured parts
+alone -- no `review glossary` re-run needed. After applying, one
 final `build-epub` runs when chapters changed and `auto_build_epub` is on;
 the `- Command:` lines in the report never carry `--no-build`, so they
 remain human-copyable.
