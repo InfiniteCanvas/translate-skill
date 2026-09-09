@@ -123,7 +123,9 @@ uv run "$SCRIPT" translate --project . --next N
 ```
 
 `sync` only works on an initialized project; before `init` there is
-nothing to sync.
+nothing to sync. A `sync` that changed anything commits
+`sync: rescan source` to the project's git history (the repository is
+created by `init`, or backfilled on existing projects by migration v003).
 
 ## Verifying before translating
 

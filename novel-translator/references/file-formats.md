@@ -24,6 +24,8 @@ hand-fix.
 ├── templates/           per-project copies of the prompt templates (editable)
 ├── styles/              optional per-project style presets (add/override .md files)
 ├── export/              built epubs
+├── .git/                git repository (created by `init`, backfilled by migrate v003) — skill-managed, see Git history
+├── .gitignore           skill-managed ignore rules for transient/rebuildable paths (see Git history)
 └── logs/                llm-*-<command>-<pid>.jsonl (one LLM trace per CLI invocation, newest log_llm_keep_runs kept); epub-build.log (background epub-build output)
 ```
 
@@ -38,6 +40,77 @@ is written into each source file's frontmatter and into `chapters.json` as
 measures distance in `order` units. The manifest is rebuilt by `init` and
 `sync`; `sync` re-scans `source/` for added/removed files and preserves
 statuses by file name.
+
+## Git history
+
+Every project directory is a git repository. `init` creates the repository
+as part of scaffolding (console: `[git] initialized repository`) and makes
+the initial `init: scaffold project` commit; migration `v003` backfills
+existing projects the same way. From then on every mutating action commits
+(`lib/vcs.commit` is the single gate), so `git log` doubles as a labeled
+backup of the project. `build-epub`, the auto-build, and `glossary search`
+produce nothing — `export/` and `logs/` are gitignored, and search is
+read-only.
+
+`.gitignore`, written at repository creation:
+
+```
+# Transient pipeline state and rebuildable artifacts (skill-managed).
+draft/
+logs/
+export/
+*.tmp
+```
+
+Commit subjects, verbatim — one commit per action, only when something
+actually changed:
+
+| Action | Commit subject |
+|---|---|
+| fresh `init` | `init: scaffold project` |
+| `init --force` over an existing repository (history is kept) | `init: reinitialize project` |
+| `sync` that changed anything | `sync: rescan source` |
+| finished chapter — `translate` and `retry`; skipped chapters commit nothing | `translate: chapter NNNN (translated)` / `translate: chapter NNNN (needs-review)` |
+| `mark` | `mark: <file> -> <status>[, ...]` |
+| `tn` (when at least one chapter changed, or only `tn_history.json` drifted — kept notes bump `times`/`last_order` even when every sidecar is identical) | `tn: re-check notes` |
+| `seed` | `seed: N glossary term(s)` |
+| `profile` | `profile: regenerate style profile` |
+| `migrate`, per applied step | `migrate: vNNN <DESCRIPTION>` |
+| `migrate` maintenance pass whose template refresh changed files | `migrate: refresh templates` |
+| `migrate` maintenance pass that (re)created a missing repository (v003's `git init` can have failed once; the templates subject wins when both happened) | `migrate: backfill git repository` |
+| `review glossary` (the report is committed even when findings remain) | `review: glossary audit` / `review: glossary audit (N fix(es) applied)` |
+| `util replace` | `util replace: '<src>' -> '<dst>'` |
+| `glossary replace` | `glossary replace: '<src>' -> '<dst>'` |
+| `glossary set` / `glossary merge` / `glossary retire` | `glossary set: <term>` / `glossary merge: '<removed>' into '<kept>'` / `glossary retire: <term>` |
+
+`review fix` makes NO commit of its own: each spawned glossary subcommand
+commits its own action.
+
+Console lines — `[git]` is part of the stable marker vocabulary:
+
+- `[git] initialized repository` — the repository was created (`init` /
+  migrate v003).
+- `[git] committed <short-sha> <subject>` — printed only when the commit
+  actually happened. A clean tree, a disabled `git_commits`, a non-repo
+  directory, or a missing git binary is a SILENT no-op: a versioning
+  problem never breaks a translation run, mirroring epubcheck's
+  missing-docker tolerance.
+- `[warn] git not found; project history disabled` — init / migrate on a
+  machine without git.
+- `[warn] git init failed: <reason>` / `[warn] git add failed: <reason>` /
+  `[warn] git commit failed: <reason>` — best-effort, at most one line.
+- `[warn] git failed: <reason>` — any unexpected failure (binary vanishing
+  between lookup and spawn, dead drive, half-deleted `.git`); `commit()` and
+  `ensure_repo()` never raise, so this is at most one line per call.
+
+Git config is set local to the repository, never the global config, at
+repository creation: `user.name=novel-translator` /
+`user.email=novel-translator@localhost` when no identity is configured, and
+`core.autocrlf=false` when unset (project files are LF).
+
+Off switch: `git_commits` (default true) in config.json — set it false to
+keep a project un-versioned. Commits (and their `[git] committed` lines)
+become silent no-ops; nothing else changes and no error is raised.
 
 ## Source chapter format
 
@@ -87,6 +160,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; 0 renderings with src>=2 is a drift signal handed to the FAITH reviewer
   "fuzzy_max_distance": 2,       // Levenshtein tolerance for single-word targets of >= 5 letters; multi-word phrases match case-insensitively with hyphen/space equivalence plus an optional inflection on the final word
   "glossary_auto_cleanup": true, // balance drift signals: retire mundane terms via a cleanup judgment; kept signals go to the FAITH reviewer; false = skip the judgment
+  "git_commits": true,           // commit every mutating action to the project's git repository (created by `init`, backfilled by migrate v003; lib/vcs.commit is the single gate); false = keep the project un-versioned
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "tn_keep_low_confidence": false, // keep threshold:"low" notes instead of dropping them (default drops)
   "auto_build_epub": true,      // rebuild the epub in the background after every translated chapter (serialized; final build at batch end); false = manual `build-epub` only
@@ -99,7 +173,9 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "style_sample_chars": 12000,   // rough source-character budget for the sample (--style auto only)
   "log_llm": true,               // full request/response LLM trace; false disables the LLM trace lines only
   "log_llm_keep_runs": 5,        // one llm-*.jsonl per CLI invocation; older logs pruned to the newest N (by mtime)
-  "version": 1                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
+  "review_batch_size": 40,       // entries per `review glossary` model review call; `--batch-size` overrides per run
+  "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary`, read back by `review fix`)
+  "version": 3                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
 
@@ -231,8 +307,8 @@ free-form reason text. The `--fix`
 ## review-report.md
 
 Regenerated by every `review glossary` run at `<project>/review-report.md`
-(overwritten — a clean run writes a report that says so; console:
-`[glossary] report: <path>`). It is the indexed, agent-actionable view of
+(filename: config `review_report_path`; overwritten — a clean run writes
+a report that says so; console: `[glossary] report: <path>`). It is the indexed, agent-actionable view of
 the findings the `glossary_review` trace event records: run the review,
 then either tell an agent "fix items 1,4,5 in review-report.md doing what
 was suggested" or run `review fix --glossary review-report.md` to apply
@@ -417,12 +493,26 @@ the boolean it returns.
 the key is version 0), runs only the steps with a higher version in
 order, and stamps `version` after each successfully applied step —
 immediate per-step stamping, so a crash mid-chain resumes at the failed
-step. `v001` — the only step so far — materializes merged config
+step. `v001` materializes merged config
 defaults onto disk (keys introduced after the project's init, e.g.
 `glossary_auto_cleanup` and `min_term_coverage`, plus provider-job
 normalization; user-set values always preserved) and copies shipped
 templates missing from the project's `templates/` dir without prompting
-(non-destructive; the runtime fallback would cover them anyway). A
+(non-destructive; the runtime fallback would cover them anyway). `v002`
+materializes the review command defaults (`review_batch_size`,
+`review_report_path`) with identical behavior — the same add-only
+deep-merge (only keys missing from the project's config.json are added;
+user-set values always preserved) plus the same template sync. `v003`
+(DESCRIPTION: `git history: materialize git_commits default, init the
+project repo`) folds the `git_commits` default into the project's
+config.json the same add-only way and runs the same template sync, then
+`git init`s the project directory (writing `.gitignore` and the
+local-only git config — see Git history). The step itself commits
+nothing: `migrate` commits once per applied step AFTER stamping the
+config version, so the repo's first commit captures the fully migrated
+state. `--dry-run` writes nothing and reports
+`[git] would initialize the repository (a real run commits after each
+migrate step)` (cmd_migrate prefixes step lines with `[dry-run] `). A
 template that exists but differs from the shipped one is asked about
 interactively, one prompt per template — `templates ~ <name>.md
 differs from the shipped copy - overwrite it? [y/N]`: Enter/n keeps
@@ -434,7 +524,9 @@ prompt and never block — differing templates are kept with a `[warn]`
 line (`--dry-run` reports differing templates without prompting or
 writing). A project already current is not a bare no-op: `migrate` runs
 a read-only-when-clean template maintenance pass (same prompt rules)
-that leaves the version stamp untouched — the chain gates structural
+that leaves the version stamp untouched, and best-effort backfills a
+missing repository (the only retry when v003's `git init` failed once
+yet version 3 was still stamped) — the chain gates structural
 steps, and template refresh is maintenance, not a chain step. Adding a
 new migration is nothing more than shipping the next `v<NNN>.py` — a
 skill update that needs project-side changes ships that module and

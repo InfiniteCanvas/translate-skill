@@ -487,7 +487,8 @@ def write_report(
     batches: int, batch_errors: list[str], cfg: dict,
 ) -> Path:
     """Write the frontmatter-annotated, agent-actionable
-    <project>/review-report.md.
+    <project>/review-report.md (or the `review_report_path` config value,
+    default review-report.md).
 
     The report opens with a hand-built YAML frontmatter block (stdlib only,
     no yaml dependency) summarizing the run at a glance: report type,
@@ -517,6 +518,7 @@ def write_report(
     Returns the report path."""
     source_name = _lang_name(cfg.get("source_lang"))
     target_name = _lang_name(cfg.get("target_lang"))
+    report_name = cfg.get("review_report_path", REPORT_NAME)
     by_source: dict[str, dict] = {}
     for entry in terms:
         src = entry.get("source")
@@ -642,8 +644,8 @@ def write_report(
     lines += [
         "## Next steps",
         "",
-        "- Run `review fix --glossary review-report.md` to apply every finding in `Machine-applicable` (one offline command per `- Command:` bullet).",
-        '- For findings under `Needs manual review`, decide yourself or hand that section to an agent (e.g. "work through the Needs manual review section in review-report.md").',
+        f"- Run `review fix --glossary {report_name}` to apply every finding in `Machine-applicable` (one offline command per `- Command:` bullet).",
+        f'- For findings under `Needs manual review`, decide yourself or hand that section to an agent (e.g. "work through the Needs manual review section in {report_name}").',
         "- Fix remaining findings by editing glossary.json (hand edits are safe -- it is re-read before every chapter).",
         '- Delete junk entries outright and add their source to the top-level "retired" list so seed/GLOSSARY_EXPAND will not re-add them.',
         "- Re-run `review glossary` to confirm the report comes back clean (exit 0).",
@@ -651,7 +653,10 @@ def write_report(
         "",
     ]
 
-    path = Path(project_dir) / REPORT_NAME
+    path = Path(project_dir) / report_name
+    # review_report_path may name a subdirectory; the read side (review fix)
+    # tolerates one, so the write side creates it on demand.
+    path.parent.mkdir(parents=True, exist_ok=True)
     project.atomic_write_text(path, "\n".join(lines), newline="\n")
     return path
 

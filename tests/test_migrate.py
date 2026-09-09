@@ -6,9 +6,9 @@ yes refreshes byte-equal to the shipped copy, confirm no keeps the user's
 file, --force refreshes without ever prompting, --dry-run reports the
 pending y/N choice and writes nothing; confirm=None auto-keeps with a
 non-interactive warning; DEFAULTS materialized on disk while user values
-survive; version stamped to 1; a second run is a byte-level no-op), the
-maintenance pass on already-current projects (a confirmed refresh keeps
-version 1 and leaves config.json untouched, a declined one keeps the
+survive; version stamped to the chain head; a second run is a byte-level
+no-op), the maintenance pass on already-current projects (a confirmed
+refresh keeps the head version and leaves config.json untouched, a declined one keeps the
 user's template, --force finally acts without a version bump -- the
 reported trap), the chain walker with fake steps (ascending application
 order, version stamped after EACH step so a crash mid-chain resumes at the
@@ -17,8 +17,13 @@ the resolved confirm callable is handed to every step, an already-current
 project runs no chain steps, a project newer than the chain is a CliError,
 dry-run stays read-only), the y/N prompt parser itself (y/yes, n/no,
 Enter as default No, the garbage re-ask loop, EOF -> No), the
-missing-project CliError, and the real package's chain() == [v001] with
-current_version() == 1.
+missing-project CliError, v002's direct add-only materialize (user-set
+values -- including ones already sitting under the new key names -- survive
+verbatim, a file missing exactly the new keys gets them reported and
+defaulted, a second identical run reports [] and writes nothing), and the
+real package's chain() == [v001, v002, v003] with current_version() == 3
+(v003's own behavior tests live in tests/test_git.py; only the chain
+shape is pinned here).
 
 cmd_migrate reads translate.TEMPLATES_SRC_DIR, migrations.chain, and (all
 as module-global lookups at call time) translate._confirm_template_refresh,
@@ -28,7 +33,11 @@ from an interactive terminal makes stdin a TTY, and any case whose
 cmd_migrate run can reach a differing template would otherwise block on a
 real prompt -- fakes answer, and the refusal fake fails the check loudly
 wherever the code must NOT prompt. All fixtures live in
-TemporaryDirectory sandboxes; repo assets are never touched.
+TemporaryDirectory sandboxes; repo assets are never touched. Since v003,
+any real (non-dry-run) chain walk also turns the fixture into a git
+repository and commits after the last step, so byte snapshots exclude the
+.git/ directory: vcs.commit's clean-tree probe runs read-only git
+plumbing that may touch .git internals without any project file changing.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
@@ -54,6 +63,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
+from migrations import v002  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -86,10 +96,15 @@ def run_migrate(ns: argparse.Namespace, project_dir: Path):
 
 def snapshot(root: Path) -> dict[str, bytes]:
     """Byte-exact contents of every file under root, keyed by relative path
-    (proves a no-op run wrote nothing -- stronger than mtime on Windows)."""
+    (proves a no-op run wrote nothing -- stronger than mtime on Windows).
+    The .git/ directory is excluded: since v003 a chain-walked fixture is a
+    git repository, and the read-only git plumbing vcs.commit runs for its
+    clean-tree probe may touch .git internals without any project file
+    changing. .gitignore stays in -- nothing in this suite rewrites it."""
     return {
         str(p.relative_to(root)): p.read_bytes()
-        for p in sorted(root.rglob("*")) if p.is_file()
+        for p in sorted(root.rglob("*"))
+        if p.is_file() and p.relative_to(root).parts[0] != ".git"
     }
 
 
@@ -127,8 +142,10 @@ FIXTURE_CFG = {
 def case_1_v001() -> None:
     """v001 against fixture templates: copy missing, keep identical, refresh
     differing only with consent (interactive y/N, --force, never on
-    --dry-run); materialize DEFAULTS preserving user values; stamp version;
-    second run no-op; the already-current maintenance pass (trap fixed)."""
+    --dry-run); materialize DEFAULTS preserving user values; stamp the
+    chain-head version; second run no-op; the already-current maintenance
+    pass (trap fixed)."""
+    HEAD = migrations.current_version()  # real chain head (3 since v003)
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
@@ -147,11 +164,12 @@ def case_1_v001() -> None:
             return proj
 
         def make_current(name: str) -> tuple[Path, bytes]:
-            """Fixture already at version 1 with a drifted b.md: takes the
-            early already-current branch, exercising the maintenance pass."""
+            """Fixture already at the chain head with a drifted b.md: takes
+            the early already-current branch, exercising the maintenance
+            pass."""
             cur = make_project(name)
             cfg = json.loads((cur / "config.json").read_text(encoding="utf-8"))
-            cfg["version"] = 1
+            cfg["version"] = HEAD
             raw = (json.dumps(cfg, indent=2) + "\n").encode("utf-8")
             (cur / "config.json").write_bytes(raw)
             return cur, raw
@@ -186,14 +204,16 @@ def case_1_v001() -> None:
             check("1i v001: all five provider jobs filled",
                   sorted(disk["providers"]) == sorted(config.PROVIDER_JOBS),
                   f"jobs={sorted(disk['providers'])}")
-            check("1j v001: version stamped to 1",
-                  disk.get("version") == 1, f"version={disk.get('version')!r}")
+            check("1j chain: version stamped to the chain head",
+                  disk.get("version") == HEAD,
+                  f"version={disk.get('version')!r} head={HEAD}")
 
             before = snapshot(proj)
             with patched_confirm(lambda question: False):
                 code2, out2, exc2 = run_migrate(ns, proj)
-            check("1k v001: second run is a no-op already at version 1",
-                  code2 == 0 and exc2 is None and "already at version 1" in out2
+            check("1k chain: second run is a no-op already at the head version",
+                  code2 == 0 and exc2 is None
+                  and f"already at version {HEAD}" in out2
                   and "kept (your version)" in out2,
                   f"code={code2} out={out2}")
             check("1l v001: second run wrote nothing (byte snapshot equal)",
@@ -240,7 +260,7 @@ def case_1_v001() -> None:
                   and "config: materialized" in out4, f"code={code4} out={out4}")
             check("1o2 v001: --dry-run output is dry-run-marked",
                   "[dry-run] [ok] templates + c.md" in out4
-                  and "would migrate project: version 0 -> 1" in out4
+                  and f"would migrate project: version 0 -> {HEAD}" in out4
                   and "applying" not in out4, f"out={out4}")
             check("1o3 v001: --dry-run reports the differing template as a pending y/N choice",
                   "[dry-run] [warn] templates ~ b.md differs from shipped "
@@ -291,11 +311,12 @@ def case_1_v001() -> None:
             with patched_confirm(lambda question: True):
                 code6, out6, exc6 = run_migrate(ns, cur_yes)
             check("1t current: accepted prompt refreshes a drifted template",
-                  code6 == 0 and exc6 is None and "already at version 1" in out6
+                  code6 == 0 and exc6 is None
+                  and f"already at version {HEAD}" in out6
                   and (cur_yes / "templates" / "b.md").read_bytes() == (src / "b.md").read_bytes()
                   and "[ok] templates ~ b.md refreshed" in out6, f"out={out6}")
-            check("1t2 current: refresh is maintenance - version stays 1, config untouched",
-                  json.loads((cur_yes / "config.json").read_text(encoding="utf-8")).get("version") == 1
+            check("1t2 current: refresh is maintenance - version stays at the head, config untouched",
+                  json.loads((cur_yes / "config.json").read_text(encoding="utf-8")).get("version") == HEAD
                   and (cur_yes / "config.json").read_bytes() == cfg_yes,
                   "config.json was modified by the maintenance pass")
 
@@ -303,7 +324,8 @@ def case_1_v001() -> None:
             with patched_confirm(lambda question: False):
                 code7, out7, exc7 = run_migrate(ns, cur_no)
             check("1u current: declined prompt keeps the user's template",
-                  code7 == 0 and exc7 is None and "already at version 1" in out7
+                  code7 == 0 and exc7 is None
+                  and f"already at version {HEAD}" in out7
                   and (cur_no / "templates" / "b.md").read_text(encoding="utf-8") == "user-edited b\n"
                   and "[ok] templates ~ b.md kept (your version)" in out7, f"out={out7}")
 
@@ -312,7 +334,8 @@ def case_1_v001() -> None:
                 code8, out8, exc8 = run_migrate(
                     argparse.Namespace(dry_run=False, force=True), cur_force)
             check("1v current: --force refreshes without prompting (trap fixed)",
-                  code8 == 0 and exc8 is None and "already at version 1" in out8
+                  code8 == 0 and exc8 is None
+                  and f"already at version {HEAD}" in out8
                   and (cur_force / "templates" / "b.md").read_bytes() == (src / "b.md").read_bytes()
                   and "[ok] templates ~ b.md refreshed (--force)" in out8, f"out={out8}")
 
@@ -462,16 +485,25 @@ def case_3_not_a_project() -> None:
 
 
 def case_4_real_chain() -> None:
-    """The real migrations package: exactly v001, VERSION 1, head version 1."""
+    """The real migrations package: exactly [v001, v002, v003], VERSIONs
+    [1, 2, 3], head version 3. v003's behavior is covered in
+    tests/test_git.py; only the chain shape is pinned here."""
     steps = migrations.chain()
-    check("4a real chain: exactly one step, v001, VERSION 1",
-          len(steps) == 1 and steps[0].VERSION == 1
-          and steps[0].__name__.endswith("v001"),
+    check("4a real chain: three steps v001/v002/v003, VERSIONs 1, 2, 3",
+          len(steps) == 3 and [s.VERSION for s in steps] == [1, 2, 3]
+          and steps[0].__name__.endswith("v001")
+          and steps[1].__name__.endswith("v002")
+          and steps[2].__name__.endswith("v003"),
           f"steps={[getattr(s, '__name__', s) for s in steps]}")
-    check("4b real chain: v001 exposes DESCRIPTION and callable migrate",
-          bool(steps) and isinstance(steps[0].DESCRIPTION, str)
-          and callable(steps[0].migrate))
-    check("4c real chain: current_version() == 1", migrations.current_version() == 1)
+    check("4b real chain: all three steps expose DESCRIPTION and callable migrate",
+          len(steps) == 3
+          and all(isinstance(s.DESCRIPTION, str) for s in steps)
+          and all(callable(s.migrate) for s in steps))
+    check("4c real chain: v003's DESCRIPTION string is exact",
+          steps[2].DESCRIPTION == "git history: materialize git_commits default, "
+          "init the project repo",
+          f"DESCRIPTION={steps[2].DESCRIPTION!r}")
+    check("4d real chain: current_version() == 3", migrations.current_version() == 3)
 
 
 def case_5_confirm_prompt() -> None:
@@ -523,6 +555,91 @@ def case_5_confirm_prompt() -> None:
           answer is False, f"answer={answer!r}")
 
 
+def case_6_v002() -> None:
+    """v002.migrate called directly (no cmd_migrate, no version stamping):
+    materializing the two new review defaults into a v1-era config.json is
+    strictly add-only -- user-set values, including ones already sitting
+    under the new key names, survive verbatim; a file missing exactly those
+    keys gets the "[ok] config: materialized 2 new key(s)" report and the
+    defaults; every DEFAULTS key ends up on disk; a second identical call
+    reports [] and leaves the file bytes untouched."""
+    def make_v1_project(root: Path, name: str, user_sets_new_keys: bool) -> Path:
+        """A file as v001 left it: every DEFAULTS key of that era present
+        (only review_batch_size / review_report_path are new in v002), a
+        user-tuned max_attempts, a minimal translator provider block, and
+        version stamped to 1."""
+        proj = root / name
+        proj.mkdir()
+        cfg = {k: v for k, v in config.DEFAULTS.items()
+               if k not in ("review_batch_size", "review_report_path")}
+        cfg.update({
+            "source_lang": "zh",
+            "target_lang": "en",
+            "max_attempts": 9,
+            "version": 1,
+            "providers": {"translator": {"base_url": "http://mine:9999/v1",
+                                         "model": "m1"}},
+        })
+        if user_sets_new_keys:
+            # Hand-set before upgrading: materialize must keep these
+            # verbatim, never fold in the new defaults 40/"review-report.md".
+            cfg["review_batch_size"] = 100
+            cfg["review_report_path"] = "custom-report.md"
+        (proj / "config.json").write_text(
+            json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        return proj
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()  # no shipped *.md: sync_templates stays silent
+
+        # The add-only pin: the file already carries user values under the
+        # two new key names.
+        proj = make_v1_project(root, "user-wins", user_sets_new_keys=True)
+        lines = v002.migrate(proj, src)
+        check("6a v002: nothing new to add -> provider-normalize report only",
+              lines == ["[ok] config: provider blocks normalized (no new top-level keys)"],
+              f"lines={lines!r}")
+        disk = json.loads((proj / "config.json").read_text(encoding="utf-8"))
+        check("6b v002: user-set review_batch_size / review_report_path survive verbatim",
+              disk.get("review_batch_size") == 100
+              and disk.get("review_report_path") == "custom-report.md",
+              f"review_batch_size={disk.get('review_batch_size')!r} "
+              f"review_report_path={disk.get('review_report_path')!r}")
+        check("6c v002: other user-set default survives (max_attempts == 9)",
+              disk.get("max_attempts") == 9, f"max_attempts={disk.get('max_attempts')!r}")
+        missing = [k for k in config.DEFAULTS if k not in disk]
+        check("6d v002: every config.DEFAULTS key present on disk afterwards",
+              not missing, f"missing={missing}")
+        check("6e v002: the step itself never moves the version stamp",
+              disk.get("version") == 1, f"version={disk.get('version')!r}")
+
+        # A v1-era file missing exactly the two new keys: the report must
+        # name them, and the defaults land on disk.
+        fresh = make_v1_project(root, "fresh", user_sets_new_keys=False)
+        lines_f = v002.migrate(fresh, src)
+        check("6f v002: materializes exactly 2 new key(s), named in the report",
+              lines_f == ["[ok] config: materialized 2 new key(s): "
+                          "review_batch_size, review_report_path"],
+              f"lines={lines_f!r}")
+        disk_f = json.loads((fresh / "config.json").read_text(encoding="utf-8"))
+        check("6g v002: new defaults land (40 / review-report.md)",
+              disk_f.get("review_batch_size") == 40
+              and disk_f.get("review_report_path") == "review-report.md",
+              f"review_batch_size={disk_f.get('review_batch_size')!r} "
+              f"review_report_path={disk_f.get('review_report_path')!r}")
+
+        # Idempotency: re-running on the migrated file reports nothing and
+        # writes nothing (byte snapshot, stronger than mtime on Windows).
+        before = snapshot(proj)
+        again = v002.migrate(proj, src)
+        check("6h v002: second identical call returns []",
+              again == [], f"lines={again!r}")
+        check("6i v002: second call wrote nothing (byte snapshot equal)",
+              snapshot(proj) == before)
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -533,6 +650,7 @@ def main() -> int:
     case_3_not_a_project()
     case_4_real_chain()
     case_5_confirm_prompt()
+    case_6_v002()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

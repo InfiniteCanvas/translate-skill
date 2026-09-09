@@ -33,7 +33,7 @@ migration script in `novel-translator/scripts/migrations/` building on the
 latest one:
 
 - Name it `vNNN.py`, with NNN = highest existing version + 1 (currently
-  `v001.py`, so the next is `v002.py`).
+  `v001.py`, `v002.py`, `v003.py`, so the next is `v004.py`).
 - The module must define `VERSION` (int, equal to the NNN in the filename),
   `DESCRIPTION` (one line), and
   `migrate(project_dir, templates_src, dry_run=False, force=False, confirm=None) -> list[str]`

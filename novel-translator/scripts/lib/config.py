@@ -46,6 +46,16 @@ DEFAULTS: dict = {
     # translation passes the faithfulness gate). Set false to skip the
     # judgment.
     "glossary_auto_cleanup": True,
+    # Commit every mutating action to the project's git repository (created
+    # by `init`, backfilled by migrate v003). Set false to keep a project
+    # un-versioned; lib/vcs.commit is the single gate.
+    "git_commits": True,
+    # `review glossary` batching: glossary entries per model review call;
+    # also settable per run with `review glossary --batch-size`.
+    "review_batch_size": 40,
+    # Filename of the advisory review report written by `review` and read
+    # back by `review fix`; relative to the project dir.
+    "review_report_path": "review-report.md",
 }
 
 _DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"

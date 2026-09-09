@@ -53,7 +53,10 @@ through uv automatically):
    source URL or generated; `--cover-url URL` points at a cover image
    directly). `init` refuses to overwrite an existing `config.json`;
    `--force` reinitializes, resetting `glossary.json` and
-   `tn_history.json` to empty.
+   `tn_history.json` to empty. Init also turns the project directory
+   into a git repository (with a project-local git identity -- nothing
+   global is touched), and every following action is committed with a
+   descriptive subject, so `git log` is a labeled backup of the project.
 
    After updating the skill itself, upgrade existing projects in place:
 
@@ -71,8 +74,13 @@ through uv automatically):
    scripted, CI) keep differing templates with a `[warn]`; `--dry-run`
    reports without writing). An up-to-date project
    still gets this template maintenance pass (read-only when clean,
-   version stamp untouched), so `migrate --force` refreshes stale
-   templates on current projects too.
+   version stamp untouched; a missing repository is backfilled), so
+   `migrate --force` refreshes stale
+   templates on current projects too. Each applied step is committed
+   once it lands (`migrate: vNNN <description>`), and the newest step,
+   v003, gives existing projects the git repository -- it materializes
+   the `git_commits` default and runs `git init` on the project, so even
+   a repo's first commit captures the fully migrated state.
 
    Style is preset-based -- zero LLM calls at init. Pick with
    `--style <name|path>`: `classic` (default; standard xianxia/wuxia
@@ -111,7 +119,10 @@ strictly in sequence on purpose: the glossary and note history build up as
 you go. Ctrl-C is safe at any point -- per-chapter state is saved and a
 rerun resumes where it stopped. Chapters in `needs-review` are skipped by
 `--next`; they wait for `retry` or `mark`. Already-`translated` chapters
-are skipped too; pass `--force` to retranslate them.
+are skipped too; pass `--force` to retranslate them. Every finished
+chapter lands as its own commit -- `translate: chapter NNNN (translated)`
+or `translate: chapter NNNN (needs-review)` -- so the project's git
+history grows one labeled entry per chapter.
 
 ## Human review
 
@@ -156,7 +167,12 @@ seeding:
 
 `--min-count N` overrides the seed threshold for the run;
 `--catalogue PATH` (repeatable) seeds from explicit catalogue files,
-bypassing the language filter.
+bypassing the language filter. The commands in this section commit their
+own action to the project's git history -- `seed: N glossary term(s)`,
+`review: glossary audit`, `glossary replace` / `util replace`, and
+`tn: re-check notes` (when at least one chapter changed -- or only
+`tn_history.json` drifted, since kept notes bump `times`/`last_order`
+even when every sidecar is identical).
 
 To find entries before editing them (read-only; see Bulk review fixes for
 the matching semantics):
@@ -175,7 +191,8 @@ language or equal to the source, unknown category, non-CJK text in a
 CJK entry's variants) plus the glossary model judging alignment,
 definitions, categories, cross-entry conflicts, and mundane entries --
 class nouns like 麦穗 "wheat stalks" that never belonged in the glossary
-(seeded/catalogue entries exempt) -- in batches of 40 (`--batch-size N`).
+(seeded/catalogue entries exempt) -- in batches of 40 by default
+(`review_batch_size`; `--batch-size N` overrides for the run).
 Report-only by default -- one
 `[glossary] warn|info '<source>' -> '<translation>': <kind> - <reason>`
 line per finding plus a summary; `--fix` opts in to guarded fixes
@@ -185,9 +202,10 @@ translation/definition/category only; validated; conflicting suggestions
 skipped; prints `[glossary] fixed ...` per change). Mundane findings carry
 no suggestion -- `--fix` never retires them; their `- Command:` bullet
 does. Exit 0 clean or info-only, 1 warns remain, 2 usage error. Cost
-ceil(N/40) model calls.
+ceil(N/review_batch_size) model calls.
 
-Every run also writes `<project>/review-report.md` (overwritten each run,
+Every run also writes `<project>/review-report.md` (filename from the
+`review_report_path` config key; overwritten each run,
 clean runs included; console: `[glossary] report: <path>`): a YAML
 frontmatter block with the run's counts (entries reviewed, batch errors,
 outstanding warn/info, machine-applicable vs manual-review tallies, and
@@ -288,7 +306,9 @@ tedious and prone to drift. For the offline path:
 
 `review fix` parses every `- Command:` bullet in the report's
 `Machine-applicable` section and runs each as a subprocess (`glossary
-replace | set | merge | retire`), in order. Commands are pre-validated: a
+replace | set | merge | retire`), in order; it commits nothing itself --
+each spawned glossary subcommand commits its own action.
+Commands are pre-validated: a
 `glossary replace` / `set --translation` whose suggested value contains
 source-script characters
 for a CJK-source entry is skipped in-process (`[review fix] skipped [N]:
@@ -361,7 +381,8 @@ build for batch callers (the replace behavior itself is unchanged).
 subcommands: it matches TERM case-insensitively against every entry's
 `source`, `variants`, `translation`, and `alt_translations` (both sides) --
 substring containment always hits, and Levenshtein within `--max-distance`
-(default 2; `0` = substring only) matches whole values or single words with
+(default: config `fuzzy_max_distance`; `0` = substring only) matches whole
+values or single words with
 no separator special-casing (`grand elder` finds `grand-elder`). Retired
 matches print `[glossary] retired match: ...` info lines. Exit 0 with
 matches, 1 none, 2 error.
@@ -415,12 +436,21 @@ details land in `logs/epub-build.log`.
   deferred until the translation passes the faithfulness gate) while
   kept signals go to the faithfulness reviewer; set false to disable the
   retirement.
+- `git_commits` (default true) -- commit every mutating action to the
+  project's git repo (created by `init`, backfilled by migrate v003); set
+  false to keep a project un-versioned.
 - `fuzzy_max_distance` (default 2) -- Levenshtein tolerance for word
-  matches in the balance check.
+  matches in the balance check; also the default for
+  `glossary search --max-distance`.
 - `max_new_terms_per_chapter` (default 15) -- cap on new glossary terms
   proposed per chapter.
 - `max_notes_per_chapter` (default 10) -- cap on translator's notes
   generated per chapter.
+- `review_batch_size` (default 40) -- entries per `review glossary` model
+  review call; `review glossary --batch-size N` overrides it for one run.
+- `review_report_path` (default `review-report.md`) -- filename of the
+  advisory review report, relative to the project dir; written by
+  `review glossary`, read back by `review fix`.
 
 Every file schema (manifest, chapter state, glossary, notes, novel_info)
 is documented in `references/file-formats.md`.
@@ -447,4 +477,9 @@ disable the LLM lines with `log_llm: false` in config.json.
 Background epub builds append their output (including epubcheck results) to
 `logs/epub-build.log`, with `=== epub build after Chapter_NNNN.md | timestamp ===`
 separators between builds.
+
+Because every mutating action is committed (see the `git_commits` config
+key), `git log`, `git show`, and `git checkout <sha> -- <file>` work as
+project history and undo -- each commit subject names the action that
+produced it.
 

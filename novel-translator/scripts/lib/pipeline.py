@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from lib import assemble, autobuild, balance, client, config, glossary, logger, project, styles, tn
+from lib import assemble, autobuild, balance, client, config, glossary, logger, project, styles, tn, vcs
 
 STAGES = (
     "TRANSLATE",
@@ -1170,6 +1170,14 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         # else: loop back to TRANSLATE with the accumulated feedback
 
 
+def _chapter_subject(file: str, outcome: str) -> str:
+    """Commit subject for one finished chapter; the number comes from the
+    Chapter_NNNN filename (manifest order would re-read chapters.json)."""
+    match = project.CHAPTER_RE.match(file)
+    number = int(match.group(1)) if match else 0
+    return f"translate: chapter {number:04d} ({outcome})"
+
+
 def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = False) -> dict:
     """Run run_chapter sequentially over files.
 
@@ -1200,8 +1208,11 @@ def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = Fals
                 except Exception:  # noqa: BLE001 - manifest marking is best-effort
                     print(f"[FAIL] {file}: could not mark needs-review in the manifest")
                 results.setdefault("needs-review", []).append(file)
+                vcs.commit(project_dir, _chapter_subject(file, "needs-review"))
                 continue
             results.setdefault(outcome, []).append(file)
+            if outcome != "skipped":
+                vcs.commit(project_dir, _chapter_subject(file, outcome))
             if outcome == "translated" and scheduler is not None:
                 scheduler.trigger(file)
                 scheduler.poll()

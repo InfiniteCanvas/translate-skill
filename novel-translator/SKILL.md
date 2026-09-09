@@ -69,8 +69,14 @@ gradient background) into `covers/cover.jpg`, copies the chosen **style
 guide** to `style.md` (preset-based, zero LLM calls; see below), and seeds
 the glossary from the
 skill's catalogues: every catalogue term appearing ≥ `seed_min_count`
-(default 3) times across all source chapters is added. Refuses to overwrite
-an existing project unless `--force`.
+(default 3) times across all source chapters is added. It also turns the
+project directory into a git repository (console
+`[git] initialized repository`) and makes the initial
+`init: scaffold project` commit; every later mutating action commits too
+(subject table in `references/file-formats.md` § Git history). On a
+machine without git, init still succeeds but prints
+`[warn] git not found; project history disabled`.
+Refuses to overwrite an existing project unless `--force`.
 
 Optional: `--cover-url` to point at a cover image directly.
 
@@ -78,8 +84,8 @@ Downloading more chapters later? Drop them in `source/` and run
 `uv run "$SCRIPT" sync --project .` - it re-scans `source/`, backfills
 their frontmatter, and rebuilds `chapters.json` (added/removed chapters
 reported; statuses and titles preserved) without touching glossary.json
-or tn_history.json. Exit 0, no LLM calls; run it after every download
-batch.
+or tn_history.json. Exit 0, no LLM calls; a sync that changed anything
+commits `sync: rescan source`; run it after every download batch.
 
 **Style selection** (`--style NAME|PATH|auto`, default `classic`): a preset
 name copies that guide from the skill's `assets/styles/` to
@@ -189,7 +195,10 @@ sorted by frequency):
    into each retry; then it becomes `needs-review`.
 
 Gates pass → the chapter is accepted automatically. The user fixes residue by
-hand if any turns up later.
+hand if any turns up later. Each finished chapter is committed —
+`translate: chapter NNNN (translated)` or
+`translate: chapter NNNN (needs-review)`; `retry` commits the same way, and
+skipped chapters commit nothing.
 
 ### Handling `needs-review` chapters
 
@@ -213,7 +222,8 @@ Read the feedback, then choose:
   (frontmatter + one paragraph per line; translator's notes, if any, go in
   the `notes/Chapter_0007.json` sidecar — see
   `references/file-formats.md`), then
-  `uv run "$SCRIPT" mark --project . --chapters 7 --status translated`.
+  `uv run "$SCRIPT" mark --project . --chapters 7 --status translated`
+  (committed as `mark: <file> -> <status>[, ...]`).
 
 `translate --next` deliberately skips `needs-review` chapters.
 
@@ -252,7 +262,8 @@ prints `[epub-auto] build ok (after Chapter_NNNN.md)`. Failures are warnings
 only and never change the translate/retry exit code (which still reflects
 translation status). Set `auto_build_epub: false` (default true) in
 `config.json` to build only via the command above; Ctrl-C kills a running
-background build too.
+background build too. Builds produce no git commits — `export/` and
+`logs/` are gitignored.
 
 ## Operating notes
 
@@ -294,15 +305,24 @@ background build too.
   position is the top-level integer `version` in `config.json` —
   written by `init` (fresh projects are born current) and by `migrate`
   after each successfully applied step (immediate per-step stamping, so
-  a crash mid-chain resumes at the failed step), never merged from
-  defaults; absent = 0. `migrate` runs only steps with a higher version,
-  in order. v001 (the only step today) materializes merged config
+  a crash mid-chain resumes at the failed step; each applied step is
+  committed after its stamp, subject `migrate: vNNN <DESCRIPTION>`),
+  never merged from defaults; absent = 0. `migrate` runs only steps with a higher version,
+  in order. v001 materializes merged config
   defaults onto disk (keys introduced after the project's init, e.g.
   `glossary_auto_cleanup`, `min_term_coverage`, plus provider-job
   normalization; user-set values always preserved) and copies shipped
   templates missing from the project's `templates/` dir without
   prompting (non-destructive; the runtime fallback would cover them
-  anyway). A template that exists but differs from the shipped one is
+  anyway). v002 materializes the review command defaults
+  (`review_batch_size`, `review_report_path`) the same add-only way
+  (user-set values always preserved). v003 materializes the
+  `git_commits` default the same add-only way and turns the project
+  directory into a git repository (DESCRIPTION: `git history:
+  materialize git_commits default, init the project repo`; the step
+  itself commits nothing — the per-step commit after the stamp captures
+  the fully migrated state). A template that exists but
+  differs from the shipped one is
   prompted for interactively, one prompt per template:
   `templates ~ <name>.md differs from the shipped copy - overwrite
   it? [y/N]` — Enter/n keeps the project's version (the default; it
@@ -317,7 +337,11 @@ background build too.
   maintenance pass (same prompt rules — missing templates copied,
   differing ones prompted / `--force`-refreshed) that leaves the
   version stamp untouched, so `migrate --force` on a current project
-  refreshes stale templates instead of silently doing nothing. The
+  refreshes stale templates instead of silently doing nothing (a pass
+  that changed files commits `migrate: refresh templates`; a missing
+  repository — a v003 whose `git init` failed once — is backfilled,
+  committing `migrate: backfill git repository` when only the repo was
+  created). The
   chain still gates structural steps; template refresh is maintenance,
   not a chain step. Exit 0 ok/no-op, 2 usage error (missing
   config.json, missing skill templates dir, unreadable version key,
@@ -333,7 +357,8 @@ background build too.
   source-translation alignment, definitions, categories, cross-entry
   conflicts, and mundane terms (entries that are not named entities or
   named actions — class nouns like 麦穗 "wheat stalks" never belonged;
-  seeded/catalogue entries exempt) in batches of 40 (`--batch-size N`)
+  seeded/catalogue entries exempt) in batches of `review_batch_size`
+  (default 40; `--batch-size N` overrides per run)
   through `templates/glossary_review.md`. Report-only: one
   `[glossary] warn|info` line per finding, never touching glossary.json
   unless `--fix`; `--fix`
@@ -345,10 +370,11 @@ background build too.
   Mundane findings carry no suggestion — `--fix` never retires them; the
   report's `glossary retire` Command bullet does (see Bulk review fixes).
   Exit 0 clean or info-only (or every warn fixed), 1 warns remain,
-  2 usage/setup error; empty glossary exits 0. Cost ceil(N/40) model
-  calls; model-tier failures fail safe per batch — heuristic findings
+  2 usage/setup error; empty glossary exits 0. Cost ceil(N/review_batch_size)
+  model calls; model-tier failures fail safe per batch — heuristic findings
   still report. Every run also writes indexed `<project>/review-report.md`
-  (overwritten each run, clean runs too; console: `[glossary] report: <path>`)
+  (filename from config `review_report_path`;
+  overwritten each run, clean runs too; console: `[glossary] report: <path>`)
   — a YAML frontmatter block with the run's counts (entries reviewed, batch
   errors, outstanding warn/info, machine-applicable vs manual-review
   tallies, and the `[N]` indices of the manual-review findings), then the
@@ -414,16 +440,20 @@ background build too.
   seeding with `uv run "$SCRIPT" seed --project .` after adding chapters or
   editing a catalogue; `--min-count N` overrides the seed threshold for the
   run, and `--catalogue PATH` (repeatable) adds an explicit catalogue file,
-  bypassing the language filter.
+  bypassing the language filter. Every mutating action in this bullet
+  commits — `seed: N glossary term(s)`, `review: glossary audit`,
+  `glossary replace` / `util replace: '<src>' -> '<dst>'` — while
+  read-only `glossary search` commits nothing.
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.
 - **Cost/cadence**: each chapter ≈ 4 model calls + retries; one glossary
-  review pass ≈ ceil(N/40) calls for N entries. `status` before long
+  review pass ≈ ceil(N/review_batch_size) calls for N entries (40 by
+  default). `status` before long
   batches; run `ping` first if the server was restarted.
 - Script output is UTF-8 (CJK terms appear in glossary/replace/search
-  lines) with stable `[ok]`/`[FAIL]`/`[warn]` markers prefixing status
-  lines — parse the markers, don't guess. Exit code is non-zero when any
+  lines) with stable `[ok]`/`[FAIL]`/`[warn]`/`[git]` markers prefixing
+  status lines — parse the markers, don't guess. Exit code is non-zero when any
   chapter ends `needs-review`.
 
 ## Translator's-note re-evaluation
@@ -445,9 +475,11 @@ or updating the `tn_generate.md` template — run:
   suppressed); chapter prose is never rewritten except the one-time
   stripping of legacy baked-in notes/markers, then the epub rebuilds unless
   `--no-build` (`--dry-run` still makes the annotator LLM calls but writes
-  nothing). Exit 0 success, 1 failed chapters (annotator call or unreadable
-  chapter) or no eligible chapters in
-  range, 2 usage error.
+  nothing). A re-check that changed at least one chapter — or that
+  drifted only `tn_history.json` (kept notes bump `times`/`last_order`
+  even when every sidecar is identical) — commits
+  `tn: re-check notes`. Exit 0 success, 1 failed chapters (annotator call
+  or unreadable chapter) or no eligible chapters in range, 2 usage error.
 
 ## Bulk review fixes
 
@@ -463,7 +495,11 @@ replace | set | merge | retire`), in order, and exits 0 on full success or
 full no-op, 1 if
 any command failed (continues past failures by default; `--exit-on-error` to
 stop at the first), 2 on a missing/unreadable report or a report with no
-machine-applicable commands. Commands are pre-validated: a `glossary
+machine-applicable commands. `review fix` makes no commit of its own — each
+spawned glossary subcommand (`glossary set: <term>`,
+`glossary merge: '<removed>' into '<kept>'`, `glossary retire: <term>`,
+`glossary replace: '<src>' -> '<dst>'`) commits its own action.
+Commands are pre-validated: a `glossary
 replace`/`set` command whose `--translation` value contains source-script
 (CJK) characters for a CJK-source entry is skipped in-process (console:
 `[review fix] skipped [N]: suggestion not in target language` — the same
@@ -514,7 +550,8 @@ The batch-flow subcommands:
   read-only lookup across `source`, `variants`, `translation`, and
   `alt_translations` (both sides) to find entries before the editing
   subcommands above: case-insensitive substring always hits, plus fuzzy
-  Levenshtein within `--max-distance` (default 2; `0` = substring only)
+  Levenshtein within `--max-distance` (default: config
+  `fuzzy_max_distance`; `0` = substring only)
   against whole values or single words, with no separator special-casing
   (`grand elder` finds `grand-elder`); retired matches print `[glossary]
   retired match: ...` info lines. Exit 0 with matches, 1 none, 2 error.

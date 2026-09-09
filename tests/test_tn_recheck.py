@@ -19,9 +19,13 @@ annotator succeeded); unreadable chapter YAML (recorded in `failed`, the
 run continues); the cmd_retry wipe loop (deletes draft artifacts, the
 translated file, AND the notes sidecar — regression: the sidecar unlink
 once passed the paths dict where tn.notes_path expects the project dir and
-crashed retry mid-wipe); and manifest-order processing (files
+crashed retry mid-wipe); manifest-order processing (files
 passed out of order are still processed by `order`, so the gap rule
-suppresses the same term in the immediately following chapter).
+suppresses the same term in the immediately following chapter); and the
+history-only-drift commit (re-annotated notes identical to the sidecar
+leave changed == 0, but tn.process still bumps times in tn_history.json —
+that tracked-file drift alone must land exactly one "tn: re-check notes"
+commit; skipped gracefully when no git binary is on PATH).
 
 Every case builds a full sandbox project (source/, translated/,
 chapters.json, optional tn_history.json) inside tempfile.TemporaryDirectory()
@@ -36,6 +40,7 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 """
 
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -44,7 +49,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import project, tn  # noqa: E402
+from lib import project, tn, vcs  # noqa: E402
 from lib import tn_recheck  # noqa: E402
 
 PASSED = 0
@@ -145,6 +150,17 @@ def run(root: Path, manifest: list[dict], files: list[str], chat, **kw) -> dict:
     return tn_recheck.recheck_chapters(
         root, manifest, files, cfg={}, chat=chat, **kw
     )
+
+
+def git_log_subjects(proj: Path) -> tuple[int, list[str]]:
+    """`git log --format=%s` inside proj: (returncode, subjects, newest
+    first). The returncode is asserted by every caller so a broken repo can
+    never masquerade as 'no commits' (same helper as test_git.py)."""
+    proc = subprocess.run(
+        ["git", "log", "--format=%s"], cwd=str(proj), capture_output=True,
+        encoding="utf-8", errors="replace", check=False,
+    )
+    return proc.returncode, proc.stdout.splitlines()
 
 
 # ---------------------------------------------------------------------- cases
@@ -528,6 +544,56 @@ def case_11_retry_wipe_sidecar() -> None:
               saved[0]["status"] == "pending", f"status={saved[0].get('status')}")
 
 
+def case_12_history_only_drift_commits() -> None:
+    """Regression: re-annotated notes identical to the sidecar leave
+    changed == 0, but tn.process still bumps times/last_order in
+    tn_history.json -- a tracked file changes on disk, so that
+    history-only drift alone must land exactly one 'tn: re-check notes'
+    commit instead of leaving the worktree dirty. The commit half is
+    skipped gracefully when no git binary is on PATH (test_git.py's
+    guard); the drift half always runs."""
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+        ])
+        # Pre-existing sidecar + history whose content matches the stub
+        # chat's payload exactly; last_order == the chapter's own order so
+        # the gap rule never suppresses the re-annotated note.
+        note = {"line": 1, "term": "清明", "note": "Tomb-sweeping festival."}
+        tn.save_notes(root, "Chapter_0001.md",
+                      ["Line zero body.", "Line one body."], [note])
+        seeded = {"清明": {"note": note["note"], "last_order": 0, "times": 1}}
+        write_lf(root / "tn_history.json",
+                 json.dumps(seeded, ensure_ascii=False, indent=2) + "\n")
+        history_bytes = (root / "tn_history.json").read_bytes()
+
+        if vcs.available():
+            vcs.ensure_repo(root)
+            vcs.commit(root, "fixture: baseline")
+        else:
+            print("note: git not found on PATH; skipping the commit checks")
+
+        chat = fake_chat_factory({"notes": [dict(note)]})
+        result = run(root, manifest, ["Chapter_0001.md"], chat)
+
+        check("12a drift: identical notes -> changed == 0",
+              result["scanned"] == 1 and result["changed"] == 0
+              and result["notes_before"] == 1 and result["notes_after"] == 1,
+              f"result={result}")
+        history = json.loads((root / "tn_history.json").read_text(encoding="utf-8"))
+        check("12b drift: history still changed on disk (times bumped)",
+              history.get("清明", {}).get("times") == 2
+              and (root / "tn_history.json").read_bytes() != history_bytes,
+              f"history={history}")
+        if vcs.available():
+            rc, subjects = git_log_subjects(root)
+            check("12c drift: exactly one 'tn: re-check notes' commit",
+                  rc == 0
+                  and subjects == ["tn: re-check notes", "fixture: baseline"],
+                  f"rc={rc} subjects={subjects!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -544,6 +610,7 @@ def main() -> int:
     case_9_legacy_failure_no_migration()
     case_10_bad_yaml_continues()
     case_11_retry_wipe_sidecar()
+    case_12_history_only_drift_commits()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

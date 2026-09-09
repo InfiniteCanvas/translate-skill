@@ -35,7 +35,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, cover, epub, fix, glossary, logger, pipeline, project, replace, review, tn, tn_recheck  # noqa: E402
+from lib import client, config, cover, epub, fix, glossary, logger, pipeline, project, replace, review, tn, tn_recheck, vcs  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
@@ -357,6 +357,15 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     except Exception as exc:  # noqa: BLE001 - cover problems must not abort init
         print(f"[warn] cover setup failed: {exc}")
 
+    # Version-control the finished scaffold: the repo captures every later
+    # action too (translate, review fixes, migrations), so its first commit
+    # is the project's birth record. --force on an existing repo keeps its
+    # history and labels the rewrite.
+    was_repo = vcs.is_repo(project_dir)
+    for line in vcs.ensure_repo(project_dir):
+        print(line)
+    vcs.commit(project_dir, "init: reinitialize project" if was_repo else "init: scaffold project")
+
     print("[ok] project initialized")
     print(f"     title:    {args.title}")
     print(f"     author:   {args.author}")
@@ -414,6 +423,7 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
     if removed:
         print(f"[sync] removed {len(removed)} chapter(s): {', '.join(removed)}")
     print(f"[ok] manifest: {len(manifest)} chapter(s)")
+    vcs.commit(project_dir, "sync: rescan source")
     return 0
 
 
@@ -503,6 +513,8 @@ def cmd_seed(args: argparse.Namespace, project_dir: Path) -> int:
         print(f"[warn] no catalogues matched (language={lang})")
         return 0
     print(f"[ok] seeded {total_added} terms ({total_skipped} skipped as duplicates) from {used} catalogue(s)")
+    if total_added:
+        vcs.commit(project_dir, f"seed: {total_added} glossary term(s)")
     return 0
 
 
@@ -569,15 +581,31 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     pending = [step for step in steps if step.VERSION > src_version]
     if not pending:
         print(f"[ok] project already at version {cur}")
+        # Best-effort repo backfill: a v003 whose `git init` failed once
+        # still stamped version 3, so this is the only remaining retry.
+        # Quiet by construction: [] on an existing repo, and gated on
+        # available() so git-less machines stay completely silent.
+        created = False
+        if not args.dry_run and vcs.available() and not vcs.is_repo(project_dir):
+            for line in vcs.ensure_repo(project_dir):
+                print(line)
+            created = True
         # Interactive maintenance pass, not a chain step: template drift
         # stays repairable on an already-current project -- the version
         # gate used to return here before --force could ever act. Clean
         # projects stay completely quiet (sync returns []); the version
         # never moves and config is deliberately NOT re-materialized.
         # migrations.common is bound by chain() above, which imported v001.
-        for line in migrations.common.sync_templates(
-                project_dir, TEMPLATES_SRC_DIR, args.dry_run, args.force, confirm):
+        maintenance = migrations.common.sync_templates(
+                project_dir, TEMPLATES_SRC_DIR, args.dry_run, args.force, confirm)
+        for line in maintenance:
             print(("[dry-run] " + line) if args.dry_run else line)
+        if not args.dry_run and (created or maintenance):
+            vcs.commit(
+                project_dir,
+                "migrate: refresh templates" if maintenance
+                else "migrate: backfill git repository",
+            )
         return 0
 
     for step in pending:
@@ -594,6 +622,9 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
             stamped = json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
             stamped["version"] = step.VERSION
             config.save_config(project_dir, stamped)
+            # One commit per applied step, after the stamp, so the commit
+            # captures the step's changes AND the new version together.
+            vcs.commit(project_dir, f"migrate: v{step.VERSION:03d} {step.DESCRIPTION}")
 
     verb = "would migrate" if args.dry_run else "migrated"
     print(f"[ok] {verb} project: version {src_version} -> {pending[-1].VERSION}")
@@ -626,6 +657,7 @@ def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
         json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print("[ok] style profile written to novel_info.json")
+    vcs.commit(project_dir, "profile: regenerate style profile")
     if (project_dir / "style.md").is_file():
         print("[warn] style.md exists and takes precedence over the profile - delete it to activate the profile")
     print(f"style_summary: {prof.get('style_summary', '')}")
@@ -835,6 +867,7 @@ def cmd_mark(args: argparse.Namespace, project_dir: Path) -> int:
         project.set_status(manifest, file, args.status)
         print(f"[ok] {file} -> {args.status}")
     project.save_manifest(project_dir, manifest)
+    vcs.commit(project_dir, "mark: " + ", ".join(f"{f} -> {args.status}" for f in files))
     return 0
 
 
@@ -864,7 +897,8 @@ def cmd_tn(args: argparse.Namespace, project_dir: Path) -> int:
 
 
 def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
-    """Post-hoc fixer driver: parse review-report.md and run every machine-
+    """Post-hoc fixer driver: parse the review report (config
+    review_report_path) and run every machine-
     applicable finding as a glossary subcommand. Pure Python, no LLM calls.
 
     Two parser modes share the writer's vocabulary through
@@ -877,7 +911,12 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError(
             "--fix applies to 'review glossary' only; not 'review fix'"
         )
-    report_path = Path(args.glossary)
+    cfg = _load_config_lenient(project_dir)
+    report_name = (
+        args.glossary if args.glossary is not None
+        else (cfg or {}).get("review_report_path", config.DEFAULTS["review_report_path"])
+    )
+    report_path = Path(report_name)
     if not report_path.is_absolute():
         report_path = (project_dir / report_path).resolve()
     if not report_path.is_file():
@@ -962,14 +1001,18 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
 def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
     # The "fix" subject reuses the same dispatcher so `--fix` (apply_fixes),
     # `--batch-size`, and the model pipeline stay attached to "glossary".
-    # The early branch MUST come before args.batch_size validation: the
+    # The early branch MUST come before batch-size validation: the
     # parse_report path doesn't need --batch-size and would fail validation
     # on the way through.
     if args.subject == "fix":
         return cmd_review_fix(args, project_dir)
-    if args.batch_size < 1:
-        raise CliError("--batch-size must be a positive integer")
     cfg = _load_config(project_dir)
+    batch_size = (
+        int(args.batch_size) if args.batch_size is not None
+        else int(cfg.get("review_batch_size", config.DEFAULTS["review_batch_size"]))
+    )
+    if batch_size < 1:
+        raise CliError("--batch-size must be a positive integer")
     _probe_glossary(project_dir)
     g = glossary.load(project_dir)
     if not g.get("terms"):
@@ -979,12 +1022,12 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
     # Header and per-batch progress print BEFORE/DURING the model calls --
     # a large glossary means minutes of silent LLM batches otherwise.
     terms = g.get("terms", [])
-    n_batches = -(-len(terms) // args.batch_size)
+    n_batches = -(-len(terms) // batch_size)
     print(
         f"[glossary] review: {len(terms)} entries"
-        + f" ({n_batches} model batch(es) of up to {args.batch_size})"
+        + f" ({n_batches} model batch(es) of up to {batch_size})"
     )
-    result = review.review_glossary(project_dir, cfg, args.batch_size)
+    result = review.review_glossary(project_dir, cfg, batch_size)
     batches = result["batches"]
     translations = {
         str(e.get("source", "")): str(e.get("translation", "")) for e in g.get("terms", [])
@@ -1033,6 +1076,10 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
         batch_errors=result["batch_errors"], cfg=cfg,
     )
     print(f"[glossary] report: {report_path}")
+    subject = "review: glossary audit"
+    if args.fix and applied:
+        subject += f" ({len(applied)} fix(es) applied)"
+    vcs.commit(project_dir, subject)
     if warns:
         _fail(f"glossary review: {warns} finding(s) need attention")
         return 1
@@ -1059,6 +1106,7 @@ def cmd_util(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError(str(exc)) from exc
     _print_replacement(result, args.dry_run, source)
     if not args.dry_run:
+        vcs.commit(project_dir, f"util replace: '{source}' -> '{target}'")
         _maybe_autobuild(project_dir, cfg, "util replace", result["changed"] > 0)
     return 0
 
@@ -1104,10 +1152,12 @@ def _cmd_glossary_replace(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"{prefix}[glossary] '{gz['source']}' translation: "
           f"'{gz['old']}' -> '{gz['new']}'{alt_note}")
     _print_replacement(result["chapters"], args.dry_run, gz["old"])
-    if not args.dry_run and not args.no_build:
-        _maybe_autobuild(
-            project_dir, cfg, "glossary replace", result["chapters"]["changed"] > 0
-        )
+    if not args.dry_run:
+        vcs.commit(project_dir, f"glossary replace: '{gz['source']}' -> '{gz['new']}'")
+        if not args.no_build:
+            _maybe_autobuild(
+                project_dir, cfg, "glossary replace", result["chapters"]["changed"] > 0
+            )
     return 0
 
 
@@ -1157,6 +1207,7 @@ def _cmd_glossary_set(args: argparse.Namespace, project_dir: Path) -> int:
     for field, old_v, new_v in changes:
         print(f"[glossary] set '{args.source}': {field} "
               f"{old_v!r} -> {new_v!r}")
+    vcs.commit(project_dir, f"glossary set: {args.source}")
     return 0
 
 
@@ -1187,6 +1238,7 @@ def _cmd_glossary_merge(args: argparse.Namespace, project_dir: Path) -> int:
         extras.append("definition filled")
     print(f"[glossary] merged '{removed_key}' into '{kept.get('source')}' "
           f"({', '.join(extras)})")
+    vcs.commit(project_dir, f"glossary merge: '{removed_key}' into '{kept.get('source')}'")
     return 0
 
 
@@ -1202,21 +1254,28 @@ def _cmd_glossary_retire(args: argparse.Namespace, project_dir: Path) -> int:
     if not removed:
         raise CliError(f"no glossary entry for '{args.source}'")
     print(f"[glossary] retired: {args.source}")
+    vcs.commit(project_dir, f"glossary retire: {args.source}")
     return 0
 
 
 def _cmd_glossary_search(args: argparse.Namespace, project_dir: Path) -> int:
     """Read-only lookup: case-insensitive substring plus fuzzy Levenshtein
-    (<= --max-distance, default 2) across source/variants/translation/
-    alt_translations. Exit 0 with matches, 1 with none (grep convention)."""
-    if args.max_distance < 0:
+    (<= --max-distance, default: config fuzzy_max_distance) across
+    source/variants/translation/alt_translations. Exit 0 with matches, 1 with
+    none (grep convention)."""
+    cfg = _load_config_lenient(project_dir)
+    max_distance = (
+        int(args.max_distance) if args.max_distance is not None
+        else int((cfg or {}).get("fuzzy_max_distance", config.DEFAULTS["fuzzy_max_distance"]))
+    )
+    if max_distance < 0:
         raise CliError("--max-distance must be >= 0")
     term = args.term.strip()
     if not term:
         raise CliError("search term must be non-empty")
     _probe_glossary(project_dir)
     g = glossary.load(project_dir)
-    result = glossary.search(g, term, max_distance=args.max_distance)
+    result = glossary.search(g, term, max_distance=max_distance)
     matches = result["matches"]
     retired = result["retired"]
 
@@ -1228,7 +1287,7 @@ def _cmd_glossary_search(args: argparse.Namespace, project_dir: Path) -> int:
         return 1
 
     n = len(matches)
-    note = f" (fuzzy distance <= {args.max_distance})" if args.max_distance > 0 else ""
+    note = f" (fuzzy distance <= {max_distance})" if max_distance > 0 else ""
     print(f"[glossary] {n} match{'es' if n != 1 else ''} for '{term}'{note}")
     for match in matches:
         entry = match["entry"]
@@ -1385,10 +1444,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("subject", choices=["glossary", "fix"], help="what to review")
     p.add_argument("--fix", action="store_true",
                    help="(subject=glossary only) apply guarded model-suggested fixes (translation/definition/category)")
-    p.add_argument("--batch-size", type=int, default=review.DEFAULT_BATCH_SIZE, metavar="N",
-                   help="(subject=glossary) entries per model review call (default 40)")
-    p.add_argument("--glossary", metavar="PATH", default="review-report.md",
-                   help="(subject=fix) path to the review report (default review-report.md)")
+    p.add_argument("--batch-size", type=int, default=None, metavar="N",
+                   help="(subject=glossary) entries per model review call (default: config review_batch_size)")
+    p.add_argument("--glossary", metavar="PATH", default=None,
+                   help="(subject=fix) path to the review report (default: config review_report_path)")
     p.add_argument("--dry-run", action="store_true",
                    help="(subject=fix) print each command without invoking")
     p.add_argument("--exit-on-error", action="store_true",
@@ -1473,8 +1532,8 @@ def _build_parser() -> argparse.ArgumentParser:
                                help="find entries by source or translation (substring + fuzzy)")
     pse.add_argument("term", metavar="TERM",
                      help="text to look for in source, variants, translation and alts")
-    pse.add_argument("--max-distance", type=int, default=2, metavar="N",
-                     help="max Levenshtein distance for fuzzy matches (default 2; 0 = substring only)")
+    pse.add_argument("--max-distance", type=int, default=None, metavar="N",
+                     help="max Levenshtein distance for fuzzy matches (default: config fuzzy_max_distance; 0 = substring only)")
     pse.set_defaults(func=cmd_glossary)
 
     p = sub.add_parser("build-epub", parents=[common], help="assemble translated chapters into an EPUB")

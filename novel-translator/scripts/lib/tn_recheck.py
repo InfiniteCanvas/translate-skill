@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
-from lib import client, pipeline, project, replace, tn
+from lib import client, pipeline, project, replace, tn, vcs
 from lib.pipeline import fill
 
 
@@ -90,6 +90,10 @@ def recheck_chapters(
     # Threaded across chapters in order and saved after each successfully
     # processed one, exactly like the pipeline's TN_DEDUP per chapter.
     history = tn.load_history(project_dir)
+    # tn.process bumps times/last_order for every kept note even when the
+    # note text is unchanged, so a history-only drift must count as a
+    # change or the run would dirty the worktree without committing.
+    history_before = json.dumps(history, sort_keys=True, ensure_ascii=False)
 
     scanned = 0
     changed = 0
@@ -213,6 +217,11 @@ def recheck_chapters(
         notes_after += len(kept)
         print(f"{prefix}[tn] {file}: {len(baseline)} before -> {len(kept)} after{diff}")
 
+    if not dry_run and (
+        changed
+        or history_before != json.dumps(history, sort_keys=True, ensure_ascii=False)
+    ):
+        vcs.commit(project_dir, "tn: re-check notes")
     return {
         "scanned": scanned,
         "changed": changed,

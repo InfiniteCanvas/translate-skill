@@ -1,4 +1,5 @@
-"""Post-hoc fixer driver: parse review-report.md and run each - Command:
+"""Post-hoc fixer driver: parse the review report (filename: config
+review_report_path, default review-report.md) and run each - Command:
 bullet through the skill's CLI as a subprocess. Supports two parser modes:
 
   1. Explicit: extract every "- Command: <cli-line>" line and shlex.split() it.
