@@ -341,6 +341,41 @@ def _cfg_value(cfg: dict, key: str) -> Any:
     raise PipelineError(f"missing config key: {key}")
 
 
+def _feedback_section(feedback: list[str], rejected_lines: list[str] | None,
+                      lo: int = 0, hi: int | None = None) -> str:
+    """Render the {{feedback_section}} block of the TRANSLATE prompt.
+
+    Bullets-only when no gate-rejected translation exists (first attempt,
+    or the failed gate was TRANSLATE itself with no earlier judged
+    attempt). With one, the rejected translation is appended in the same
+    numbered-line protocol as the source data, sliced to the chunk's
+    half-open source range [lo, hi) so a chunked retry sees exactly the
+    rejected lines corresponding to its input.
+    """
+    if not feedback:
+        return ""
+    bullets = "\n".join(f"- {item}" for item in feedback)
+    if not rejected_lines:
+        return (
+            "NOTE: A previous translation attempt was rejected. "
+            "Address every issue below and translate the entire chapter "
+            "again from scratch:\n" + bullets
+        )
+    chunk = rejected_lines[lo:hi]
+    numbered = json.dumps(
+        [{"i": lo + j + 1, "t": ln} for j, ln in enumerate(chunk)],
+        ensure_ascii=False,
+    )
+    return (
+        "NOTE: A previous translation attempt was rejected. Address every "
+        "issue below; your rejected attempt is reproduced after the feedback "
+        "(same line numbers as the source data) - fix the flagged problems "
+        "in it and return the full corrected translation:\n"
+        + bullets
+        + "\n[Rejected Previous Attempt]\n" + numbered
+    )
+
+
 # Fallback template source: the skill's shipped assets. Projects initialized
 # before a template was introduced lack a copy in their templates/ dir.
 _SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
@@ -637,6 +672,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             "title": None,
             "lines": None,
             "notes": None,
+            "rejected": None,
             "updated_at": "",
             "pipeline": STATE_VERSION,
         }
@@ -646,6 +682,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     state.setdefault("title", None)
     state.setdefault("lines", None)
     state.setdefault("notes", None)
+    state.setdefault("rejected", None)
 
     if state["stage"] not in STAGES:
         state["stage"] = "TRANSLATE"
@@ -743,15 +780,6 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         state["stage"] = next_stage
         save_state(paths["draft"], file, state)
 
-    def feedback_section() -> str:
-        if not state["feedback"]:
-            return ""
-        return (
-            "NOTE: A previous translation attempt was rejected. "
-            "Address every issue below and translate the entire chapter again from scratch:\n"
-            + "\n".join(f"- {item}" for item in state["feedback"])
-        )
-
     def balance_signals_section() -> str:
         """Render kept balance drift signals for the FAITH reviewer; empty
         when the counter found nothing worth flagging."""
@@ -840,7 +868,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                         chunk_background = background_section(continuity)
                     chunk_ctx = build_ctx(
                         [],
-                        feedback=feedback_section(),
+                        feedback=_feedback_section(state["feedback"], state["rejected"], lo, hi),
                         extra={
                             "source_lines": json.dumps(numbered, ensure_ascii=False),
                             "line_count": str(len(chunk)),
@@ -1177,6 +1205,13 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         # non-null lines would make a crash+resume re-validate the already
         # rejected lines and burn attempts without ever re-translating.
         state["stage"] = "TRANSLATE"
+        if lines:
+            # Snapshot the translation the gate just rejected so the retry
+            # prompt can show it, not just the feedback bullets. Kept when a
+            # later attempt dies in TRANSLATE (the last gate-judged
+            # translation stays the most useful reference); cleared
+            # implicitly when ASSEMBLE deletes the state file.
+            state["rejected"] = list(lines)
         save_state(paths["draft"], file, state)
         logger.log_event(project_dir, {"event": "attempt_failed", "chapter": file,
                                     "attempt": state["attempt"], "stage": failed_stage,

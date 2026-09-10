@@ -599,14 +599,17 @@ For `Chapter_0001.md` the pipeline creates:
 |---|---|
 | `Chapter_0001.md` | human-readable current translation draft (frontmatter + lines) |
 | `Chapter_0001.lines.json` | `{"title": "...", "lines": [...]}` — written per attempt as a debug artifact; nothing reads it back |
-| `Chapter_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "feedback": [...], "notes": [...], "updated_at", "pipeline"}` — `pipeline` is the state-schema version; `title`/`lines` hold the draft translation (crash-resume past TRANSLATE) |
+| `Chapter_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "feedback": [...], "notes": [...], "rejected": [...], "updated_at", "pipeline"}` — `pipeline` is the state-schema version; `title`/`lines` hold the draft translation (crash-resume past TRANSLATE) |
 
 `stage` is one of `TRANSLATE, VALIDATE, BALANCE, FAITH, GLOSSARY_EXPAND,
 TN_GENERATE, TN_DEDUP, ASSEMBLE`. `feedback` accumulates everything the gates
 rejected (faithfulness reasons, including genuine term drift flagged by
-balance signals) and is re-injected into
-every retry prompt. The state file is deleted after a chapter is assembled
-into `translated/`.
+balance signals) and is re-injected into every retry prompt. `rejected` holds
+the translated lines of the most recent gate-rejected attempt (null until a
+gate first fails) and is re-injected into every retry prompt alongside the
+feedback, numbered with the source's 1-based line numbers (line positions can
+diverge when the rejection itself was a line-count mismatch). The state file
+is deleted after a chapter is assembled into `translated/`.
 
 ## Translated chapter format (epub-builder contract)
 

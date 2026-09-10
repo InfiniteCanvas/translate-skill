@@ -206,8 +206,9 @@ sorted by frequency):
 7. **ASSEMBLE** — write `translated/Chapter_NNNN.md` as clean markdown (no
    footnote markers, no notes section) plus the `notes/<stem>.json` sidecar
    carrying the kept notes; auto-promote. On gate failure the chapter retried
-   up to `max_attempts` (default 3) with all accumulated feedback injected
-   into each retry; then it becomes `needs-review`.
+   up to `max_attempts` (default 3) with all accumulated feedback and the
+   rejected translation injected into each retry; then it becomes
+   `needs-review`.
 
 Gates pass → the chapter is accepted automatically. The user fixes residue by
 hand if any turns up later. Each finished chapter is committed —
