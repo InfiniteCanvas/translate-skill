@@ -16,7 +16,7 @@ Judge each glossary entry:
 - Each string in `variants` is a {{source_lang}}-script spelling of the source (e.g. traditional vs. simplified) — anything else parked there is kind `variant`.
 - Two glossary entries are the same term or one duplicates another — kind `duplicate`.
 - Different entries rendered by the same translation in a way that obscures distinct concepts — kind `collision`.
-- The term is not a named entity or a named action — the glossary keeps only expressions the story uses for one specific thing: a person, place, sect/organization, titled position, named artifact, named technique or skill, named cultivation realm or power state, or a fixed form of address (honorific). A common noun naming a class of things (e.g. 麦穗 "wheat stalks") does not belong in a glossary at all — kind `mundane`.
+- The term is not a named entity or a named action — the glossary keeps only expressions that name one specific thing: a person, place, sect/organization, named artifact, named technique or skill, named cultivation realm or power state, or a title bound to a name ("Empress Dowager Zhao", "Steward Li"). A common noun naming a class of things (e.g. 麦穗 "wheat stalks"), or a standalone title, kinship term, or other form of address without a name ("great grandmother") — wording that shifts with the speaker and the scene — does not belong in a glossary at all — kind `mundane`.
 - Do not flag entries with `origin: "seeded"` as `mundane`: seeded entries come from hand-curated catalogues of deliberate domain vocabulary.
 
 Also report cross-entry conflicts among the entries shown here — the same term split across entries, or distinct concepts collapsed into one shared rendering.

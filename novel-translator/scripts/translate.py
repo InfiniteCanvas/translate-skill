@@ -8,7 +8,8 @@
 Subcommands: init, ping, seed, migrate, profile, styles, status, sync,
 translate, retry, mark, tn, review, util, glossary, build-epub.
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
-had failures / glossary search found nothing, 2 usage or setup error.
+had failures / glossary search found nothing / glossary count below threshold,
+2 usage or setup error.
 """
 
 from __future__ import annotations
@@ -1112,7 +1113,7 @@ def cmd_util(args: argparse.Namespace, project_dir: Path) -> int:
 
 
 def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
-    """Dispatch on args.action: replace / set / merge / retire / search."""
+    """Dispatch on args.action: replace / set / merge / retire / search / count."""
     if args.action == "replace":
         return _cmd_glossary_replace(args, project_dir)
     if args.action == "set":
@@ -1123,6 +1124,8 @@ def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
         return _cmd_glossary_retire(args, project_dir)
     if args.action == "search":
         return _cmd_glossary_search(args, project_dir)
+    if args.action == "count":
+        return _cmd_glossary_count(args, project_dir)
     raise CliError(f"unknown glossary action: {args.action}")
 
 
@@ -1307,6 +1310,57 @@ def _cmd_glossary_search(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def _cmd_glossary_count(args: argparse.Namespace, project_dir: Path) -> int:
+    """Read-only significance check: count TERM (+ --variants) occurrences
+    across the source chapters and judge the total against the significance
+    threshold (default: config min_term_occurrences). Exit 0 at or above the
+    threshold, 1 below it."""
+    cfg = _load_config_lenient(project_dir)
+    threshold = (
+        int(args.min) if args.min is not None
+        else int((cfg or {}).get("min_term_occurrences", config.DEFAULTS["min_term_occurrences"]))
+    )
+    if threshold < 0:
+        raise CliError("--min must be >= 0")
+    term = args.term.strip()
+    if not term:
+        raise CliError("glossary count: TERM must be non-empty")
+    variants = [v.strip() for v in (args.variants or "").split(",") if v.strip()]
+
+    discovered = project.discover(project_dir)
+    chapters = None
+    if args.chapters:
+        # parse_range works on manifest-shaped dicts; build them from the
+        # freshly discovered chapters so --chapters resolves numbers, ranges
+        # and file names exactly like 'translate --chapters', then map the
+        # picked file names back to Chapter objects (discover order).
+        entries = [{"file": c.file, "number": c.number, "suffix": c.suffix}
+                   for c in discovered]
+        picked = set(pipeline.parse_range(args.chapters, entries))
+        chapters = [c for c in discovered if c.file in picked]
+    scanned = len(chapters or discovered)
+
+    # A scraped batch routinely contains a bad file (broken YAML frontmatter,
+    # non-UTF-8 bytes); surface it as a [FAIL] line with exit 2 instead of a
+    # traceback that exit code 1 would misread as "below threshold".
+    try:
+        total, hits = glossary.count_term_in_chapters(
+            project_dir, term, variants, chapters=chapters
+        )
+    except ValueError as exc:  # invalid YAML frontmatter / non-UTF-8 chapter
+        raise CliError(f"cannot count - {exc}") from exc
+    note = f" (+{len(variants)} variant(s))" if variants else ""
+    print(f"[glossary] count '{term}'{note} across {scanned} chapter(s)")
+    for file, count in hits:
+        print(f"[glossary] {file}: {count}")
+    print(f"[glossary] total: {total} occurrence(s) in {len(hits)}/{scanned} chapter(s)")
+    if total >= threshold:
+        print(f"[ok] '{term}' meets the significance threshold (min {threshold})")
+        return 0
+    print(f"[warn] '{term}' is below the significance threshold: {total} < {threshold}")
+    return 1
+
+
 def cmd_build_epub(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     novel_info = _load_novel_info(project_dir)
@@ -1465,7 +1519,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_util)
 
     p = sub.add_parser("glossary", parents=[common],
-                       help="glossary upkeep (replace | set | merge | retire | search)")
+                       help="glossary upkeep (replace | set | merge | retire | search | count)")
     gloss_sub = p.add_subparsers(dest="action", required=True, metavar="action")
 
     # Nested action parsers also accept --project (documented examples put it
@@ -1535,6 +1589,18 @@ def _build_parser() -> argparse.ArgumentParser:
     pse.add_argument("--max-distance", type=int, default=None, metavar="N",
                      help="max Levenshtein distance for fuzzy matches (default: config fuzzy_max_distance; 0 = substring only)")
     pse.set_defaults(func=cmd_glossary)
+
+    pc = gloss_sub.add_parser("count", parents=[nested],
+                              help="count a term's occurrences across the source chapters (significance check)")
+    pc.add_argument("term", metavar="TERM",
+                    help="source-language term to count")
+    pc.add_argument("--variants", metavar="LIST", default="",
+                    help="comma-separated alternative spellings/nicknames counted alongside TERM")
+    pc.add_argument("--chapters", metavar="SPEC", default=None,
+                    help="restrict counting to these chapters (same SPEC as 'translate --chapters')")
+    pc.add_argument("--min", type=int, default=None, metavar="N",
+                    help="significance threshold override (default: config min_term_occurrences)")
+    pc.set_defaults(func=cmd_glossary)
 
     p = sub.add_parser("build-epub", parents=[common], help="assemble translated chapters into an EPUB")
     p.add_argument("--skip-check", action="store_true", help="skip the epubcheck validation")

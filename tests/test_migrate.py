@@ -21,9 +21,12 @@ missing-project CliError, v002's direct add-only materialize (user-set
 values -- including ones already sitting under the new key names -- survive
 verbatim, a file missing exactly the new keys gets them reported and
 defaulted, a second identical run reports [] and writes nothing), and the
-real package's chain() == [v001, v002, v003] with current_version() == 3
-(v003's own behavior tests live in tests/test_git.py; only the chain
-shape is pinned here).
+real package's chain() == [v001, v002, v003, v004, v005] with
+current_version() == 5 (v003's own behavior tests live in
+tests/test_git.py; only the chain shape is pinned here, plus v004's
+direct add-only materialize of min_term_occurrences mirroring the v002
+cases, and v005's direct templates-only sync -- config.json never
+touched).
 
 cmd_migrate reads translate.TEMPLATES_SRC_DIR, migrations.chain, and (all
 as module-global lookups at call time) translate._confirm_template_refresh,
@@ -63,7 +66,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
-from migrations import v002  # noqa: E402
+from migrations import v002, v004, v005  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -145,7 +148,7 @@ def case_1_v001() -> None:
     --dry-run); materialize DEFAULTS preserving user values; stamp the
     chain-head version; second run no-op; the already-current maintenance
     pass (trap fixed)."""
-    HEAD = migrations.current_version()  # real chain head (3 since v003)
+    HEAD = migrations.current_version()  # real chain head (5 since v005)
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
@@ -485,25 +488,33 @@ def case_3_not_a_project() -> None:
 
 
 def case_4_real_chain() -> None:
-    """The real migrations package: exactly [v001, v002, v003], VERSIONs
-    [1, 2, 3], head version 3. v003's behavior is covered in
-    tests/test_git.py; only the chain shape is pinned here."""
+    """The real migrations package: exactly [v001, v002, v003, v004, v005],
+    VERSIONs [1, 2, 3, 4, 5], head version 5. v003's behavior is covered in
+    tests/test_git.py, v004's in case 7 and v005's in case 8; only the
+    chain shape is pinned here."""
     steps = migrations.chain()
-    check("4a real chain: three steps v001/v002/v003, VERSIONs 1, 2, 3",
-          len(steps) == 3 and [s.VERSION for s in steps] == [1, 2, 3]
-          and steps[0].__name__.endswith("v001")
-          and steps[1].__name__.endswith("v002")
-          and steps[2].__name__.endswith("v003"),
+    check("4a real chain: five steps v001..v005, VERSIONs 1, 2, 3, 4, 5",
+          len(steps) == 5 and [s.VERSION for s in steps] == [1, 2, 3, 4, 5]
+          and [s.__name__[-4:] for s in steps]
+          == ["v001", "v002", "v003", "v004", "v005"],
           f"steps={[getattr(s, '__name__', s) for s in steps]}")
-    check("4b real chain: all three steps expose DESCRIPTION and callable migrate",
-          len(steps) == 3
+    check("4b real chain: all five steps expose DESCRIPTION and callable migrate",
+          len(steps) == 5
           and all(isinstance(s.DESCRIPTION, str) for s in steps)
           and all(callable(s.migrate) for s in steps))
     check("4c real chain: v003's DESCRIPTION string is exact",
           steps[2].DESCRIPTION == "git history: materialize git_commits default, "
           "init the project repo",
           f"DESCRIPTION={steps[2].DESCRIPTION!r}")
-    check("4d real chain: current_version() == 3", migrations.current_version() == 3)
+    check("4c2 real chain: v004's DESCRIPTION string is exact",
+          steps[3].DESCRIPTION == "add min_term_occurrences "
+          "(novel-wide significance gate for glossary expansion)",
+          f"DESCRIPTION={steps[3].DESCRIPTION!r}")
+    check("4c3 real chain: v005's DESCRIPTION string is exact",
+          steps[4].DESCRIPTION == "restrict glossary terms to named entities, "
+          "named actions, and name-bound titles",
+          f"DESCRIPTION={steps[4].DESCRIPTION!r}")
+    check("4d real chain: current_version() == 5", migrations.current_version() == 5)
 
 
 def case_5_confirm_prompt() -> None:
@@ -640,6 +651,203 @@ def case_6_v002() -> None:
               snapshot(proj) == before)
 
 
+def case_7_v004() -> None:
+    """v004.migrate called directly (no cmd_migrate, no version stamping),
+    mirroring the v002 cases: materializing the novel-wide significance
+    gate default into a v3-era config.json is strictly add-only -- a
+    user-set min_term_occurrences survives verbatim, a file missing
+    exactly that key gets the "[ok] config: materialized 1 new key(s)"
+    report naming it, the step also syncs templates like v003 did, every
+    DEFAULTS key ends up on disk, the step itself never moves the version
+    stamp, and a second identical call reports [] and writes nothing."""
+    def make_v3_project(root: Path, name: str, user_sets_new_key: bool) -> Path:
+        """A file as v003 left it: every DEFAULTS key of that era present
+        (only min_term_occurrences is new in v004), a user-tuned
+        max_attempts, a minimal translator provider block, and version
+        stamped to 3."""
+        proj = root / name
+        proj.mkdir()
+        cfg = {k: v for k, v in config.DEFAULTS.items()
+               if k != "min_term_occurrences"}
+        cfg.update({
+            "source_lang": "zh",
+            "target_lang": "en",
+            "max_attempts": 9,
+            "version": 3,
+            "providers": {"translator": {"base_url": "http://mine:9999/v1",
+                                         "model": "m1"}},
+        })
+        if user_sets_new_key:
+            # Hand-set before upgrading: materialize must keep this
+            # verbatim, never fold in the new default 3.
+            cfg["min_term_occurrences"] = 7
+        (proj / "config.json").write_text(
+            json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        return proj
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+        # One shipped template: proves v004 chains sync_templates like
+        # v003 (missing copies are always added, never prompted).
+        (src / "extra.md").write_text("extra template\n", encoding="utf-8",
+                                      newline="\n")
+
+        # The add-only pin: the file already carries a user value under
+        # the new key's name.
+        proj = make_v3_project(root, "user-wins", user_sets_new_key=True)
+        lines = v004.migrate(proj, src)
+        check("7a v004: user value -> no materialize line (provider-normalize report)",
+              lines == ["[ok] config: provider blocks normalized "
+                        "(no new top-level keys)",
+                        "[ok] templates + extra.md (new)"], f"lines={lines!r}")
+        disk = json.loads((proj / "config.json").read_text(encoding="utf-8"))
+        check("7b v004: user-set min_term_occurrences 7 survives verbatim",
+              disk.get("min_term_occurrences") == 7,
+              f"min_term_occurrences={disk.get('min_term_occurrences')!r}")
+        check("7c v004: other user-set default survives (max_attempts == 9)",
+              disk.get("max_attempts") == 9, f"max_attempts={disk.get('max_attempts')!r}")
+
+        # A v3-era file missing exactly the new key: the report must name
+        # it, the default lands on disk, and the template sync runs too.
+        fresh = make_v3_project(root, "fresh", user_sets_new_key=False)
+        lines_f = v004.migrate(fresh, src)
+        check("7d v004: materializes exactly 1 new key, named in the report",
+              lines_f == ["[ok] config: materialized 1 new key(s): "
+                          "min_term_occurrences",
+                          "[ok] templates + extra.md (new)"],
+              f"lines={lines_f!r}")
+        disk_f = json.loads((fresh / "config.json").read_text(encoding="utf-8"))
+        check("7e v004: the new default lands on disk",
+              disk_f.get("min_term_occurrences")
+              == config.DEFAULTS["min_term_occurrences"] == 3,
+              f"min_term_occurrences={disk_f.get('min_term_occurrences')!r}")
+        missing = [k for k in config.DEFAULTS if k not in disk_f]
+        check("7f v004: every config.DEFAULTS key present on disk afterwards",
+              not missing, f"missing={missing}")
+        check("7g v004: the step itself never moves the version stamp",
+              disk_f.get("version") == 3, f"version={disk_f.get('version')!r}")
+
+        # Idempotency: re-running on the migrated file reports nothing and
+        # writes nothing (byte snapshot, stronger than mtime on Windows).
+        before = snapshot(fresh)
+        again = v004.migrate(fresh, src)
+        check("7h v004: second identical call returns []",
+              again == [], f"lines={again!r}")
+        check("7i v004: second call wrote nothing (byte snapshot equal)",
+              snapshot(fresh) == before)
+
+
+def case_8_v005() -> None:
+    """v005.migrate called directly (no cmd_migrate, no version stamping):
+    the templates-only step. A project whose config.json is already the
+    current merged form is never materialized (bytes unchanged, no
+    "[ok] config" line, version stamp untouched), and neither is a sparse
+    pre-merge file -- config.json is not v005's business at all. A template
+    missing from the project is copied ("[ok] templates + <name> (new)"),
+    one drifted from the shipped copy is refreshed with --force and kept
+    (with the non-interactive warning) when confirm=None, and a second run
+    over the refreshed result reports [] and writes nothing (idempotent)."""
+    def make_current_project(root: Path, name: str) -> Path:
+        """A project as any v004-era init/migration left it: config.json
+        already in the current merged form (every DEFAULTS key plus full
+        provider blocks, user-tuned max_attempts surviving the merge) with
+        the version stamped to 4, and a templates/ dir holding one
+        identical and one user-edited copy."""
+        proj = root / name
+        proj.mkdir()
+        (proj / "config.json").write_text(
+            json.dumps({
+                "source_lang": "zh",
+                "target_lang": "en",
+                "max_attempts": 9,
+                "version": 4,
+                "providers": {"translator": {"base_url": "http://mine:9999/v1",
+                                             "model": "m1"}},
+            }, indent=2) + "\n", encoding="utf-8")
+        # Fold to the merged form exactly as materialize_config would have.
+        config.save_config(proj, config.load_config(proj))
+        tdir = proj / "templates"
+        tdir.mkdir()
+        (tdir / "same.md").write_text("identical\n", encoding="utf-8",
+                                      newline="\n")
+        (tdir / "drift.md").write_text("user-edited drift\n", encoding="utf-8",
+                                       newline="\n")
+        return proj
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+        # Three shipped templates: one the project drifted on, one it
+        # already matches (stays silent), one it is missing entirely.
+        (src / "drift.md").write_text("shipped drift\n", encoding="utf-8",
+                                      newline="\n")
+        (src / "same.md").write_text("identical\n", encoding="utf-8",
+                                     newline="\n")
+        (src / "fresh.md").write_text("newly shipped\n", encoding="utf-8",
+                                      newline="\n")
+
+        # confirm=None: the drifted copy is kept with the non-interactive
+        # warning, the missing one is copied, the identical one is silent.
+        proj = make_current_project(root, "main")
+        cfg_bytes = (proj / "config.json").read_bytes()
+        lines = v005.migrate(proj, src)
+        check("8a v005: report is templates-only, config.json never touched",
+              lines == ["[warn] templates ~ drift.md differs from shipped - "
+                        "kept yours (non-interactive; --force to overwrite)",
+                        "[ok] templates + fresh.md (new)"], f"lines={lines!r}")
+        check("8b v005: config.json bytes unchanged (never materialized)",
+              (proj / "config.json").read_bytes() == cfg_bytes)
+        disk = json.loads((proj / "config.json").read_text(encoding="utf-8"))
+        check("8c v005: version stamp untouched",
+              disk.get("version") == 4, f"version={disk.get('version')!r}")
+        check("8d v005: drifted template kept, missing one copied",
+              (proj / "templates" / "drift.md").read_text(encoding="utf-8")
+              == "user-edited drift\n"
+              and (proj / "templates" / "fresh.md").read_text(encoding="utf-8")
+              == "newly shipped\n")
+
+        # --force: the drifted copy is refreshed silently to the shipped
+        # bytes; config.json still never moves.
+        lines_f = v005.migrate(proj, src, force=True)
+        check("8e v005: --force refreshes the drifted template",
+              lines_f == ["[ok] templates ~ drift.md refreshed (--force)"]
+              and (proj / "templates" / "drift.md").read_bytes()
+              == (src / "drift.md").read_bytes(), f"lines={lines_f!r}")
+        check("8f v005: --force still never touches config.json",
+              (proj / "config.json").read_bytes() == cfg_bytes)
+
+        # Idempotency: everything now matches the shipped copies, so a
+        # second run reports [] and writes nothing (byte snapshot, stronger
+        # than mtime on Windows).
+        before = snapshot(proj)
+        again = v005.migrate(proj, src)
+        check("8g v005: second identical call returns []",
+              again == [], f"lines={again!r}")
+        check("8h v005: second call wrote nothing (byte snapshot equal)",
+              snapshot(proj) == before)
+
+        # A sparse pre-merge config (missing DEFAULTS keys) proves the
+        # point negatively: v005 must not materialize config even where
+        # materialize_config would have something to do -- that was
+        # v001-v004's job, and the file stays byte-identical.
+        sparse = root / "sparse"
+        sparse.mkdir()
+        (sparse / "config.json").write_text(
+            json.dumps({"source_lang": "zh", "target_lang": "en",
+                        "providers": {}}, indent=2) + "\n", encoding="utf-8")
+        sparse_bytes = (sparse / "config.json").read_bytes()
+        lines_s = v005.migrate(sparse, src)
+        check("8i v005: a sparse pre-merge config stays untouched",
+              lines_s == ["[ok] templates + drift.md (new)",
+                          "[ok] templates + fresh.md (new)",
+                          "[ok] templates + same.md (new)"]
+              and (sparse / "config.json").read_bytes() == sparse_bytes,
+              f"lines={lines_s!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -651,6 +859,8 @@ def main() -> int:
     case_4_real_chain()
     case_5_confirm_prompt()
     case_6_v002()
+    case_7_v004()
+    case_8_v005()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

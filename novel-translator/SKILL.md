@@ -155,9 +155,12 @@ sorted by frequency):
    Drift signals (canonical rendering absent while the term appears ≥2× in
    the source) first run the same cleanup judgment as before (one
    `glossary`-provider call, `templates/glossary_cleanup.md`): KEEP named
-   entities and named actions (people/places/sects/techniques/titles/named
-   artifacts/named realms, plus honorifics), REMOVE class nouns (everyday
-   words, common nouns/verbs, generic objects, transient phrases).
+   entities and named actions (people/places/sects/techniques/named
+   artifacts/named realms, plus titles bound to a name — "Empress Dowager
+   Zhao", "Steward Li"; "Empress Dowager" alone never qualifies), REMOVE
+   class nouns (everyday words, common nouns/verbs, generic objects,
+   transient phrases, standalone titles, kinship terms, and other ways one
+   character addresses another — "great grandmother", "big brother").
    The retirement itself is DEFERRED: flagged terms are only dropped from
    `glossary.json` into its `retired` list after FAITH accepts the
    translation (applied alongside GLOSSARY_EXPAND; console: `[glossary]
@@ -174,11 +177,23 @@ sorted by frequency):
    inflections/hyphenations, generic words). FAILURE reasons become
    feedback.
 5. **GLOSSARY_EXPAND** — the model proposes new terms that are named
-   entities or named actions (names, places, orgs, titled positions, named
-   artifacts, techniques, named realms/states, honorifics — a term must
-   name one specific referent; class nouns like 麦穗 "wheat stalks" never
-   qualify); identical duplicates are skipped, conflicting
-   ones are merged by the model into the existing entry. Runs only on the
+   entities or named actions (personal names and their aliases, places,
+   orgs, named artifacts, technique & skill names, named realms/states,
+   plus titles bound to a name — "Empress Dowager Zhao" qualifies,
+   "Empress Dowager" alone does not; a term must name one specific
+   referent, and what one character calls another — kinship terms and
+   other ways of address such as "great grandmother", "big brother",
+   "my lord" — never qualifies, even for one specific person, any more
+   than class nouns like 麦穗 "wheat stalks"); identical duplicates are
+   skipped, conflicting
+   ones are merged by the model into the existing entry. A brand-new
+   proposal must also clear a significance gate: it is counted across the
+   whole source corpus and added only at >= `min_term_occurrences`
+   occurrences (default 3; 0 disables the gate, and an unreadable source
+   corpus fails it open), skipped below the floor with
+   `[glossary] skip '<src>' - <N> occurrence(s) across the novel (min
+   <M>)` — updates, merges, and nickname absorption of entries already
+   in the glossary are never gated. Runs only on the
    attempt FAITH just accepted — new terms lock in after the translation is
    accepted, never from a rejected one (a chapter that ends needs-review
    adds no terms). BALANCE's deferred retirements are applied here first,
@@ -321,7 +336,13 @@ background build too. Builds produce no git commits — `export/` and
   directory into a git repository (DESCRIPTION: `git history:
   materialize git_commits default, init the project repo`; the step
   itself commits nothing — the per-step commit after the stamp captures
-  the fully migrated state). A template that exists but
+  the fully migrated state). v004 materializes the `min_term_occurrences`
+  default the same add-only way (DESCRIPTION: `add min_term_occurrences
+  (novel-wide significance gate for glossary expansion)`). v005 rewords
+  the shipped glossary templates so glossary terms are restricted to
+  named entities, named actions, and titles bound to a name — templates
+  only, no config change (DESCRIPTION: `restrict glossary terms to named
+  entities, named actions, and name-bound titles`). A template that exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:
   `templates ~ <name>.md differs from the shipped copy - overwrite
@@ -355,9 +376,10 @@ background build too. Builds produce no git commits — `export/` and
   source language or equal to the source; unknown category; non-CJK text
   in a CJK entry's variants (info)) plus the `glossary` provider judging
   source-translation alignment, definitions, categories, cross-entry
-  conflicts, and mundane terms (entries that are not named entities or
-  named actions — class nouns like 麦穗 "wheat stalks" never belonged;
-  seeded/catalogue entries exempt) in batches of `review_batch_size`
+  conflicts, and mundane terms (entries that are not named entities,
+  named actions, or titles bound to a name — class nouns like 麦穗 "wheat
+  stalks" never belonged; seeded/catalogue entries exempt) in batches of
+  `review_batch_size`
   (default 40; `--batch-size N` overrides per run)
   through `templates/glossary_review.md`. Report-only: one
   `[glossary] warn|info` line per finding, never touching glossary.json
@@ -443,7 +465,7 @@ background build too. Builds produce no git commits — `export/` and
   bypassing the language filter. Every mutating action in this bullet
   commits — `seed: N glossary term(s)`, `review: glossary audit`,
   `glossary replace` / `util replace: '<src>' -> '<dst>'` — while
-  read-only `glossary search` commits nothing.
+  read-only `glossary search` / `glossary count` commit nothing.
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.
@@ -555,3 +577,13 @@ The batch-flow subcommands:
   against whole values or single words, with no separator special-casing
   (`grand elder` finds `grand-elder`); retired matches print `[glossary]
   retired match: ...` info lines. Exit 0 with matches, 1 none, 2 error.
+- `uv run "$SCRIPT" glossary count --project . TERM [--variants "A,B"]
+  [--chapters SPEC] [--min N]` — read-only significance check: counts
+  non-overlapping occurrences of TERM plus the comma-separated
+  `--variants` across the source chapters (per-chapter breakdown,
+  matched longest-first so a nickname inside a full name counts once);
+  `--chapters SPEC` restricts the count (same SPEC semantics as
+  `translate --chapters`) and `--min N` overrides the threshold
+  (default: config `min_term_occurrences`). Exit 0 at or above the
+  threshold, 1 below it (`[warn] '<term>' is below the significance
+  threshold: <total> < <min>`), 2 usage error.

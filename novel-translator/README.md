@@ -77,10 +77,17 @@ through uv automatically):
    version stamp untouched; a missing repository is backfilled), so
    `migrate --force` refreshes stale
    templates on current projects too. Each applied step is committed
-   once it lands (`migrate: vNNN <description>`), and the newest step,
-   v003, gives existing projects the git repository -- it materializes
-   the `git_commits` default and runs `git init` on the project, so even
-   a repo's first commit captures the fully migrated state.
+   once it lands (`migrate: vNNN <description>`). The newest step, v005,
+   rewords the shipped glossary templates so glossary terms are restricted
+   to named entities, named actions, and titles bound to a name
+   (DESCRIPTION: `restrict glossary terms to named entities, named
+   actions, and name-bound titles`; templates only -- no config change);
+   v004 materializes the
+   `min_term_occurrences` default (the novel-wide significance gate for
+   glossary expansion); v003 gives existing
+   projects the git repository -- it materializes the `git_commits`
+   default and runs `git init` on the project, so even a repo's first
+   commit captures the fully migrated state.
 
    Style is preset-based -- zero LLM calls at init. Pick with
    `--style <name|path>`: `classic` (default; standard xianxia/wuxia
@@ -180,6 +187,25 @@ the matching semantics):
     uv run scripts/translate.py glossary search --project . TERM \
         [--max-distance N]
 
+To sanity-check a term before hand-adding it -- or to see why expansion
+skipped a proposal -- count its occurrences across the source chapters
+(read-only):
+
+    uv run scripts/translate.py glossary count --project . TERM \
+        [--variants "A,B"] [--chapters SPEC] [--min N]
+
+    [glossary] count '裴小丫' (+1 variant(s)) across 42 chapter(s)
+    [glossary] Chapter_0003.md: 2
+    [glossary] total: 7 occurrence(s) in 2/42 chapter(s)
+    [ok] '裴小丫' meets the significance threshold (min 3)
+
+Automatic glossary expansion is gated the same way: a proposed brand-new
+term is only added when it occurs at least `min_term_occurrences`
+(default 3) times across the whole novel; updates to entries already in
+the glossary are never gated. Below the threshold the command prints
+`[warn] '<term>' is below the significance threshold: <total> < <min>`
+and exits 1.
+
 To audit entry quality (nothing else does -- the balance check only
 counts occurrences, cleanup only judges drift-flagged terms):
 
@@ -190,7 +216,8 @@ translation shared by several entries, translation still in the source
 language or equal to the source, unknown category, non-CJK text in a
 CJK entry's variants) plus the glossary model judging alignment,
 definitions, categories, cross-entry conflicts, and mundane entries --
-class nouns like 麦穗 "wheat stalks" that never belonged in the glossary
+class nouns like 麦穗 "wheat stalks", standalone titles, and kinship or
+address terms ("great grandmother") that never belonged in the glossary
 (seeded/catalogue entries exempt) -- in batches of 40 by default
 (`review_batch_size`; `--batch-size N` overrides for the run).
 Report-only by default -- one
@@ -349,6 +376,8 @@ The batch-flow subcommands:
     uv run scripts/translate.py glossary retire --project . --source X
     uv run scripts/translate.py glossary search --project . TERM \
         [--max-distance N]
+    uv run scripts/translate.py glossary count --project . TERM \
+        [--variants "A,B"] [--chapters SPEC] [--min N]
 
 `glossary set` applies any combination of `--translation`, `--definition`,
 `--category`, `--add-variant` / `--remove-variant`,
@@ -386,6 +415,16 @@ values or single words with
 no separator special-casing (`grand elder` finds `grand-elder`). Retired
 matches print `[glossary] retired match: ...` info lines. Exit 0 with
 matches, 1 none, 2 error.
+
+`glossary count TERM` is the read-only significance check: it counts
+non-overlapping occurrences of TERM plus any `--variants` (comma-separated)
+across the source chapters -- matched longest-first, so a nickname inside a
+full name counts once -- and prints a per-chapter breakdown.
+`--chapters SPEC` restricts the count with the same SPEC semantics as
+`translate --chapters`; `--min N` overrides the threshold (default: the
+`min_term_occurrences` config key). Exit 0 at or above the threshold, 1
+below it (`[warn] '<term>' is below the significance threshold: <total> <
+<min>`), 2 usage error.
 
 ## Shipping
 
@@ -444,6 +483,9 @@ details land in `logs/epub-build.log`.
   `glossary search --max-distance`.
 - `max_new_terms_per_chapter` (default 15) -- cap on new glossary terms
   proposed per chapter.
+- `min_term_occurrences` (default 3) -- minimum novel-wide occurrences
+  for glossary expansion to add a brand-new term (0 disables the gate);
+  also the default threshold for `glossary count`.
 - `max_notes_per_chapter` (default 10) -- cap on translator's notes
   generated per chapter.
 - `review_batch_size` (default 40) -- entries per `review glossary` model

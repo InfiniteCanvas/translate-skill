@@ -49,8 +49,8 @@ the initial `init: scaffold project` commit; migration `v003` backfills
 existing projects the same way. From then on every mutating action commits
 (`lib/vcs.commit` is the single gate), so `git log` doubles as a labeled
 backup of the project. `build-epub`, the auto-build, and `glossary search`
-produce nothing — `export/` and `logs/` are gitignored, and search is
-read-only.
+/ `glossary count` produce nothing — `export/` and `logs/` are gitignored,
+and search/count are read-only.
 
 `.gitignore`, written at repository creation:
 
@@ -157,6 +157,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
     "profile":     { "...same shape, temperature 0.3" }   // style-profile generation (--style auto / `profile` only)
   },
   "seed_min_count": 3,           // catalogue term must appear >= N times in source/ to seed
+  "min_term_occurrences": 3,     // minimum novel-wide occurrences for GLOSSARY_EXPAND to add a brand-new term (0 disables the gate); also the default threshold for `glossary count`
   "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; 0 renderings with src>=2 is a drift signal handed to the FAITH reviewer
   "fuzzy_max_distance": 2,       // Levenshtein tolerance for single-word targets of >= 5 letters; multi-word phrases match case-insensitively with hyphen/space equivalence plus an optional inflection on the final word
   "glossary_auto_cleanup": true, // balance drift signals: retire mundane terms via a cleanup judgment; kept signals go to the FAITH reviewer; false = skip the judgment
@@ -175,7 +176,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "log_llm_keep_runs": 5,        // one llm-*.jsonl per CLI invocation; older logs pruned to the newest N (by mtime)
   "review_batch_size": 40,       // entries per `review glossary` model review call; `--batch-size` overrides per run
   "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary`, read back by `review fix`)
-  "version": 3                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
+  "version": 5                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
 
@@ -510,7 +511,15 @@ config.json the same add-only way and runs the same template sync, then
 local-only git config — see Git history). The step itself commits
 nothing: `migrate` commits once per applied step AFTER stamping the
 config version, so the repo's first commit captures the fully migrated
-state. `--dry-run` writes nothing and reports
+state. `v004` (DESCRIPTION: `add min_term_occurrences (novel-wide
+significance gate for glossary expansion)`) materializes the
+`min_term_occurrences` default the same add-only way and runs the same
+template sync. `v005` (DESCRIPTION: `restrict glossary terms to named
+entities, named actions, and name-bound titles`) runs the template sync
+only — it adds no config key and never touches config.json, refreshing
+the shipped glossary templates so glossary terms are restricted to named
+entities, named actions, and titles bound to a name (idempotent).
+`--dry-run` writes nothing and reports
 `[git] would initialize the repository (a real run commits after each
 migrate step)` (cmd_migrate prefixes step lines with `[dry-run] `). A
 template that exists but differs from the shipped one is asked about
@@ -710,7 +719,13 @@ robust extraction as fallback:
 - GLOSSARY_EXPAND → `{"terms": [{"source", "variants": [str], "translation", "definition", "category"}]}` —
   a proposal whose source is contained in a known term's source, or contains
   it, with the same translation (nicknames/short forms) is absorbed as a
-  variant of the known entry, never a separate entry
+  variant of the known entry, never a separate entry. Brand-new-term
+  proposals then pass a client-side significance gate: each is counted
+  across the whole source corpus (all `source/Chapter_*.md` bodies joined)
+  and added only at >= `min_term_occurrences` occurrences (default 3; 0
+  disables the gate, and an unreadable corpus fails it open) — updates,
+  conflict-merges, and variant absorption of entries already in the
+  glossary are never gated; the model output schema itself is unchanged
 - FAITH → `{"verdict": "SUCCESS"|"FAILURE", "reasons": [str]}`
 - TN_GENERATE → `{"notes": [{"line": int, "term": str, "note": str, "threshold": "high"|"low"}]}` —
   the threshold is the model's self-assessed comprehension judgment

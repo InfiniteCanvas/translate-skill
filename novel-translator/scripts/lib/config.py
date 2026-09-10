@@ -7,6 +7,9 @@ PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "profile")
 
 DEFAULTS: dict = {
     "seed_min_count": 3,
+    # Minimum novel-wide occurrences for a glossary-expansion proposal to be
+    # added as a brand-new term (0 disables the gate).
+    "min_term_occurrences": 3,
     # Canonical glossary rendering must appear >= ceil(coverage*src) times;
     # zero occurrences with src >= 2 is the drift signal handed to the FAITH reviewer.
     "min_term_coverage": 0.25,

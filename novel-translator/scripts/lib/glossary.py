@@ -422,6 +422,33 @@ def count_in_text(entry: dict, text: str) -> int:
     return len(re.findall(pattern, text))
 
 
+def count_term_in_chapters(
+    project_dir: Path,
+    source: str,
+    variants: list[str] | None = None,
+    chapters: list[project.Chapter] | None = None,
+) -> tuple[int, list[tuple[str, int]]]:
+    """Count occurrences of a raw term (+ variants) across source chapters.
+
+    Chapters default to the project's discovered source files. Returns
+    (total, [(chapter file, count)] for chapters with at least one hit, in
+    order). Used by the CLI 'glossary count' action and the GLOSSARY_EXPAND
+    significance gate.
+    """
+    if chapters is None:
+        chapters = project.discover(project_dir)
+    total = 0
+    hits: list[tuple[str, int]] = []
+    entry = {"source": source, "variants": variants or []}
+    for chapter in chapters:
+        _frontmatter, body = project.read_chapter(chapter.path)
+        count = count_in_text(entry, body)
+        total += count
+        if count >= 1:
+            hits.append((chapter.file, count))
+    return total, hits
+
+
 def contextual(g: dict, body: str, cap: int) -> list[tuple[dict, int]]:
     """[(entry, count)] for entries appearing in body, sorted by count desc
     then source asc, capped at cap.

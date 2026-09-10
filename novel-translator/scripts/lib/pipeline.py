@@ -358,11 +358,15 @@ def _load_template(templates_dir: Path, name: str) -> str:
 def _apply_glossary_proposal(
     g: dict, proposal: Any, chapter_order: int, cfg: dict, merge_template: str,
     tag: str, project_dir: Path,
+    corpus: str = "", min_occurrences: int = 0,
 ) -> None:
     """Apply one glossary proposal: add, merge, or silently skip.
 
-    Raises on malformed proposals or merge failures; callers treat those as
-    non-fatal and skip the proposal.
+    A proposal for a brand-new term is gated on novel-wide significance: when
+    min_occurrences > 0 it is added only if the term occurs at least that
+    many times in `corpus` (updates/merges of existing entries are never
+    gated). Raises on malformed proposals or merge failures; callers treat
+    those as non-fatal and skip the proposal.
     """
     if not isinstance(proposal, dict):
         raise ValueError(f"proposal is {type(proposal).__name__}, expected an object")
@@ -403,6 +407,11 @@ def _apply_glossary_proposal(
             etr = str(term.get("translation", "")).strip().lower()
             if etr == tr.strip().lower() and esrc and (src in esrc or esrc in src):
                 union_variants(term, [src] + variants)
+                return
+        if min_occurrences > 0:
+            seen = glossary.count_in_text({"source": src, "variants": variants}, corpus)
+            if seen < min_occurrences:
+                print(f"{tag} [glossary] skip '{src}' - {seen} occurrence(s) across the novel (min {min_occurrences})")
                 return
         glossary.upsert(
             g,
@@ -1077,9 +1086,22 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 raw_terms = data.get("terms") if isinstance(data, dict) else None
                 if not isinstance(raw_terms, list):
                     raise ValueError("expected a 'terms' array")
-                for proposal in raw_terms[:max_terms]:
+                eligible = raw_terms[:max_terms]
+                min_occ = int(_cfg_value(cfg, "min_term_occurrences"))
+                corpus = ""
+                if min_occ > 0 and eligible:
                     try:
-                        _apply_glossary_proposal(g, proposal, chapter_order, cfg, tpl_glossary_merge, tag, project_dir)
+                        corpus = "\n".join(
+                            project.read_chapter(c.path)[1]
+                            for c in project.discover(project_dir)
+                        )
+                    except Exception as exc:  # noqa: BLE001 - fail open: expansion is auxiliary
+                        print(f"{tag} [warn] occurrence gate disabled - source corpus unreadable: {type(exc).__name__}: {exc}")
+                        min_occ = 0
+                for proposal in eligible:
+                    try:
+                        _apply_glossary_proposal(g, proposal, chapter_order, cfg, tpl_glossary_merge, tag, project_dir,
+                                                 corpus=corpus, min_occurrences=min_occ)
                     except PipelineError:
                         raise
                     except Exception as exc:  # noqa: BLE001 - skip this proposal only
