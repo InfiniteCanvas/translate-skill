@@ -752,6 +752,17 @@ accepted rendering — the balance check counts `translation` +
 `alt_translations` in the translated text, so listing the alternatives
 prevents false drift signals.
 
+Catalogue terms are curated for drift risk, mirroring the glossary
+qualification (GLOSSARY_EXPAND / glossary review): a term earns a slot only
+when its rendering genuinely competes — named cultivation realms and immortal
+ranks ("Golden Core" vs "Gold Core"), real organization names ("Beggars' Gang"
+vs "Beggar Clan"), archetype proper names, and world-defining set phrases that
+fork between transliteration and translation (江湖 "Jianghu" vs "the martial
+world"). Generic domain common nouns (灵石 "spirit stone", 修士 "cultivator")
+and speaker-dependent address terms (师兄 "Senior Brother") translate by
+context and do not belong in a catalogue; the glossary review's `mundane`
+exemption for `origin: "seeded"` entries covers exactly this curated set.
+
 Catalogues are split by domain, not just language: `zh` currently ships three
 (`zh-cultivation.json`, `zh-wuxia.json`, `zh-modern.json`). A catalogue for a
 new language (ja/ko) or a new domain is just another JSON file with the right
