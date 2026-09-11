@@ -254,7 +254,7 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
       "variants": ["築基"],              // alternative source-script forms AND nicknames/short forms rendered identically (e.g. 小丫 for 裴小丫); counted longest-first so overlaps don't double-count
       "alt_translations": ["Foundation Establishment stage"],
       "definition": "Second realm of cultivation; the cultivator's body is rebuilt.",
-      "category": "level",               // place|person|org|skill|technique|level|state|item|honorific|other
+      "category": "level",               // place|person|org|skill|technique|level|state|item|honorific|unit|other — `unit` is guide-only: injected into the translation prompt as a rendering guide, ignored by the balance checker (see below)
       "origin": "seeded",                // seeded (catalogue) | model (proposed during translation)
       "first_seen_chapter": 12           // order index where a model-proposed term first appeared
     }
@@ -268,7 +268,12 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
   (stemmed, case-insensitive word/phrase matching with Levenshtein tolerance 2
   for words ≥ 5 letters; exact substring match for CJK targets), cross-entry
   longest-first — a term nested inside a longer glossary compound (仙界
-  inside 修仙界) is credited to the longer term only. The check is FULLY
+  inside 修仙界) is credited to the longer term only. Entries whose
+  `category` is `unit` are skipped entirely — they are injected into the
+  translation prompt as rendering guides (contextual glossary), but their
+  short polysemous source strings (里 in 这里/里面, 寸 in idioms) make
+  counting pure noise, and emitting no signals also puts them beyond
+  auto-cleanup retirement. The check is FULLY
   ADVISORY: no condition fails a chapter. Falling below the usage floor
   `ceil(min_term_coverage × src)` (default 25%) is a console warning, and
   exceeding `src + max(2, src)` is logged only. Drift signals — the canonical
@@ -518,7 +523,14 @@ template sync. `v005` (DESCRIPTION: `restrict glossary terms to named
 entities, named actions, and name-bound titles`) runs the template sync
 only — it adds no config key and never touches config.json, refreshing
 the shipped glossary templates so glossary terms are restricted to named
-entities, named actions, and titles bound to a name (idempotent).
+entities, named actions, and titles bound to a name (idempotent). `v006`
+(DESCRIPTION: `transliterated measurement units: conversion-note guidance
+and the guide-only unit category`) is also templates-only — refreshing
+`tn_generate.md` (a transliterated measurement unit always warrants a
+conversion note at its first chapter occurrence) and `glossary_review.md`
+(`category: "unit"` entries are exempt from the mundane judgment), backing
+the catalogue-shipped unit terms that the balance checker ignores
+(idempotent).
 `--dry-run` writes nothing and reports
 `[git] would initialize the repository (a real run commits after each
 migrate step)` (cmd_migrate prefixes step lines with `[dry-run] `). A
@@ -763,7 +775,16 @@ and speaker-dependent address terms (师兄 "Senior Brother") translate by
 context and do not belong in a catalogue; the glossary review's `mundane`
 exemption for `origin: "seeded"` entries covers exactly this curated set.
 
-Catalogues are split by domain, not just language: `zh` currently ships three
-(`zh-cultivation.json`, `zh-wuxia.json`, `zh-modern.json`). A catalogue for a
+Catalogues are split by domain, not just language: `zh` currently ships four
+(`zh-cultivation.json`, `zh-wuxia.json`, `zh-modern.json`, `zh-units.json`).
+A catalogue for a
 new language (ja/ko) or a new domain is just another JSON file with the right
 `language` — `init`/`seed` pick up every catalogue matching `source_lang`.
+
+`zh-units.json` seeds the classical measurement units (里 "li", 斤 "catty",
+时辰 "shichen", …) as `category: "unit"` entries — the guide-only category:
+injected into the translation prompt to pin the transliteration (a
+`tn_generate.md` standing exception asks for a conversion note at the
+unit's first chapter occurrence), and ignored by the balance checker. The
+locative 里 (这里/里面) is a different word, so that entry deliberately
+carries no 裡/裏 variants — those are the locative's traditional forms.

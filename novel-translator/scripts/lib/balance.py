@@ -6,6 +6,14 @@ import re
 CJK_RE = re.compile(r"[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]")
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9'’\-]*")
 
+# Entries in these categories are injected into the translation prompt as
+# rendering guides (contextual glossary) but ignored by the checker: their
+# source strings are short and polysemous (里 in 这里/里面, 寸 in idioms), so
+# drift/usage counting for them is noise. They are catalogue-curated, and
+# because the checker emits no signals for them the cleanup judgment can
+# never retire them either.
+GUIDE_ONLY_CATEGORIES = frozenset({"unit"})
+
 
 def _stem(word: str) -> str:
     """Strip one common English inflection suffix, keeping a 3+ char stem.
@@ -104,6 +112,10 @@ def check(pairs: list[tuple[dict, int]],
     inside "Senior Brother"; generic English words: "plot", "system";
     noun-frequency mismatch between Chinese and English).
 
+    Entries whose category is in GUIDE_ONLY_CATEGORIES are skipped entirely:
+    they are injected into the translation prompt as rendering guides, and
+    counting their short polysemous source strings is noise.
+
     Returns (drift_signals, warnings, over_count):
     - drift_signals (advisory, surfaced to the FAITH reviewer, who owns the
       pass/fail verdict): one dict per term whose canonical rendering is
@@ -123,6 +135,8 @@ def check(pairs: list[tuple[dict, int]],
     warnings: list[str] = []
     over_count: list[str] = []
     for entry, src_count in pairs:
+        if entry.get("category") in GUIDE_ONLY_CATEGORIES:
+            continue
         tgt_count = count_in_target(entry, translated_lines, fuzzy_max)
         floor = max(1, math.ceil(src_count * min_coverage))
         extra = tgt_count - src_count

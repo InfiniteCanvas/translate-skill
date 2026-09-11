@@ -9,7 +9,8 @@ characters, so a shorter term shadowed by another entry's in-place match
 must receive no credit.
 
 Also pins count_in_text()'s unchanged per-entry substring semantics (used
-by seed()) and balance.check()'s drift-signal tier.
+by seed()) and balance.check()'s drift-signal tier, including the
+guide-only category skip (unit entries are never checked).
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
@@ -183,6 +184,39 @@ def case_8_balance_drift() -> None:
           len(drift_b) == 0, f"drift={drift_b}")
 
 
+def case_9_guide_only_units() -> None:
+    """balance.check skips guide-only categories (unit) on all three tiers:
+    a unit entry with src >= 2 and zero canonical renderings produces no
+    drift signal, no usage-floor warning, and no over-count, while the same
+    entry under any other category still drifts."""
+    li_unit = {"source": "里", "translation": "li", "category": "unit"}
+    li_other = {"source": "里", "translation": "li", "category": "other"}
+    # src 5x (locative 这里/里面 substrings inflate the count), rendering
+    # never appears: the exact shape that makes unit counting noise.
+    lines = [
+        "他在房间里走了十里路。",
+        "这里的风景不错，那里也一样。",
+        "里面没有人，外面全是人。",
+    ]
+    drift_u, warn_u, over_u = balance.check([(li_unit, 5)], lines)
+    check("9a balance: guide-only unit emits no drift signal",
+          drift_u == [], f"drift={drift_u}")
+    check("9b balance: guide-only unit emits no usage-floor warning",
+          warn_u == [], f"warn={warn_u}")
+    check("9c balance: guide-only unit emits no over-count",
+          over_u == [], f"over={over_u}")
+
+    drift_o, warn_o, _over_o = balance.check([(li_other, 5)], lines)
+    check("9d balance: same entry under another category still drifts",
+          len(drift_o) == 1 and drift_o[0].get("src_count") == 5
+          and drift_o[0].get("tgt_count") == 0, f"drift={drift_o} warn={warn_o}")
+
+    check("9e balance: GUIDE_ONLY_CATEGORIES contains unit",
+          "unit" in balance.GUIDE_ONLY_CATEGORIES
+          and isinstance(balance.GUIDE_ONLY_CATEGORIES, frozenset),
+          f"guide_only={balance.GUIDE_ONLY_CATEGORIES!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -196,6 +230,7 @@ def main() -> int:
     case_6_count_in_text_unchanged()
     case_7_cap_and_sort()
     case_8_balance_drift()
+    case_9_guide_only_units()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

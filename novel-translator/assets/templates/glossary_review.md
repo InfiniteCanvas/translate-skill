@@ -18,6 +18,7 @@ Judge each glossary entry:
 - Different entries rendered by the same translation in a way that obscures distinct concepts — kind `collision`.
 - The term is not a named entity or a named action — the glossary keeps only expressions that name one specific thing: a person, place, sect/organization, named artifact, named technique or skill, named cultivation realm or power state, or a title bound to a name ("Empress Dowager Zhao", "Steward Li"). A common noun naming a class of things (e.g. 麦穗 "wheat stalks"), or a standalone title, kinship term, or other form of address without a name ("great grandmother") — wording that shifts with the speaker and the scene — does not belong in a glossary at all — kind `mundane`.
 - Do not flag entries with `origin: "seeded"` as `mundane`: seeded entries come from hand-curated catalogues of deliberate domain vocabulary.
+- Do not flag entries with `category: "unit"` as `mundane` either: unit entries are guide-only reference vocabulary — injected into the translation prompt to pin a transliteration (li, catty) and ignored by the drift checker — not named entities. Their `translation` and `definition` (the conversion) are still judged like any other entry's.
 
 Also report cross-entry conflicts among the entries shown here — the same term split across entries, or distinct concepts collapsed into one shared rendering.
 

@@ -16,4 +16,6 @@ Identify cultural references, idioms, wordplay, allusions, honorific nuances, an
 
 Attach notes only where that comprehension threshold is real — do not annotate anything the reader can infer from context or that is common knowledge. When you are unsure, include the entry and mark its threshold "low"; low-threshold entries are discarded automatically.
 
+One standing exception: a measurement unit the translation keeps in transliteration (li, zhang, catty, shichen, and the like) always meets the threshold — a reader cannot picture distances, heights, or weights in an unfamiliar unit — so annotate its first occurrence in the chapter with a note giving its rough metric or Imperial equivalent.
+
 Return ONE JSON object: {"notes": [{"line": <0-based index into the Translation lines>, "term": "<the term in {{source_lang}} being annotated>", "note": "<1-2 sentence explanation in {{target_lang}}>", "threshold": "high" or "low"}]}; at most {{max_notes}} entries; return {"notes": []} if nothing qualifies.

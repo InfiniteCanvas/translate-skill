@@ -21,12 +21,13 @@ missing-project CliError, v002's direct add-only materialize (user-set
 values -- including ones already sitting under the new key names -- survive
 verbatim, a file missing exactly the new keys gets them reported and
 defaulted, a second identical run reports [] and writes nothing), and the
-real package's chain() == [v001, v002, v003, v004, v005] with
-current_version() == 5 (v003's own behavior tests live in
+real package's chain() == [v001, v002, v003, v004, v005, v006] with
+current_version() == 6 (v003's own behavior tests live in
 tests/test_git.py; only the chain shape is pinned here, plus v004's
 direct add-only materialize of min_term_occurrences mirroring the v002
 cases, and v005's direct templates-only sync -- config.json never
-touched).
+touched; v006 is templates-only like v005, so only its chain shape and
+exact DESCRIPTION are pinned).
 
 cmd_migrate reads translate.TEMPLATES_SRC_DIR, migrations.chain, and (all
 as module-global lookups at call time) translate._confirm_template_refresh,
@@ -66,7 +67,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
-from migrations import v002, v004, v005  # noqa: E402
+from migrations import v002, v004, v005, v006  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -148,7 +149,7 @@ def case_1_v001() -> None:
     --dry-run); materialize DEFAULTS preserving user values; stamp the
     chain-head version; second run no-op; the already-current maintenance
     pass (trap fixed)."""
-    HEAD = migrations.current_version()  # real chain head (5 since v005)
+    HEAD = migrations.current_version()  # real chain head (6 since v006)
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
@@ -488,18 +489,18 @@ def case_3_not_a_project() -> None:
 
 
 def case_4_real_chain() -> None:
-    """The real migrations package: exactly [v001, v002, v003, v004, v005],
-    VERSIONs [1, 2, 3, 4, 5], head version 5. v003's behavior is covered in
-    tests/test_git.py, v004's in case 7 and v005's in case 8; only the
-    chain shape is pinned here."""
+    """The real migrations package: exactly [v001, v002, v003, v004, v005,
+    v006], VERSIONs [1, 2, 3, 4, 5, 6], head version 6. v003's behavior is
+    covered in tests/test_git.py, v004's in case 7 and v005's in case 8;
+    only the chain shape is pinned here."""
     steps = migrations.chain()
-    check("4a real chain: five steps v001..v005, VERSIONs 1, 2, 3, 4, 5",
-          len(steps) == 5 and [s.VERSION for s in steps] == [1, 2, 3, 4, 5]
+    check("4a real chain: six steps v001..v006, VERSIONs 1, 2, 3, 4, 5, 6",
+          len(steps) == 6 and [s.VERSION for s in steps] == [1, 2, 3, 4, 5, 6]
           and [s.__name__[-4:] for s in steps]
-          == ["v001", "v002", "v003", "v004", "v005"],
+          == ["v001", "v002", "v003", "v004", "v005", "v006"],
           f"steps={[getattr(s, '__name__', s) for s in steps]}")
-    check("4b real chain: all five steps expose DESCRIPTION and callable migrate",
-          len(steps) == 5
+    check("4b real chain: all six steps expose DESCRIPTION and callable migrate",
+          len(steps) == 6
           and all(isinstance(s.DESCRIPTION, str) for s in steps)
           and all(callable(s.migrate) for s in steps))
     check("4c real chain: v003's DESCRIPTION string is exact",
@@ -514,7 +515,11 @@ def case_4_real_chain() -> None:
           steps[4].DESCRIPTION == "restrict glossary terms to named entities, "
           "named actions, and name-bound titles",
           f"DESCRIPTION={steps[4].DESCRIPTION!r}")
-    check("4d real chain: current_version() == 5", migrations.current_version() == 5)
+    check("4c4 real chain: v006's DESCRIPTION string is exact",
+          steps[5].DESCRIPTION == "transliterated measurement units: "
+          "conversion-note guidance and the guide-only unit category",
+          f"DESCRIPTION={steps[5].DESCRIPTION!r}")
+    check("4d real chain: current_version() == 6", migrations.current_version() == 6)
 
 
 def case_5_confirm_prompt() -> None:

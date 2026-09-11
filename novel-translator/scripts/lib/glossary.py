@@ -34,7 +34,7 @@ except ImportError:  # imported with scripts/lib directly on sys.path
     import project, balance
 
 CATEGORIES = ("place", "person", "org", "skill", "technique", "level",
-              "state", "item", "honorific", "other")
+              "state", "item", "honorific", "unit", "other")
 
 
 def empty() -> dict:

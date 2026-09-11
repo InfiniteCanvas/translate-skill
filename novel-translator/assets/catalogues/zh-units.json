@@ -1,0 +1,15 @@
+{
+  "language": "zh",
+  "name": "Chinese classical measurement units",
+  "terms": [
+    {"source": "里", "variants": [], "translation": "li", "category": "unit", "definition": "Classical Chinese distance unit of about half a kilometer."},
+    {"source": "丈", "variants": [], "translation": "zhang", "category": "unit", "definition": "Classical Chinese length unit of about 3.3 meters, used for heights, depths, and weapon reach."},
+    {"source": "尺", "variants": [], "translation": "chi", "category": "unit", "definition": "Classical Chinese length unit of about 33 centimeters, traditionally the foot."},
+    {"source": "寸", "variants": [], "translation": "cun", "category": "unit", "definition": "Classical Chinese length unit of about 3.3 centimeters, traditionally the inch."},
+    {"source": "仞", "variants": [], "translation": "ren", "category": "unit", "definition": "Classical Chinese height unit of about seven chi, used for cliffs and abysses."},
+    {"source": "斤", "variants": [], "translation": "catty", "alt_translations": ["jin"], "category": "unit", "definition": "Classical Chinese weight unit of about half a kilogram."},
+    {"source": "亩", "variants": ["畝"], "translation": "mu", "category": "unit", "definition": "Classical Chinese area unit of about 667 square meters, roughly a sixth of an acre."},
+    {"source": "斛", "variants": [], "translation": "hu", "category": "unit", "definition": "Classical Chinese dry-measure unit of about 50 liters."},
+    {"source": "时辰", "variants": ["時辰"], "translation": "shichen", "category": "unit", "definition": "One of the twelve double-hours of the traditional Chinese day, two hours apiece."}
+  ]
+}

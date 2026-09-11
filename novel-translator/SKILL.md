@@ -148,7 +148,12 @@ sorted by frequency):
    hyphen/space equivalence plus an optional inflection on the final word;
    cross-entry longest-first, so a term nested inside a longer glossary
    compound — e.g. 仙界 inside 修仙界 — is credited to the longer term
-   only). Fully advisory: nothing fails here. All three tiers (drift
+   only). Fully advisory: nothing fails here. Entries in a guide-only
+   category (`unit`) are skipped entirely — they are injected into the
+   translation prompt as rendering guides, but their short polysemous
+   source strings (里 in 这里/里面, 寸 in idioms) make counting pure noise,
+   and emitting no signals also puts them beyond auto-cleanup retirement.
+   All three tiers (drift
    signals, under-use warnings, over-count info) surface as
    `balance_advisory` trace events; only drift signals and under-use
    warnings also print console `[warn]`s (over-count is trace-only).
@@ -343,7 +348,13 @@ background build too. Builds produce no git commits — `export/` and
   the shipped glossary templates so glossary terms are restricted to
   named entities, named actions, and titles bound to a name — templates
   only, no config change (DESCRIPTION: `restrict glossary terms to named
-  entities, named actions, and name-bound titles`). A template that exists but
+  entities, named actions, and name-bound titles`). v006 backs the
+  guide-only unit category — templates only, no config change
+  (DESCRIPTION: `transliterated measurement units: conversion-note
+  guidance and the guide-only unit category`): `tn_generate.md` gains a
+  standing exception requiring a conversion note at a transliterated
+  unit's first chapter occurrence, and `glossary_review.md` exempts
+  `category: "unit"` entries from the mundane judgment. A template that exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:
   `templates ~ <name>.md differs from the shipped copy - overwrite
@@ -379,7 +390,8 @@ background build too. Builds produce no git commits — `export/` and
   source-translation alignment, definitions, categories, cross-entry
   conflicts, and mundane terms (entries that are not named entities,
   named actions, or titles bound to a name — class nouns like 麦穗 "wheat
-  stalks" never belonged; seeded/catalogue entries exempt) in batches of
+  stalks" never belonged; seeded/catalogue and `category: "unit"`
+  entries exempt) in batches of
   `review_batch_size`
   (default 40; `--batch-size N` overrides per run)
   through `templates/glossary_review.md`. Report-only: one

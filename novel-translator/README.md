@@ -77,7 +77,13 @@ through uv automatically):
    version stamp untouched; a missing repository is backfilled), so
    `migrate --force` refreshes stale
    templates on current projects too. Each applied step is committed
-   once it lands (`migrate: vNNN <description>`). The newest step, v005,
+   once it lands (`migrate: vNNN <description>`). The newest step, v006,
+   backs the guide-only unit category (DESCRIPTION: `transliterated
+   measurement units: conversion-note guidance and the guide-only unit
+   category`; templates only -- no config change): `tn_generate.md` asks
+   for a conversion note at a transliterated unit's first chapter
+   occurrence, and `glossary_review.md` exempts `category: "unit"` entries
+   from the mundane judgment; v005
    rewords the shipped glossary templates so glossary terms are restricted
    to named entities, named actions, and titles bound to a name
    (DESCRIPTION: `restrict glossary terms to named entities, named
@@ -218,7 +224,7 @@ CJK entry's variants) plus the glossary model judging alignment,
 definitions, categories, cross-entry conflicts, and mundane entries --
 class nouns like 麦穗 "wheat stalks", standalone titles, and kinship or
 address terms ("great grandmother") that never belonged in the glossary
-(seeded/catalogue entries exempt) -- in batches of 40 by default
+(seeded/catalogue and `category: "unit"` entries exempt) -- in batches of 40 by default
 (`review_batch_size`; `--batch-size N` overrides for the run).
 Report-only by default -- one
 `[glossary] warn|info '<source>' -> '<translation>': <kind> - <reason>`
