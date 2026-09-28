@@ -47,7 +47,7 @@ def load(project_dir: Path) -> dict:
     glossary_path = Path(project_dir) / "glossary.json"
     if not glossary_path.is_file():
         return empty()
-    data = json.loads(glossary_path.read_text(encoding="utf-8"))
+    data = json.loads(glossary_path.read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict):
         raise ValueError(f"{glossary_path} must contain a JSON object")
     data.setdefault("terms", [])
@@ -509,7 +509,7 @@ def render_contextual(pairs: list[tuple[dict, int]]) -> str:
 def load_catalogue(path: Path) -> dict:
     """Load a seed catalogue JSON: {"language", "name", "terms": [...]}."""
     catalogue_path = Path(path)
-    data = json.loads(catalogue_path.read_text(encoding="utf-8"))
+    data = json.loads(catalogue_path.read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict) or not isinstance(data.get("terms"), list):
         raise ValueError(f"catalogue {catalogue_path.name} must be a JSON object with a 'terms' list")
     return data

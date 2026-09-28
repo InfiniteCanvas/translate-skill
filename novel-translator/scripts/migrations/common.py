@@ -29,7 +29,7 @@ def materialize_config(project_dir: Path, dry_run: bool) -> list[str]:
     DEFAULTS underneath the file's own contents). Returns [] when the file is
     already the merged form, so no-op runs stay quiet."""
     project_dir = Path(project_dir)
-    raw = json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
+    raw = json.loads((project_dir / "config.json").read_text(encoding="utf-8-sig"))
     merged = config.load_config(project_dir)
     if raw == merged:
         return []

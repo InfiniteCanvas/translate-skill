@@ -137,11 +137,15 @@ def check(pairs: list[tuple[dict, int]],
     for entry, src_count in pairs:
         if entry.get("category") in GUIDE_ONLY_CATEGORIES:
             continue
+        # Hand-added entries may be minimal (source only, no translation
+        # yet): without a canonical rendering there is nothing to check.
+        if not entry.get("translation"):
+            continue
         tgt_count = count_in_target(entry, translated_lines, fuzzy_max)
         floor = max(1, math.ceil(src_count * min_coverage))
         extra = tgt_count - src_count
-        term = entry['source']
-        expected = entry['translation']
+        term = entry.get("source", "")
+        expected = entry.get("translation", "")
         if src_count >= 2 and tgt_count == 0:
             drift_signals.append({
                 "source": term,

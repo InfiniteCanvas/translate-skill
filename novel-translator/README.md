@@ -219,8 +219,10 @@ counts occurrences, cleanup only judges drift-flagged terms):
 
 Two tiers: deterministic heuristics (duplicate/variant collisions, a
 translation shared by several entries, translation still in the source
-language or equal to the source, unknown category, non-CJK text in a
-CJK entry's variants) plus the glossary model judging alignment,
+language or equal to the source, a missing category (info -- legal for
+minimal hand-added entries, other stages treat it as "other"), unknown
+category, non-CJK text in a CJK entry's variants) plus the glossary
+model judging alignment,
 definitions, categories, cross-entry conflicts, and mundane entries --
 class nouns like 麦穗 "wheat stalks", standalone titles, and kinship or
 address terms ("great grandmother") that never belonged in the glossary
@@ -231,8 +233,9 @@ Report-only by default -- one
 line per finding plus a summary; `--fix` opts in to guarded fixes
 (model-suggested fixes only: direct model-tier warn findings, or a
 suggestion the merge borrowed onto a heuristic finding;
-translation/definition/category only; validated; conflicting suggestions
-skipped; prints `[glossary] fixed ...` per change). Mundane findings carry
+translation/definition/category only; validated; conflicting and
+already-applied suggestions skipped (re-runs are safe); prints
+`[glossary] fixed ...` per change). Mundane findings carry
 no suggestion -- `--fix` never retires them; their `- Command:` bullet
 does. Exit 0 clean or info-only, 1 warns remain, 2 usage error. Cost
 ceil(N/review_batch_size) model calls.

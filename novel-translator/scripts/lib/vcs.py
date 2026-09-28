@@ -8,10 +8,11 @@ paths that churn without meaning (draft state, llm traces, rebuildable epubs)
 are ignored via the .gitignore written here.
 
 Everything degrades quietly: no git binary, no repository (e.g. a test
-fixture), or `git_commits: false` in config.json simply turns commit() into a
-no-op -- a versioning problem must never break a translation run, mirroring
-how epubcheck tolerates a missing docker. All failures surface as one
-[warn] line at most.
+fixture), `git_commits: false` in config.json, or a foreign repository
+(a pre-existing repo without the skill .gitignore) simply turns commit()
+into a no-op -- a versioning problem must never break a translation run,
+mirroring how epubcheck tolerates a missing docker. All failures surface as
+one [warn] line at most.
 """
 
 import json
@@ -35,6 +36,10 @@ export/
 # git config; never touches the user's global settings.
 GIT_USER_NAME = "novel-translator"
 GIT_USER_EMAIL = "novel-translator@localhost"
+
+# Foreign-repo warnings are deduped per directory: commit() fires after every
+# mutation, so without this a run inside a foreign repo would warn per commit.
+_FOREIGN_REPO_WARNED: set[str] = set()
 
 
 def available() -> bool:
@@ -69,7 +74,7 @@ def _enabled(project_dir: Path) -> bool:
     is_repo gate has already stopped us)."""
     try:
         raw = json.loads(
-            (Path(project_dir) / "config.json").read_text(encoding="utf-8")
+            (Path(project_dir) / "config.json").read_text(encoding="utf-8-sig")
         )
     except (OSError, ValueError):
         return True
@@ -112,12 +117,26 @@ def commit(project_dir: Path, subject: str) -> str | None:
     """Stage every change and commit it as `subject`; print on progress.
 
     Silent no-op (returns None) when git is unavailable, the directory is not
-    a repository, config.json disables git_commits, or the working tree is
-    already clean -- so call sites fire after every mutation unconditionally.
-    On success prints `[git] committed <sha> <subject>` and returns the short
-    sha. A failed commit prints one [warn] line and never raises."""
+    a repository, config.json disables git_commits, the repository is foreign
+    (pre-existing, no skill .gitignore), or the working tree is already clean
+    -- so call sites fire after every mutation unconditionally. On success
+    prints `[git] committed <sha> <subject>` and returns the short sha. A
+    failed commit prints one [warn] line and never raises."""
     project_dir = Path(project_dir)
     if not available() or not is_repo(project_dir) or not _enabled(project_dir):
+        return None
+    # A repo without our .gitignore was not created by ensure_repo(): it is
+    # the user's own repository, and `git add -A` would sweep their pending
+    # changes into a skill-labeled commit.
+    if not (project_dir / ".gitignore").exists():
+        if str(project_dir) not in _FOREIGN_REPO_WARNED:
+            _FOREIGN_REPO_WARNED.add(str(project_dir))
+            print(
+                f"[warn] git: skipping commits - {project_dir} looks like a "
+                "foreign repository (no skill .gitignore); add the skill "
+                ".gitignore to let the skill manage it, or set "
+                "git_commits: false"
+            )
         return None
     try:
         added = _run(project_dir, ["add", "-A"])

@@ -54,7 +54,7 @@ def _command_tag() -> str:
 
 def _keep_count(project_dir: Path) -> int:
     try:
-        cfg = json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
+        cfg = json.loads((project_dir / "config.json").read_text(encoding="utf-8-sig"))
         return max(0, int(cfg.get("log_llm_keep_runs", _DEFAULT_KEEP)))
     except (OSError, ValueError, TypeError):
         return _DEFAULT_KEEP

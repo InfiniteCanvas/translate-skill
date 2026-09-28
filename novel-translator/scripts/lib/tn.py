@@ -42,16 +42,22 @@ def _history_path(project_dir: Path) -> Path:
 
 
 def load_history(project_dir: Path) -> dict:
-    """Load tn_history.json ({} when missing or malformed)."""
+    """Load tn_history.json ({} when missing or malformed; discarding a
+    malformed file prints a [warn] so the reset is never silent)."""
     path = _history_path(project_dir)
     if not path.is_file():
         return {}
     try:
-        with path.open("r", encoding="utf-8") as fh:
+        with path.open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        reason = type(exc).__name__
+    else:
+        reason = None if isinstance(data, dict) else type(data).__name__
+    if reason is not None:
+        print(f"[warn] tn_history.json unreadable ({reason}) - resetting note-gap tracking")
         return {}
-    return data if isinstance(data, dict) else {}
+    return data
 
 
 def save_history(project_dir: Path, h: dict) -> None:
@@ -68,19 +74,26 @@ def notes_path(project_dir: Path, file: str) -> Path:
 def load_notes(project_dir: Path, file: str) -> list[dict]:
     """Read the notes sidecar for a chapter; [] when missing or malformed
     (load_history's leniency: a broken sidecar means "no notes", never a
-    crashed epub build)."""
+    crashed epub build -- discarding a malformed sidecar prints a [warn])."""
     path = notes_path(project_dir, file)
     if not path.is_file():
         return []
     try:
-        with path.open("r", encoding="utf-8") as fh:
+        with path.open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        reason = type(exc).__name__
+    else:
+        notes = data.get("notes") if isinstance(data, dict) else None
+        reason = (
+            None
+            if isinstance(notes, list) and all(isinstance(note, dict) for note in notes)
+            else "invalid notes"
+        )
+    if reason is not None:
+        print(f"[warn] {path.name} unreadable ({reason}) - treating as no notes")
         return []
-    notes = data.get("notes") if isinstance(data, dict) else None
-    if isinstance(notes, list) and all(isinstance(note, dict) for note in notes):
-        return notes
-    return []
+    return notes
 
 
 def save_notes(project_dir: Path, file: str, lines: list[str], notes: list) -> list[dict]:

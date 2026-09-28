@@ -75,7 +75,11 @@ project directory into a git repository (console
 `init: scaffold project` commit; every later mutating action commits too
 (subject table in `references/file-formats.md` § Git history). On a
 machine without git, init still succeeds but prints
-`[warn] git not found; project history disabled`.
+`[warn] git not found; project history disabled`, and in a project dir
+that is already a repository without the skill `.gitignore` (a foreign
+repo) commits are skipped, with one
+`[warn] git: skipping commits - ...` line per run (details in
+file-formats.md § Git history).
 Refuses to overwrite an existing project unless `--force`.
 
 Optional: `--cover-url` to point at a cover image directly.
@@ -153,6 +157,8 @@ sorted by frequency):
    translation prompt as rendering guides, but their short polysemous
    source strings (里 in 这里/里面, 寸 in idioms) make counting pure noise,
    and emitting no signals also puts them beyond auto-cleanup retirement.
+   Entries with no `translation` yet (minimal hand-added stubs) are skipped
+   too — without a canonical rendering there is nothing to enforce.
    All three tiers (drift
    signals, under-use warnings, over-count info) surface as
    `balance_advisory` trace events; only drift signals and under-use
@@ -385,9 +391,11 @@ background build too. Builds produce no git commits — `export/` and
   ENTRY quality — `uv run "$SCRIPT" review glossary --project .` does: a
   deterministic heuristic tier (cross-entry duplicate/variant collisions;
   a translation shared by other entries (info); translation still in the
-  source language or equal to the source; unknown category; non-CJK text
-  in a CJK entry's variants (info)) plus the `glossary` provider judging
-  source-translation alignment, definitions, categories, cross-entry
+  source language or equal to the source; a missing category (info — legal
+  for minimal hand-added entries, other stages treat it as 'other');
+  unknown category; non-CJK text in a CJK entry's variants (info)) plus
+  the `glossary` provider judging source-translation alignment,
+  definitions, categories, cross-entry
   conflicts, and mundane terms (entries that are not named entities,
   named actions, or titles bound to a name — class nouns like 麦穗 "wheat
   stalks" never belonged; seeded/catalogue and `category: "unit"`
@@ -400,7 +408,8 @@ background build too. Builds produce no git commits — `export/` and
   applies only model-suggested fixes (direct model-tier warn findings,
   or a suggestion the merge borrowed onto a heuristic finding), to
   translation/definition/category only, validated (valid category, no
-  source-language text), skipping conflicting suggestions (console:
+  source-language text), skipping conflicting suggestions and re-run no-ops —
+  a suggestion already equal to the live value (console:
   `[glossary] fixed '<source>': <field> '<old>' -> '<new>'` per change).
   Mundane findings carry no suggestion — `--fix` never retires them; the
   report's `glossary retire` Command bullet does (see Bulk review fixes).
@@ -489,7 +498,9 @@ background build too. Builds produce no git commits — `export/` and
 - Script output is UTF-8 (CJK terms appear in glossary/replace/search
   lines) with stable `[ok]`/`[FAIL]`/`[warn]`/`[git]` markers prefixing
   status lines — parse the markers, don't guess. Exit code is non-zero when any
-  chapter ends `needs-review`.
+  chapter ends `needs-review`. Usage/setup errors — bad arguments, missing
+  files, corrupt project JSON — print one `[FAIL]` line and exit 2, never a
+  raw traceback.
 
 ## Translator's-note re-evaluation
 

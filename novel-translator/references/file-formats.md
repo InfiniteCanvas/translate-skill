@@ -3,7 +3,9 @@
 Schemas and contracts for every file in a translation project. The scripts in
 `scripts/lib/` are the source of truth for behavior; this file is the source of
 truth for *shapes* the user (or the agent) is expected to read, edit, or
-hand-fix.
+hand-fix. Every project JSON file — and the markdown files read back by the
+tool (chapters, review-report.md) — is decoded BOM-tolerant (`utf-8-sig`), so
+a UTF-8 BOM left by a hand editor never breaks a read.
 
 ## Project layout
 
@@ -48,9 +50,12 @@ as part of scaffolding (console: `[git] initialized repository`) and makes
 the initial `init: scaffold project` commit; migration `v003` backfills
 existing projects the same way. From then on every mutating action commits
 (`lib/vcs.commit` is the single gate), so `git log` doubles as a labeled
-backup of the project. `build-epub`, the auto-build, and `glossary search`
-/ `glossary count` produce nothing — `export/` and `logs/` are gitignored,
-and search/count are read-only.
+backup of the project. A project directory that is already a repository
+WITHOUT the skill `.gitignore` is treated as foreign: commit() refuses to
+touch it — `git add -A` would sweep the user's own pending changes into a
+skill-labeled commit (see the console lines below). `build-epub`, the
+auto-build, and `glossary search` / `glossary count` produce nothing —
+`export/` and `logs/` are gitignored, and search/count are read-only.
 
 `.gitignore`, written at repository creation:
 
@@ -94,7 +99,14 @@ Console lines — `[git]` is part of the stable marker vocabulary:
   actually happened. A clean tree, a disabled `git_commits`, a non-repo
   directory, or a missing git binary is a SILENT no-op: a versioning
   problem never breaks a translation run, mirroring epubcheck's
-  missing-docker tolerance.
+  missing-docker tolerance. A foreign repository is also a no-op — but
+  not a silent one (next bullet).
+- `[warn] git: skipping commits - <dir> looks like a foreign repository
+  (no skill .gitignore); add the skill .gitignore to let the skill manage
+  it, or set git_commits: false` — the project dir is already a repository
+  without the skill `.gitignore`, i.e. the user's own; commit() refuses so
+  their pending changes are never swept into a skill-labeled commit.
+  Printed at most once per directory per process.
 - `[warn] git not found; project history disabled` — init / migrate on a
   machine without git.
 - `[warn] git init failed: <reason>` / `[warn] git add failed: <reason>` /
@@ -176,7 +188,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "log_llm_keep_runs": 5,        // one llm-*.jsonl per CLI invocation; older logs pruned to the newest N (by mtime)
   "review_batch_size": 40,       // entries per `review glossary` model review call; `--batch-size` overrides per run
   "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary`, read back by `review fix`)
-  "version": 5                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
+  "version": 6                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
 
@@ -273,7 +285,9 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
   translation prompt as rendering guides (contextual glossary), but their
   short polysemous source strings (里 in 这里/里面, 寸 in idioms) make
   counting pure noise, and emitting no signals also puts them beyond
-  auto-cleanup retirement. The check is FULLY
+  auto-cleanup retirement. An entry with no `translation` yet (a minimal
+  hand-added stub) is skipped too — without a canonical rendering there is
+  nothing to count. The check is FULLY
   ADVISORY: no condition fails a chapter. Falling below the usage floor
   `ceil(min_term_coverage × src)` (default 25%) is a console warning, and
   exceeding `src + max(2, src)` is logged only. Drift signals — the canonical
@@ -304,7 +318,10 @@ free-form reason text. The `--fix`
   `skipped: [{source, field, reason}]`.
 - Hand-editing entries between runs is safe and encouraged — the file is read
   fresh before every chapter. Hand-added entries need at least `source` and
-  `translation`. `glossary replace` (which sets `translation` and rewrites
+  `translation`. A corrupt glossary.json fails whatever command reads it
+  cleanly (one `[FAIL]` line, exit 2 — never a traceback); `status` degrades
+  instead to a `glossary: [warn] unreadable (...)` row in place of the term
+  count. `glossary replace` (which sets `translation` and rewrites
   the old rendering in translated chapters) prunes that rendering from the
   entry's `alt_translations` by default — a stale alt would keep the balance
   check counting the old rendering as valid, masking drift; `--keep-alt`
@@ -570,7 +587,10 @@ earlier, different chapter suppresses. A note recorded in the SAME chapter
 a later one annotated the term re-annotates it (the reader hits the earlier
 chapter first). `last_order`/`times` are managed by the tool. Notes the model
 self-assessed as `threshold: "low"` are dropped before all of this unless
-`tn_keep_low_confidence` is true.
+`tn_keep_low_confidence` is true. A missing file is simply an empty history;
+a malformed one is discarded — note-gap tracking restarts empty, never a
+crash — with one `[warn] tn_history.json unreadable (<reason>) - resetting
+note-gap tracking` line so the reset is never silent.
 
 ## notes/<stem>.json (translator's-note sidecar)
 
@@ -601,7 +621,10 @@ numbers — the stored index wins when its line still starts with the
 anchor, else the first line starting with the anchor wins, else the note
 is dropped with a warning. Entries are validated on save (`line` in range,
 non-empty string `term`/`note`); a save that keeps zero notes DELETES the
-sidecar (absent = no notes). `updated_at` is managed by the tool.
+sidecar (absent = no notes). `updated_at` is managed by the tool. A
+malformed sidecar is treated as "no notes" — the epub build never crashes on
+one — announced by `[warn] <stem>.json unreadable (<reason>) - treating as
+no notes`.
 
 ## Draft artifacts (`draft/`)
 
@@ -621,7 +644,10 @@ the translated lines of the most recent gate-rejected attempt (null until a
 gate first fails) and is re-injected into every retry prompt alongside the
 feedback, numbered with the source's 1-based line numbers (line positions can
 diverge when the rejection itself was a line-count mismatch). The state file
-is deleted after a chapter is assembled into `translated/`.
+is deleted after a chapter is assembled into `translated/`. A state file that
+fails to parse restarts the chapter from TRANSLATE — one
+`[warn] <stem>.state.json unreadable (<reason>) - restarting chapter state`
+line, then business as usual.
 
 ## Translated chapter format (epub-builder contract)
 
@@ -749,6 +775,18 @@ robust extraction as fallback:
 - style profile → `{"style_summary": str, "background": str}` (--style auto
   only; stored in novel_info.json)
 - glossary merge → single entry `{"source", "translation", "definition", "category"}`
+- glossary cleanup → `{"decisions": [{"source": str, "keep": bool, "reason": str}, ...]}` —
+  BALANCE's drift-signal judgment (`templates/glossary_cleanup.md`); a
+  `keep: false` decision retires the source as mundane (deferred until FAITH
+  accepts the translation; the reason falls back to "mundane term"), and
+  decisions naming sources outside the signal list — or duplicating one —
+  are ignored
+- glossary review → `{"findings": [{"source": str, "kind": str, "severity":
+  str, "reason": str, "suggestion": str, "action": str}, ...]}` — the
+  `review glossary` model tier (`templates/glossary_review.md`); an unknown
+  `kind` is read as "other" and an unknown `severity` as "info", findings
+  naming a source outside the reviewed batch are dropped, and a finding
+  without a usable reason is skipped
 
 ## Catalogues (`assets/catalogues/` in the skill)
 

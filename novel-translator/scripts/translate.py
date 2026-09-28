@@ -113,7 +113,7 @@ def _maybe_autobuild(project_dir: Path, cfg: dict | None, reason: str, changed: 
         print("[warn] auto epub build skipped - novel_info.json not found")
         return
     try:
-        novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+        novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
         epub_path, ok, _output = epub.build(project_dir, novel_info, cfg, False)
         if ok:
             print(f"[epub-auto] build ok (after {reason}): {epub_path}")
@@ -132,7 +132,7 @@ def _load_novel_info(project_dir: Path) -> dict:
     if not paths["novel_info"].is_file():
         raise CliError(f"{paths['novel_info']} not found - run 'init' first")
     try:
-        return json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+        return json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
         raise CliError(f"novel_info.json is corrupt: {exc}") from exc
 
@@ -267,7 +267,7 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     if args.background:
         novel_info["background"] = args.background
     paths["novel_info"].write_text(
-        json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     print(f"[init] wrote {paths['novel_info'].name}")
 
@@ -346,7 +346,7 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
             novel_info["style_profile"] = prof
             # Rewrite novel_info.json (same pretty format as written earlier in init).
             paths["novel_info"].write_text(
-                json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
             )
             print(f"[init] style profile: {prof.get('style_summary', '')[:100]}")
         except Exception as exc:  # noqa: BLE001 - profile problems must not abort init
@@ -393,7 +393,7 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
     # Novel-level backfill defaults come from novel_info.json; a missing or
     # corrupt file just means nothing to backfill, never a sync failure.
     try:
-        info = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+        info = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):  # json.JSONDecodeError is a ValueError
         info = {}
     if not isinstance(info, dict):
@@ -560,7 +560,7 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     confirm = _confirm_template_refresh if sys.stdin.isatty() else None
 
     try:
-        raw = json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
+        raw = json.loads((project_dir / "config.json").read_text(encoding="utf-8-sig"))
         src_version = int(raw.get("version", 0))
     except (OSError, TypeError, ValueError) as exc:
         raise CliError(
@@ -620,7 +620,7 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
             # the RAW file so the step's own config edits survive: a crash
             # mid-chain resumes at the failed step instead of re-running
             # completed ones.
-            stamped = json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
+            stamped = json.loads((project_dir / "config.json").read_text(encoding="utf-8-sig"))
             stamped["version"] = step.VERSION
             config.save_config(project_dir, stamped)
             # One commit per applied step, after the stamp, so the commit
@@ -655,7 +655,7 @@ def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
 
     novel_info["style_profile"] = prof
     paths["novel_info"].write_text(
-        json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     print("[ok] style profile written to novel_info.json")
     vcs.commit(project_dir, "profile: regenerate style profile")
@@ -719,15 +719,20 @@ def cmd_status(args: argparse.Namespace, project_dir: Path) -> int:
     for status in project.STATUSES:
         count = sum(1 for e in manifest if e.get("status") == status)
         print(f"{status:>13}: {count}")
-    g = glossary.load(project_dir)
-    print(f"{'glossary':>13}: {len(g.get('terms', []))} terms")
+    try:
+        g = glossary.load(project_dir)
+        print(f"{'glossary':>13}: {len(g.get('terms', []))} terms")
+    except (OSError, ValueError) as exc:
+        print(f"{'glossary':>13}: [warn] unreadable ({exc})")
     history = tn.load_history(project_dir)
     print(f"{'tn_history':>13}: {len(history)} terms")
 
     if paths["novel_info"].is_file():
         try:
-            novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+            novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
+            novel_info = {}
+        if not isinstance(novel_info, dict):
             novel_info = {}
         # Mirror the pipeline's style resolution: style.md (tier 1, only when
         # it has a non-empty body) -> style_profile.style_summary -> default.
@@ -782,8 +787,8 @@ def cmd_translate(args: argparse.Namespace, project_dir: Path) -> int:
         if args.next < 1:
             raise CliError("--next must be a positive integer")
         ordered = sorted(manifest, key=lambda e: int(e.get("order", 0)))
-        # needs-review chapters are deliberately excluded: they wait for a
-        # human/agent decision, then `retry` or `mark`.
+        # Without --force, needs-review chapters are excluded: they wait for
+        # a human/agent decision, then `retry` or `mark`.
         if force:
             pool = [e["file"] for e in ordered]
         else:
@@ -1624,6 +1629,9 @@ def main(argv: list[str] | None = None) -> int:
         _fail(str(exc))
         return 2
     except pipeline.PipelineError as exc:
+        _fail(str(exc))
+        return 2
+    except ValueError as exc:
         _fail(str(exc))
         return 2
     except KeyboardInterrupt:

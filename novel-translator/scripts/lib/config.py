@@ -124,7 +124,7 @@ def load_config(project_dir: Path) -> dict:
         raise FileNotFoundError(
             f"config.json not found in project directory '{project_dir}' (expected at {cfg_path})"
         )
-    user = json.loads(cfg_path.read_text(encoding="utf-8"))
+    user = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     if not isinstance(user, dict):
         raise ValueError(f"{cfg_path} must contain a JSON object")
     cfg = _deep_merge(DEFAULTS, user)

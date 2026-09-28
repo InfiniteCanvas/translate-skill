@@ -42,9 +42,8 @@ _NOOP_SIGNALS = (
     "nothing to do",
     "nothing to apply",
     "no-op",
-    "already retired",
+    "already retired",  # also catches "merge: 'X' already retired" no-ops
     "already translates as",
-    "merge: ",  # "glossary merge: 'X' already retired" style no-op line
 )
 
 # Exact, full-line templates for heuristic reason lines. Anchored, no
@@ -83,7 +82,9 @@ def parse_report(path: Path) -> tuple[list[CommandSpec], int]:
     commands are extracted in either mode (so the CLI exits 2 with a
     clear message).
     """
-    text = path.read_text(encoding="utf-8")
+    # utf-8-sig: the report is hand-editable, so tolerate a BOM -- it would
+    # otherwise break the line-1 anchored ^- Command: / ^### [N] regexes.
+    text = path.read_text(encoding="utf-8-sig")
     lines = text.splitlines()
 
     findings_count = sum(1 for ln in lines if _HEADING_RE.match(ln))

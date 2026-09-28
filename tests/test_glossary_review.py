@@ -7,9 +7,13 @@ source must be in the batch), the heuristic-wins merge with borrowed
 suggestions, per-batch failure resilience, and apply_fixes()' full guard
 matrix (origin/severity/kind gating, conflict detection, category and
 target-language validation, in-place mutation preserving every other
-field). The model-tier "mundane" kind gets its own case: it survives
-normalization, maps to `glossary retire`, never auto-fixes, and always
-stays outstanding.
+field) plus its already-set skip: a suggestion equal to the entry's
+current value (compared after strip) counts under skipped with reason
+"already set" -- nothing applied, the entry not mutated, glossary.json
+byte-unchanged -- while a genuinely different suggestion on the same
+entry still applies. The model-tier "mundane" kind gets its own case: it
+survives normalization, maps to `glossary retire`, never auto-fixes, and
+always stays outstanding.
 
 Model-tier cases stub lib.client.chat via review.client (the call site is
 a module-attribute lookup, so the swap takes effect); no network, no
@@ -677,6 +681,62 @@ def case_11_mundane() -> None:
               "outstanding_filter verdict wrong")
 
 
+def case_12_apply_fixes_already_set() -> None:
+    """A suggestion equal to the entry's current value is the re-run story:
+    counted under skipped with reason 'already set', the entry not mutated,
+    nothing appended to applied (so glossary.json is never rewritten). A
+    whitespace-padded equal suggestion compares after strip; a genuinely
+    different suggestion on the same entry still applies."""
+    with tempfile.TemporaryDirectory() as td:
+        project_dir = Path(td)
+        entry = {"source": "灵根", "variants": [], "translation": "spirit root",
+                 "category": "skill"}
+        write_glossary(project_dir, [entry])
+        before = (project_dir / "glossary.json").read_bytes()
+
+        fixes = review.apply_fixes(project_dir, [
+            {"source": "灵根", "kind": "mistranslation", "severity": "warn",
+             "reason": "suggests the value the entry already has",
+             "suggestion": "spirit root", "origin": "model"},
+        ])
+        ap, sk = fixes["applied"], fixes["skipped"]
+        check("12a already-set: nothing applied",
+              ap == [], f"applied={ap}")
+        check("12b already-set: skipped with reason 'already set'",
+              sk == [{"source": "灵根", "field": "translation",
+                      "reason": "already set"}], f"skipped={sk}")
+        g = glossary.load(project_dir)
+        check("12c already-set: entry not mutated",
+              g["terms"] == [entry], f"terms={g['terms']}")
+        check("12d already-set: glossary.json byte-unchanged",
+              (project_dir / "glossary.json").read_bytes() == before)
+
+        # whitespace-padded equal suggestion: the comparison strips first
+        fixes = review.apply_fixes(project_dir, [
+            {"source": "灵根", "kind": "mistranslation", "severity": "warn",
+             "reason": "padded re-run of the same suggestion",
+             "suggestion": "  spirit root  ", "origin": "model"},
+        ])
+        check("12e already-set: whitespace-padded suggestion still 'already set'",
+              fixes["applied"] == []
+              and fixes["skipped"] == [{"source": "灵根",
+                                        "field": "translation",
+                                        "reason": "already set"}],
+              f"fixes={fixes}")
+
+        # control: a genuinely different suggestion on the same entry applies
+        fixes = review.apply_fixes(project_dir, [
+            {"source": "灵根", "kind": "mistranslation", "severity": "warn",
+             "reason": "a genuinely different rendering",
+             "suggestion": "spiritual root", "origin": "model"},
+        ])
+        check("12f already-set: different suggestion still applies",
+              len(fixes["applied"]) == 1 and not fixes["skipped"]
+              and fixes["applied"][0]["old"] == "spirit root"
+              and fixes["applied"][0]["new"] == "spiritual root",
+              f"fixes={fixes}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -693,6 +753,7 @@ def main() -> int:
     case_9_apply_fixes_guards()
     case_10_report()
     case_11_mundane()
+    case_12_apply_fixes_already_set()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

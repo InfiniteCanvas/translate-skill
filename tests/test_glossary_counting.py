@@ -10,7 +10,11 @@ must receive no credit.
 
 Also pins count_in_text()'s unchanged per-entry substring semantics (used
 by seed()) and balance.check()'s drift-signal tier, including the
-guide-only category skip (unit entries are never checked).
+guide-only category skip (unit entries are never checked) and the minimal
+hand-entry skip: an entry with a source (and variants) but NO translation
+that occurs in the source text produces no signal on any tier (there is no
+canonical rendering to enforce, and no KeyError), while a normal entry over
+the same text still drifts.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
@@ -217,6 +221,39 @@ def case_9_guide_only_units() -> None:
           f"guide_only={balance.GUIDE_ONLY_CATEGORIES!r}")
 
 
+def case_10_minimal_hand_entry() -> None:
+    """A minimal hand entry (source + variants, no translation) occurring in
+    the source text is skipped on every balance tier -- no drift signal, no
+    usage-floor warning, no over-count, and no KeyError -- while a normal
+    entry counted over the same text still produces its drift signal."""
+    minimal = {"source": "灵根", "variants": []}
+    normal = {"source": "仙界", "translation": "Immortal Realm"}
+    g = make_glossary(minimal, normal)
+    body = "他觉醒了灵根。灵根万中无一。\n他飞升去了仙界。仙界广阔。"
+    pairs = glossary.contextual(g, body, cap=10)
+    c = counts(pairs)
+    check("10a minimal: both entries counted in the source text",
+          c.get("灵根") == 2 and c.get("仙界") == 2, f"pairs={c}")
+    # Neither rendering appears in the translation: the normal entry must
+    # drift (the regression guard), the translation-less one must stay
+    # silent on all three tiers.
+    lines = [
+        "He awakened a rare aptitude, one in ten thousand.",
+        "He ascended to a boundless plane above.",
+    ]
+    drift, warn, over = balance.check(pairs, lines)
+    check("10b minimal: no drift signal for the translation-less entry",
+          all(d.get("source") != "灵根" for d in drift), f"drift={drift}")
+    check("10c minimal: no usage-floor warning for the translation-less entry",
+          all("灵根" not in w for w in warn), f"warn={warn}")
+    check("10d minimal: no over-count for the translation-less entry",
+          all("灵根" not in o for o in over), f"over={over}")
+    check("10e minimal: normal entry still produces its drift signal",
+          len(drift) == 1 and drift[0].get("source") == "仙界"
+          and drift[0].get("src_count") == 2
+          and drift[0].get("tgt_count") == 0, f"drift={drift}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -231,6 +268,7 @@ def main() -> int:
     case_7_cap_and_sort()
     case_8_balance_drift()
     case_9_guide_only_units()
+    case_10_minimal_hand_entry()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

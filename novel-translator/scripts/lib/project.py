@@ -99,7 +99,9 @@ def read_chapter(path: Path) -> tuple[dict, str]:
     YAML fails to parse or is not a mapping.
     """
     path = Path(path)
-    text = path.read_text(encoding="utf-8")
+    # utf-8-sig: hand-edited chapters saved as UTF-8-with-BOM must not lose
+    # their frontmatter to a leading "\ufeff" on the opening '---' line.
+    text = path.read_text(encoding="utf-8-sig")
     lines = text.split("\n")
     if not lines or lines[0].strip() != "---":
         return {}, text
@@ -147,7 +149,7 @@ def load_manifest(project_dir: Path) -> list[dict]:
     manifest_path = paths(project_dir)["manifest"]
     if not manifest_path.is_file():
         return []
-    return json.loads(manifest_path.read_text(encoding="utf-8"))
+    return json.loads(manifest_path.read_text(encoding="utf-8-sig"))
 
 
 def save_manifest(project_dir: Path, manifest: list[dict]) -> None:

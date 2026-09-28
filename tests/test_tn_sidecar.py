@@ -9,7 +9,13 @@ raw bytes); invalid-entry dropping (non-dict, negative line, line == len,
 bool line, non-str/empty term/note); the empty-kept-list rule (all-invalid
 or notes=[] DELETES the sidecar, pre-existing file included); load_notes
 leniency (missing file, malformed JSON, notes not a list, non-dict notes
-entries -> []); strip_marked_notes (full legacy body, stacked [^1][^2]
+entries -> []); the loud-discard contract for genuinely corrupt files (not
+a BOM): load_history and load_notes keep their lenient defaults ({}, [])
+AND each discard prints exactly one '[warn] ... unreadable (<reason>)'
+line -- the reason in parentheses is 'JSONDecodeError' for a syntax error,
+'list' for a non-object tn_history.json, 'invalid notes' for a sidecar
+without a valid notes list (the pipeline.load_state counterpart lives in
+test_bom_tolerance.py); strip_marked_notes (full legacy body, stacked [^1][^2]
 markers, markers with no section, section with no markers, clean-body
 passthrough, whitespace-tolerant definition lines); and assemble.assemble
 writing clean markdown (no markers, no TN section, title in frontmatter,
@@ -17,13 +23,16 @@ body lines verbatim via project.read_chapter).
 
 All chapter fixtures are built inside tempfile.TemporaryDirectory()
 sandboxes per case — repo fixtures are never touched. Files are written with
-explicit LF newlines so byte-level comparisons are deterministic.
+explicit LF newlines so byte-level comparisons are deterministic. stdout
+around the loud-discard calls is captured with contextlib.redirect_stdout.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
     python tests/test_tn_sidecar.py
 """
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -54,6 +63,14 @@ def write_lf(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
+
+
+def capture(fn, *args, **kwargs):
+    """fn(*args, **kwargs) with stdout captured; returns (result, output)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = fn(*args, **kwargs)
+    return result, buf.getvalue()
 
 
 # ---------------------------------------------------------------------- cases
@@ -306,6 +323,52 @@ def case_6_assemble_clean() -> None:
               body == "Para one.\n\nPara two.", f"body={body!r}")
 
 
+def case_7_loud_discard() -> None:
+    """Genuinely corrupt files (not a BOM): the lenient defaults hold AND the
+    discard is loud -- exactly one '[warn] ... unreadable (<reason>)' line,
+    with the reason in parentheses."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+
+        # tn_history.json: JSON syntax error -> {} + one warn
+        write_lf(root / "tn_history.json", "{not json")
+        h, out = capture(tn.load_history, root)
+        check("7a history: JSON syntax error -> {} (lenient default holds)",
+              h == {}, f"h={h}")
+        check("7b history: exactly one unreadable warn (JSONDecodeError)",
+              out == "[warn] tn_history.json unreadable (JSONDecodeError)"
+                     " - resetting note-gap tracking\n", f"out={out!r}")
+
+        # a non-object document where the dict is required -> same contract
+        write_lf(root / "tn_history.json", "[]")
+        h, out = capture(tn.load_history, root)
+        check("7c history: non-object document -> {}",
+              h == {}, f"h={h}")
+        check("7d history: the warn names the reason in parentheses (list)",
+              out == "[warn] tn_history.json unreadable (list)"
+                     " - resetting note-gap tracking\n", f"out={out!r}")
+
+        # notes sidecar: JSON syntax error -> [] + one warn
+        path = tn.notes_path(root, "Chapter_0001.md")
+        write_lf(path, "{not json")
+        n, out = capture(tn.load_notes, root, "Chapter_0001.md")
+        check("7e notes: JSON syntax error -> [] (lenient default holds)",
+              n == [], f"n={n}")
+        check("7f notes: exactly one unreadable warn (JSONDecodeError)",
+              out == "[warn] Chapter_0001.json unreadable (JSONDecodeError)"
+                     " - treating as no notes\n", f"out={out!r}")
+
+        # a JSON document without a valid notes list -> 'invalid notes'
+        write_lf(path, "[]")
+        n, out = capture(tn.load_notes, root, "Chapter_0001.md")
+        check("7g notes: non-object document -> []",
+              n == [], f"n={n}")
+        check("7h notes: the warn names the reason in parentheses "
+              "(invalid notes)",
+              out == "[warn] Chapter_0001.json unreadable (invalid notes)"
+                     " - treating as no notes\n", f"out={out!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -317,6 +380,7 @@ def main() -> int:
     case_4_load_leniency()
     case_5_strip_marked_notes()
     case_6_assemble_clean()
+    case_7_loud_discard()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

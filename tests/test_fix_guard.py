@@ -28,6 +28,13 @@ needs no changes: the explicit bullet is extracted, and a command-less
 variant falls back to legacy synthesis for the machine finding while
 findings_count still counts findings in BOTH sections.
 
+The final case pins _looks_like_noop's classification: a SUCCESSFUL
+glossary merge must NOT be bucketed as a no-op (its follow-up [git] line
+names the merge in the subject "[git] committed <sha> glossary merge: 'X'
+into 'Y'", which once matched a bare signal and hid every applied merge
+from the applied count), while the true merge no-op ("[glossary] merge:
+'X' already retired") and the classic set no-op still classify.
+
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
     python tests/test_fix_guard.py
@@ -320,6 +327,31 @@ def case_8_new_format_report_parsing() -> None:
               f"count={count} specs={[(s.argv, s.line_no) for s in specs]}")
 
 
+def case_9_noop_classification() -> None:
+    """_looks_like_noop must not bucket a SUCCESSFUL glossary merge as a
+    no-op: the commit line that follows every applied merge names it in its
+    subject ("[git] committed <sha> glossary merge: 'X' into 'Y'"), which
+    once matched a bare 'retired' signal and moved every applied merge into
+    the noop count. The genuine merge no-op ('already retired') and the
+    classic set no-op still classify."""
+    merge_ok = (
+        "[glossary] merged '灵石' into '灵砂' (variants +1, alt +0)\n"
+        "[git] committed abc1234 glossary merge: '灵石' into '灵砂'\n"
+    )
+    check("9a noop: successful merge output is NOT a no-op",
+          fix._looks_like_noop(merge_ok) is False, f"out={merge_ok!r}")
+    check("9b noop: the bare [git] merge subject alone is NOT a no-op",
+          fix._looks_like_noop(
+              "[git] committed abc1234 glossary merge: 'X' into 'Y'\n") is False,
+          "")
+    check("9c noop: \"[glossary] merge: 'X' already retired\" IS a no-op",
+          fix._looks_like_noop(
+              "[glossary] merge: '灵石' already retired\n") is True, "")
+    check("9d noop: the classic set no-op still classifies",
+          fix._looks_like_noop(
+              "[glossary] set '灵根': already up-to-date\n") is True, "")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -333,6 +365,7 @@ def main() -> int:
     case_6_mundane_report_parsing()
     case_7_mundane_retire_run()
     case_8_new_format_report_parsing()
+    case_9_noop_classification()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

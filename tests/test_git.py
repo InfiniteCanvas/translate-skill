@@ -6,8 +6,15 @@ vcs.GITIGNORE; a second call returns [] and leaves .gitignore
 byte-identical), vcs.commit (a dirty tree returns a truthy short sha and
 prints "[git] committed <sha> <subject>", with the subject landing in
 `git log --format=%s`; a clean tree, a raw config.json {"git_commits":
-false}, and a non-repository directory are all silent None no-ops),
-cmd_init end to end (a scaffolded project gets exactly one
+false}, and a non-repository directory are all silent None no-ops), the
+foreign-repository guard (a git repo WITHOUT the skill .gitignore at the
+project dir is the user's own repository: commit() returns None printing
+exactly one "[warn] git: skipping commits - ... foreign repository ..."
+line -- the module-level dedup set makes the second call on the same
+directory fully silent -- and `git add -A` never runs: the dirty file
+stays untracked and no commit lands; run after every earlier case so the
+per-process warn dedup starts empty), cmd_init end to end (a scaffolded
+project gets exactly one
 "init: scaffold project" commit plus "[git] initialized repository" and
 "[git] committed" on stdout, and raw config.json carries
 git_commits: true -- and a --force reinitialization keeps the history as
@@ -359,6 +366,66 @@ def case_6_never_raises() -> None:
         vcs._run = orig_run
 
 
+def case_7_foreign_repo() -> None:
+    """A repository without the skill .gitignore is FOREIGN (the user's own
+    repo): commit() is a None no-op printing exactly one warn naming it --
+    the module-level dedup set makes a second call on the same directory
+    fully silent (it persists for the process, so this case runs after every
+    earlier one used skill-managed repos only) -- and `git add -A` never
+    runs: the user's pending file stays untracked and no commit lands."""
+    if not vcs.available():
+        print("note: git not found on PATH; skipping the foreign-repo checks")
+        return
+    with tempfile.TemporaryDirectory() as td:
+        foreign = Path(td)
+        # git init DIRECTLY: ensure_repo() would write the skill .gitignore
+        # and turn the directory into a skill-managed repo.
+        init = subprocess.run(
+            ["git", "init"], cwd=str(foreign), capture_output=True,
+            encoding="utf-8", errors="replace", check=False,
+        )
+        if init.returncode != 0:
+            check("7 setup: git init succeeded", False,
+                  f"rc={init.returncode} err={init.stderr!r}")
+            return
+        (foreign / "pending.txt").write_text(
+            "the user's uncommitted work\n", encoding="utf-8", newline="\n")
+        check("7 setup: repo present, no .gitignore at the project dir",
+              vcs.is_repo(foreign) and not (foreign / ".gitignore").exists(),
+              f"gitignore={(foreign / '.gitignore').exists()}")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(foreign, "test: foreign repo")
+        out = buf.getvalue()
+        check("7a foreign: commit() -> None (a skill commit must never sweep "
+              "the user's repository)",
+              sha is None, f"sha={sha!r}")
+        check("7b foreign: exactly one line, the git-skipping foreign-repo warn",
+              out.count("[warn] git: skipping commits") == 1
+              and "foreign repository" in out and out.count("\n") == 1,
+              f"out={out!r}")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(foreign, "test: foreign repo again")
+        check("7c foreign: second call on the same dir is silent (warn deduped)",
+              sha is None and buf.getvalue() == "",
+              f"sha={sha!r} out={buf.getvalue()!r}")
+
+        _rc, subjects = git_log_subjects(foreign)
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=str(foreign),
+            capture_output=True, encoding="utf-8", errors="replace",
+            check=False,
+        )
+        check("7d foreign: nothing ever committed (log empty)",
+              subjects == [], f"subjects={subjects!r}")
+        check("7e foreign: the user's pending file was never staged away",
+              status.returncode == 0 and "?? pending.txt" in status.stdout,
+              f"rc={status.returncode} out={status.stdout!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -370,6 +437,7 @@ def main() -> int:
     case_4_v003_direct()
     case_5_v003_dry_run()
     case_6_never_raises()
+    case_7_foreign_repo()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

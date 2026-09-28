@@ -73,7 +73,7 @@ def recheck_chapters(
     novel_info: dict = {}
     if paths["novel_info"].is_file():
         try:
-            loaded = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+            loaded = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
             if isinstance(loaded, dict):
                 novel_info = loaded
         except (ValueError, OSError):
@@ -189,8 +189,10 @@ def recheck_chapters(
         if not dry_run:
             if did_migrate:
                 # Surgical rewrite (replace.py's frontmatter rule): keep the
-                # YAML block byte-verbatim, replace only the body.
-                raw = translated_path.read_text(encoding="utf-8")
+                # YAML block byte-verbatim, replace only the body. BOM-
+                # tolerant: a leading BOM would hide the frontmatter from
+                # _split_frontmatter and the rewrite would drop it.
+                raw = translated_path.read_text(encoding="utf-8-sig")
                 head, _tail = replace._split_frontmatter(raw)
                 out = (head + "\n\n" if head else "") + clean_body.rstrip("\n") + "\n"
                 project.atomic_write_text(translated_path, out, newline="\n")

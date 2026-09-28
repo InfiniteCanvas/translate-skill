@@ -314,11 +314,16 @@ def load_state(draft_dir: Path, file: str) -> dict | None:
     if not path.is_file():
         return None
     try:
-        with path.open("r", encoding="utf-8") as fh:
+        with path.open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        reason = type(exc).__name__
+    else:
+        reason = None if isinstance(data, dict) else type(data).__name__
+    if reason is not None:
+        print(f"[warn] {path.name} unreadable ({reason}) - restarting chapter state")
         return None
-    return data if isinstance(data, dict) else None
+    return data
 
 
 def save_state(draft_dir: Path, file: str, state: dict) -> None:
@@ -743,7 +748,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     novel_info: dict = {}
     if paths["novel_info"].is_file():
         try:
-            loaded = json.loads(paths["novel_info"].read_text(encoding="utf-8"))
+            loaded = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
             if isinstance(loaded, dict):
                 novel_info = loaded
         except (ValueError, OSError):

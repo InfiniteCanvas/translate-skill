@@ -731,6 +731,9 @@ def apply_fixes(project_dir: Path, findings: list[dict]) -> dict:
             skip("suggestion not in target language")
             continue
         old = entry.get(field)
+        if value == old:
+            skip("already set")  # re-run: suggested value is already live
+            continue
         entry[field] = value  # mutate in place; keep every other field
         applied.append({"source": source, "field": field, "kind": kind,
                         "old": old, "new": value})
