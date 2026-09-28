@@ -20,6 +20,20 @@ many times in `corpus` or it is skipped with an exact-count line;
 min_occurrences == 0 disables the gate (also the fail-open value the
 GLOSSARY_EXPAND stage uses when the source corpus is unreadable).
 
+The gate's corpus cache (pipeline._gate_corpus / _GATE_CORPUS) is covered
+unit-level and end to end: the joined source corpus is read once per
+resolved project dir per process (a counting project.read_chapter swap
+proves multiple evaluations share one pass), separate projects cache
+separately, gate outcomes against the cached corpus are identical to a
+freshly rebuilt one (the skip line fires at the same thresholds), and a
+failed read stays uncached -- every evaluation re-reads and re-fails until
+the corpus becomes readable again in the same process. The run_chapter
+integration (fake pipeline._chat, mock_server.py prompt sniffing) proves
+the fail-open behavior: an unreadable sibling chapter disables the gate on
+EVERY chapter run (warn each time, below-threshold term added), and after
+the chapter is repaired the same process gates again -- a fresh
+below-threshold proposal is skipped and the corpus becomes cached.
+
 Covered: parser shape for `glossary count`; basic counting (total, per-
 chapter hits in discover order, exact output lines, exit 0 at the
 threshold); --variants counted together longest-first without double
@@ -67,7 +81,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import glossary, pipeline, project  # noqa: E402
+from lib import config, glossary, pipeline, project  # noqa: E402
 import translate  # noqa: E402
 from translate import CliError  # noqa: E402
 
@@ -443,6 +457,242 @@ def case_9_gate() -> None:
               f"exc={exc6!r} out={out6!r} terms={g6.get('terms')}")
 
 
+# ------------------------------------------- gate corpus cache (_gate_corpus)
+
+
+def case_10_gate_corpus_cache() -> None:
+    """pipeline._gate_corpus: the joined source corpus is read once per
+    resolved project dir per process and shared by every later gate
+    evaluation, separate projects cache separately, and gate outcomes
+    against the cached corpus are identical to a freshly rebuilt one. A
+    failed read is never cached: each evaluation re-reads the chapters and
+    re-fails, until the corpus becomes readable again in the same process
+    (then it works and lands in the cache)."""
+    pipeline._GATE_CORPUS.clear()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        proj1 = make_project(root, "p1")
+        proj2 = make_project(root, "p2")
+        expected = "\n".join(
+            project.read_chapter(c.path)[1] for c in project.discover(proj1)
+        )
+        reads = {"n": 0}
+        orig_rc = project.read_chapter
+
+        def counting_rc(path):
+            reads["n"] += 1
+            return orig_rc(path)
+
+        project.read_chapter = counting_rc
+        try:
+            corpus = pipeline._gate_corpus(proj1)
+            check("10a cache: joins every discovered chapter body",
+                  corpus == expected, f"corpus={corpus!r}")
+            check("10b cache: one read per chapter on the first evaluation",
+                  reads["n"] == 3, f"reads={reads['n']}")
+            again = pipeline._gate_corpus(proj1)
+            check("10c cache: a second evaluation re-reads nothing",
+                  reads["n"] == 3 and again == corpus,
+                  f"reads={reads['n']} same={again == corpus}")
+            check("10d cache: keyed by the resolved project dir",
+                  pipeline._GATE_CORPUS.get(proj1.resolve()) == corpus,
+                  f"keys={list(pipeline._GATE_CORPUS)}")
+            pipeline._gate_corpus(proj2)
+            check("10e cache: a second project caches its own entry",
+                  reads["n"] == 6 and len(pipeline._GATE_CORPUS) == 2,
+                  f"reads={reads['n']} entries={len(pipeline._GATE_CORPUS)}")
+        finally:
+            project.read_chapter = orig_rc
+
+        # Gate outcomes against the cached corpus vs a freshly rebuilt one
+        g_cached: dict = {"terms": []}
+        _r, out_cached, _e = capture(
+            pipeline._apply_glossary_proposal, g_cached, proposal("山谷"),
+            2, {}, "", "[t]", proj1,
+            corpus=pipeline._gate_corpus(proj1), min_occurrences=3)
+        pipeline._GATE_CORPUS.clear()
+        g_fresh: dict = {"terms": []}
+        _r, out_fresh, _e = capture(
+            pipeline._apply_glossary_proposal, g_fresh, proposal("山谷"),
+            2, {}, "", "[t]", proj1,
+            corpus=pipeline._gate_corpus(proj1), min_occurrences=3)
+        check("10f cache: skip line identical against cached vs rebuilt corpus",
+              out_cached == out_fresh
+              == "[t] [glossary] skip '山谷' - 1 occurrence(s) across the "
+                 "novel (min 3)\n"
+              and g_cached == g_fresh,
+              f"cached={out_cached!r} fresh={out_fresh!r}")
+        g_min1: dict = {"terms": []}
+        _r, out_min1, _e = capture(
+            pipeline._apply_glossary_proposal, g_min1, proposal("山谷"),
+            2, {}, "", "[t]", proj1,
+            corpus=pipeline._gate_corpus(proj1), min_occurrences=1)
+        check("10g cache: threshold unchanged (min 1 adds the same term)",
+              out_min1 == "[t] [ok] glossary + '山谷' -> 'Spirit Term'\n"
+              and [t.get("source") for t in g_min1["terms"]] == ["山谷"],
+              f"out={out_min1!r}")
+
+    # Fail-open: an unreadable corpus is never cached
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(Path(td), "p3")
+        write_source(proj, "Chapter_0004.md",
+                     "---\nchapter_title: [unclosed\n---\n\n正文。\n")
+        pipeline._GATE_CORPUS.clear()
+        reads = {"n": 0}
+        orig_rc = project.read_chapter
+
+        def counting_rc(path):
+            reads["n"] += 1
+            return orig_rc(path)
+
+        project.read_chapter = counting_rc
+        try:
+            _r, _out, exc1 = capture(pipeline._gate_corpus, proj)
+            check("10h fail-open: unreadable corpus raises ValueError",
+                  isinstance(exc1, ValueError), f"exc={exc1!r}")
+            check("10i fail-open: the failed read is not cached",
+                  reads["n"] == 4
+                  and proj.resolve() not in pipeline._GATE_CORPUS,
+                  f"reads={reads['n']} keys={list(pipeline._GATE_CORPUS)}")
+            _r, _out, exc2 = capture(pipeline._gate_corpus, proj)
+            check("10j fail-open: EVERY evaluation re-reads and re-fails",
+                  isinstance(exc2, ValueError) and reads["n"] == 8
+                  and proj.resolve() not in pipeline._GATE_CORPUS,
+                  f"reads={reads['n']} exc={exc2!r}")
+            # The corpus becomes readable in the same process: works + caches
+            write_source(proj, "Chapter_0004.md", "山门前风平浪静。")
+            corpus = pipeline._gate_corpus(proj)
+            check("10k fail-open: a later readable corpus succeeds in-process",
+                  "山门前风平浪静。" in corpus and reads["n"] == 12
+                  and pipeline._GATE_CORPUS.get(proj.resolve()) == corpus,
+                  f"reads={reads['n']}")
+        finally:
+            project.read_chapter = orig_rc
+
+
+def make_gate_project(root: Path, name: str) -> Path:
+    """Pipeline-shaped fixture for the gate integration: three one-line
+    source chapters (灵石 occurs exactly once, in ch1), an accurate
+    chapters.json manifest, config.json {"providers": {}}, an empty
+    glossary.json, and the draft/ + translated/ dirs run_chapter persists
+    state and output into (test_retry_feedback's make_project shape)."""
+    proj = root / name
+    proj.mkdir()
+    # No trailing newlines: read_chapter's no-frontmatter path returns the
+    # file text verbatim, so a trailing "\n" would become a phantom extra
+    # source line and fail the numbered-line coverage check (the shape
+    # test_retry_feedback's BODIES use).
+    bodies = {
+        "Chapter_0001.md": "他捡起一块灵石。",
+        "Chapter_0002.md": "山门外风平浪静。",
+        "Chapter_0003.md": "山门前风平浪静。",
+    }
+    for fname, body in bodies.items():
+        write_source(proj, fname, body)
+    (proj / "chapters.json").write_text(
+        json.dumps([{"file": f, "number": i + 1, "suffix": "", "order": i,
+                     "status": "pending"}
+                    for i, f in enumerate(sorted(bodies))],
+                   ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (proj / "config.json").write_text(
+        json.dumps({"providers": {}}, indent=2) + "\n", encoding="utf-8")
+    (proj / "glossary.json").write_text(
+        json.dumps({"terms": []}, ensure_ascii=False) + "\n", encoding="utf-8")
+    (proj / "draft").mkdir()
+    (proj / "translated").mkdir()
+    return proj
+
+
+def make_gate_chat(terms_responses: list[list[dict]]):
+    """pipeline._chat replacement (mock_server.py prompt sniffing): SUCCESS
+    verdicts, one scripted GLOSSARY_EXPAND terms list per run, empty notes,
+    and a 1-line translation -- one chapter = one run of the fake."""
+    queue = list(terms_responses)
+
+    def fake(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None):
+        if "verdict" in prompt:
+            return json.dumps({"verdict": "SUCCESS", "reasons": []},
+                              ensure_ascii=False)
+        if '"terms"' in prompt:
+            return json.dumps({"terms": queue.pop(0)}, ensure_ascii=False)
+        if '"notes"' in prompt or '"note"' in prompt:
+            return json.dumps({"notes": []})
+        return json.dumps(
+            {"title": "Mock Title",
+             "lines": [{"i": 1, "t": "Translated line 1."}]},
+            ensure_ascii=False)
+
+    return fake
+
+
+def case_11_gate_corpus_run_chapter() -> None:
+    """End to end through run_chapter: an unreadable sibling chapter makes
+    the GLOSSARY_EXPAND occurrence gate fail open (warn + below-threshold
+    term added) on EVERY chapter run -- the failure is not cached -- and
+    after the chapter is repaired the SAME process applies the gate again:
+    a fresh below-threshold proposal is skipped with the exact count line,
+    no warn, and the now-readable corpus lands in the cache."""
+    pipeline._GATE_CORPUS.clear()
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_gate_project(Path(td), "proj")
+        # Chapter_0003 starts corrupt: discover() still finds it, so any
+        # corpus join re-reads it and fails (run_chapter itself only reads
+        # the chapter it translates).
+        write_source(proj, "Chapter_0003.md",
+                     "---\nchapter_title: [unclosed\n---\n\n正文。\n")
+        cfg = config.load_config(proj)
+        orig = pipeline._chat
+        pipeline._chat = make_gate_chat([
+            [proposal("灵石", "spirit stone")],  # run 1 (ch1): fail-open adds
+            [proposal("灵石", "spirit stone")],  # run 2 (ch2): existing no-op
+            [proposal("道基", "foundation")],     # run 3 (ch3): gate active
+        ])
+        try:
+            outcome1, out1, exc1 = capture(
+                pipeline.run_chapter, proj, "Chapter_0001.md", cfg)
+            check("11a run: chapter 1 translates despite the unreadable corpus",
+                  exc1 is None and outcome1 == "translated",
+                  f"outcome={outcome1} exc={exc1!r}")
+            check("11b run: fail-open warn names the unreadable corpus",
+                  out1.count("occurrence gate disabled") == 1
+                  and "[warn] occurrence gate disabled - source corpus "
+                      "unreadable: ValueError" in out1,
+                  f"out={out1!r}")
+            check("11c run: gate disabled -> below-threshold term ADDED",
+                  "[ok] glossary + '灵石' -> 'spirit stone'" in out1
+                  and any(t.get("source") == "灵石"
+                          for t in glossary.load(proj)["terms"]),
+                  f"out={out1!r}")
+
+            outcome2, out2, exc2 = capture(
+                pipeline.run_chapter, proj, "Chapter_0002.md", cfg)
+            check("11d run: a second evaluation warns AGAIN (not cached)",
+                  exc2 is None and outcome2 == "translated"
+                  and out2.count("occurrence gate disabled") == 1,
+                  f"outcome={outcome2} out={out2!r}")
+
+            # Repair Chapter_0003 and translate it in the same process
+            write_source(proj, "Chapter_0003.md", "山门前风平浪静。")
+            outcome3, out3, exc3 = capture(
+                pipeline.run_chapter, proj, "Chapter_0003.md", cfg)
+            check("11e run: readable corpus -> no fail-open warn",
+                  exc3 is None and outcome3 == "translated"
+                  and "occurrence gate disabled" not in out3,
+                  f"outcome={outcome3} out={out3!r}")
+            check("11f run: gate active again -> fresh below-threshold skip",
+                  "[glossary] skip '道基' - 0 occurrence(s) across the novel "
+                  "(min 3)" in out3
+                  and all(t.get("source") != "道基"
+                          for t in glossary.load(proj)["terms"]),
+                  f"out={out3!r}")
+            check("11g run: the repaired corpus is now cached in-process",
+                  pipeline._GATE_CORPUS.get(proj.resolve())
+                  == pipeline._gate_corpus(proj),
+                  f"keys={list(pipeline._GATE_CORPUS)}")
+        finally:
+            pipeline._chat = orig
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -457,6 +707,8 @@ def main() -> int:
     case_7_bad_input()
     case_8_config_threshold()
     case_9_gate()
+    case_10_gate_corpus_cache()
+    case_11_gate_corpus_run_chapter()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

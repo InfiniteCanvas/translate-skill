@@ -96,13 +96,15 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
 
 def replace_chapters(
     project_dir: Path, manifest: list[dict], phrase: str, new: str,
-    dry_run: bool = False,
+    dry_run: bool = False, progress: list[str] | None = None,
 ) -> dict[str, Any]:
     """Rewrite `phrase` -> `new` in the body of every translated chapter.
 
     Manifest-driven: chapters with status 'translated', existing files only
     (missing files are reported, never globbed). Only files whose text
-    actually changed are rewritten (atomic, LF). Returns
+    actually changed are rewritten (atomic, LF). `progress`, when given,
+    collects each file's name as its rewrite lands -- glossary_replace uses
+    it to report how far an interrupted run got. Returns
     {scanned, changed, occurrences, per_chapter: [(file, count)], missing}.
     """
     translated = project.paths(project_dir)["translated"]
@@ -133,6 +135,8 @@ def replace_chapters(
         if not dry_run:
             out = head + "\n" + new_tail if head else new_tail
             project.atomic_write_text(path, out, newline="\n")
+            if progress is not None:
+                progress.append(file)
     return {
         "scanned": scanned,
         "changed": changed,
@@ -152,7 +156,10 @@ def glossary_replace(
     By default the old rendering is pruned from alt_translations -- a stale
     alt would let balance.count_in_target keep counting it as a valid hit,
     masking future drift. keep_alt=True leaves the alt list untouched for
-    renderings that should stay accepted variants. dry_run reports the
+    renderings that should stay accepted variants. Chapters are rewritten
+    before glossary.json is saved, so a mid-run failure leaves the glossary
+    untouched and re-running the same command completes the rewrites
+    idempotently. dry_run reports the
     glossary diff and chapter counts but writes nothing. Returns
     {glossary: {source, old, new, pruned_alt, noop}, chapters: {...}}.
     """
@@ -188,7 +195,7 @@ def glossary_replace(
         result["chapters"] = empty_chapters
         return result
 
-    # Fail on setup problems BEFORE the first write (glossary save).
+    # Fail on setup problems BEFORE the first write (the chapter rewrites).
     manifest_path = project.paths(project_dir)["manifest"]
     if not manifest_path.is_file():
         raise ReplaceError(f"{manifest_path} not found - run 'init' first")
@@ -199,9 +206,9 @@ def glossary_replace(
     # Pre-flight the deterministic part of replace_chapters: build_matcher is
     # pure, but replace_text rebuilds it per chapter and can raise (an old
     # translation of bare punctuation like '...' or '-' has no matchable
-    # words). Failing it here keeps the promise above -- otherwise the
-    # glossary save below would already have landed while every chapter
-    # stays unrewritten (and balance then flags the whole book as drift).
+    # words). Failing it here keeps the promise above: a deterministic error
+    # must surface as a setup failure before the first write, not as a
+    # mid-run crash (balance would flag a half-rewritten book as drift).
     build_matcher(old)
 
     pruned: list[str] = []
@@ -211,11 +218,27 @@ def glossary_replace(
         if pruned:
             entry["alt_translations"] = [a for a in alts if a not in pruned]
             result["glossary"]["pruned_alt"] = pruned
+
+    # Rewrite the chapters FIRST and save the glossary LAST, so a run that
+    # dies mid-loop (e.g. a Windows PermissionError while another process
+    # holds a chapter open) leaves glossary.json still saying the old
+    # translation -- and re-running the same command finishes the job:
+    # already-rewritten chapters no longer contain the old rendering, match
+    # zero occurrences and are skipped, so the re-run is idempotent.
+    rewritten: list[str] = []
+    try:
+        result["chapters"] = replace_chapters(
+            project_dir, manifest, old, new_translation, dry_run,
+            progress=rewritten,
+        )
+    except Exception:
+        total = sum(1 for e in manifest if e.get("status") == "translated")
+        print(f"[warn] replace incomplete: {len(rewritten)}/{total} chapters "
+              f"rewritten; glossary.json not updated - re-run the same command "
+              f"to finish")
+        raise
+
     if not dry_run:
         entry["translation"] = new_translation
         glossary.save(project_dir, g)
-
-    result["chapters"] = replace_chapters(
-        project_dir, manifest, old, new_translation, dry_run
-    )
     return result

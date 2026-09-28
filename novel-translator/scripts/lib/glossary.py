@@ -388,18 +388,25 @@ def upsert(g: dict, entry: dict) -> bool:
     norm = dict(entry)
     if norm.get("variants") is None:
         norm["variants"] = []
-    if norm.get("alt_translations") is None:
-        norm["alt_translations"] = []
     norm.setdefault("category", "other")
     norm.setdefault("origin", "model")
     norm.setdefault("first_seen_chapter", None)
     terms = g.setdefault("terms", [])
     existing = find(g, norm["source"])
     if existing is not None:
+        # Callers may pass minimal entries; an absent alt_translations key
+        # must not mean "clear" -- only an explicitly present one (even
+        # empty) overwrites the existing entry's value.
+        if "alt_translations" not in norm:
+            norm["alt_translations"] = existing.get("alt_translations") or []
+        elif norm["alt_translations"] is None:
+            norm["alt_translations"] = []
         for i, item in enumerate(terms):
             if item is existing:
                 terms[i] = norm
                 return True
+    if norm.get("alt_translations") is None:
+        norm["alt_translations"] = []
     terms.append(norm)
     return False
 

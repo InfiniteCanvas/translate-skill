@@ -395,6 +395,27 @@ def _load_template(templates_dir: Path, name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+# Joined source-chapter bodies per project dir, built once per process for
+# the GLOSSARY_EXPAND significance gate (glossary.count_in_text counts each
+# candidate against this text). The cache is EXACT, not approximate: source
+# files don't change during a run, and term counts are pure lookups against
+# static text. Only successful reads are cached -- an unreadable corpus
+# stays uncached, so every chapter retries it and fails open exactly as it
+# would without the cache.
+_GATE_CORPUS: dict[Path, str] = {}
+
+
+def _gate_corpus(project_dir: Path) -> str:
+    """All discovered source-chapter bodies joined on newlines (cached)."""
+    key = Path(project_dir).resolve()
+    if key not in _GATE_CORPUS:
+        _GATE_CORPUS[key] = "\n".join(
+            project.read_chapter(c.path)[1]
+            for c in project.discover(project_dir)
+        )
+    return _GATE_CORPUS[key]
+
+
 def _apply_glossary_proposal(
     g: dict, proposal: Any, chapter_order: int, cfg: dict, merge_template: str,
     tag: str, project_dir: Path,
@@ -760,7 +781,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     if style_path.is_file():
         try:
             _, style_summary = styles.parse_style_file(
-                style_path.read_text(encoding="utf-8")
+                style_path.read_text(encoding="utf-8-sig")
             )
         except (OSError, ValueError):  # ValueError covers UnicodeDecodeError
             style_summary = ""
@@ -1124,10 +1145,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 corpus = ""
                 if min_occ > 0 and eligible:
                     try:
-                        corpus = "\n".join(
-                            project.read_chapter(c.path)[1]
-                            for c in project.discover(project_dir)
-                        )
+                        corpus = _gate_corpus(project_dir)
                     except Exception as exc:  # noqa: BLE001 - fail open: expansion is auxiliary
                         print(f"{tag} [warn] occurrence gate disabled - source corpus unreadable: {type(exc).__name__}: {exc}")
                         min_occ = 0

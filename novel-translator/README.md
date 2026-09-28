@@ -289,9 +289,15 @@ place -- no retranslation needed:
         --source "spirit root" --target "spiritual root" [--dry-run]
 
 `glossary replace` finds the entry by source or variants (exit 2 unknown),
-sets the translation, and rewrites the old rendering across chapters (a
-no-op, exit 0, when it already equals the new one); `util replace` is the
-raw phrase -> replacement variant for arbitrary term fixes. Both are
+rewrites the old rendering across chapters first, and saves the translation
+to glossary.json last (a no-op, exit 0, when it already equals the new
+one). That ordering makes a mid-rewrite failure recoverable: glossary.json
+still says the old translation, the console prints `[warn] replace
+incomplete: k/N chapters rewritten; glossary.json not updated - re-run the
+same command to finish`, and the command fails cleanly (exit 2); re-running
+the same command completes it (already-rewritten chapters match zero
+occurrences and are skipped, so the re-run is idempotent). `util replace`
+is the raw phrase -> replacement variant for arbitrary term fixes. Both are
 offline (no LLM calls) and match smartly: case-insensitive, words joined
 by spaces or hyphens, optional es/s/ed/ing inflection on the last word
 (capitalization preserved, inflection re-appended -- Spirit Root ->
@@ -301,7 +307,8 @@ matches, atomic LF; chapters come from the manifest). By default the old
 rendering is pruned from the entry's `alt_translations` (a stale alt would
 mask balance drift); `--keep-alt` keeps it. `--dry-run` prints the glossary
 diff and per-chapter counts. Exit 0 success, 2 usage error (no manifest,
-unknown term). The epub rebuilds once after changed chapters when
+unknown term) or an interrupted rewrite (glossary.json untouched -- re-run
+the same command to finish). The epub rebuilds once after changed chapters when
 `auto_build_epub` is on (default); pass `--no-build` to skip that rebuild
 (use when running many replaces from `review fix`, which always passes it
 itself and runs exactly one final epub build at the end). Build failures
@@ -349,7 +356,11 @@ Commands are pre-validated: a
 source-script characters
 for a CJK-source entry is skipped in-process (`[review fix] skipped [N]:
 suggestion not in target language`) and counted as needing a decision --
-the same guard `review glossary --fix` enforces. Exit codes: 0 on full
+the same guard `review glossary --fix` enforces. So is a Command bullet
+carrying `--project` in either form (`[review fix] skipped [N]: command
+overrides --project`) -- the executor always prepends its own `--project`,
+and one smuggled into a hand-edited report would silently retarget the
+command. Exit codes: 0 on full
 success or full no-op, 1 if any command failed (continues past failures
 by default; `--exit-on-error` to stop at the first), 2 on a
 missing/unreadable report or a report with no machine-applicable
@@ -445,8 +456,9 @@ refreshes automatically: a background build runs after every translated
 chapter (serialized; triggers arriving mid-build coalesce) and a final
 build at batch end guarantees the finished epub includes every chapter --
 `export/` always holds a current, validated epub, so the manual command is
-only needed for one-off builds. Auto-build failures are warnings only;
-details land in `logs/epub-build.log`.
+only needed for one-off builds. Auto-build failures are warnings only, and
+a stalled build is killed after 360s; details land in
+`logs/epub-build.log`.
 
 ## Tuning (config.json)
 

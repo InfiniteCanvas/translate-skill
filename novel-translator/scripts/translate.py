@@ -188,7 +188,8 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         if style_path.is_file():
             style_name = style_path.stem
             try:
-                text = style_path.read_text(encoding="utf-8")
+                # utf-8-sig: style.md is user-authored; tolerate a BOM.
+                text = style_path.read_text(encoding="utf-8-sig")
             except (OSError, ValueError) as exc:  # ValueError covers UnicodeDecodeError
                 raise CliError(f"cannot read style file {style_path}: {exc}") from exc
             _description, parsed_body = styles_mod.parse_style_file(text)
@@ -740,7 +741,8 @@ def cmd_status(args: argparse.Namespace, project_dir: Path) -> int:
         if (project_dir / "style.md").is_file():
             try:
                 _desc, style_body = styles_mod.parse_style_file(
-                    (project_dir / "style.md").read_text(encoding="utf-8")
+                    # utf-8-sig: style.md is user-authored; tolerate a BOM.
+                    (project_dir / "style.md").read_text(encoding="utf-8-sig")
                 )
             except (OSError, ValueError):
                 style_body = ""

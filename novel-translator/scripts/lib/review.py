@@ -218,7 +218,9 @@ def _model_findings(
                     f"(looked in {templates_dir} and {_SKILL_TEMPLATES})"
                 )
             prompt = fill(
-                tpl_path.read_text(encoding="utf-8"),
+                # utf-8-sig: the project's templates dir is a user-editable
+                # copy, so tolerate a BOM on the template read.
+                tpl_path.read_text(encoding="utf-8-sig"),
                 {
                     "source_lang": _lang_name(cfg.get("source_lang")),
                     "target_lang": _lang_name(cfg.get("target_lang")),

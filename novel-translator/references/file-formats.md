@@ -4,8 +4,12 @@ Schemas and contracts for every file in a translation project. The scripts in
 `scripts/lib/` are the source of truth for behavior; this file is the source of
 truth for *shapes* the user (or the agent) is expected to read, edit, or
 hand-fix. Every project JSON file — and the markdown files read back by the
-tool (chapters, review-report.md) — is decoded BOM-tolerant (`utf-8-sig`), so
-a UTF-8 BOM left by a hand editor never breaks a read.
+tool (chapters, review-report.md, style.md) plus the review tier's
+`glossary_review.md` template read (project copy or skill fallback) — is
+decoded BOM-tolerant (`utf-8-sig`), so a UTF-8 BOM left by a hand editor
+never breaks a read. The pipeline's other template reads and migrate's
+template drift comparison stay plain utf-8 (a text comparison), so a BOM
+added there still registers — as stray prompt text or as template drift.
 
 ## Project layout
 
@@ -193,8 +197,10 @@ count. This is the anti-hallucination backbone of the whole pipeline.
 ```
 
 - `base_url` includes `/v1` (OpenAI-compatible). `model: null` means "ask
-  `/models` and use the first model" — resolved at runtime, works with any
-  sglang/vLLM server.
+  `/models` and use the first model" — resolved at runtime (cached per
+  base_url + resolved auth identity, so two jobs sharing a URL with
+  different keys keep distinct resolutions), works with any sglang/vLLM
+  server.
 - Each job can point at a **different provider**: keep `translator` on the
   translation model, later point `reviewer` at a stronger model. Any job block
   you omit inherits the `translator` block.
@@ -321,11 +327,11 @@ free-form reason text. The `--fix`
   `translation`. A corrupt glossary.json fails whatever command reads it
   cleanly (one `[FAIL]` line, exit 2 — never a traceback); `status` degrades
   instead to a `glossary: [warn] unreadable (...)` row in place of the term
-  count. `glossary replace` (which sets `translation` and rewrites
-  the old rendering in translated chapters) prunes that rendering from the
-  entry's `alt_translations` by default — a stale alt would keep the balance
-  check counting the old rendering as valid, masking drift; `--keep-alt`
-  leaves alt_translations untouched.
+  count. `glossary replace` (which rewrites the old rendering in
+  translated chapters before saving the new `translation`) prunes that
+  rendering from the entry's `alt_translations` by default — a stale alt
+  would keep the balance check counting the old rendering as valid,
+  masking drift; `--keep-alt` leaves alt_translations untouched.
 
 ## review-report.md
 
@@ -480,7 +486,11 @@ replace` / `set --translation` whose suggested value still contains
 source-script characters for a CJK-source entry is skipped in-process
 (console: `[review fix] skipped [N]: suggestion not in target language`)
 and counted as needing a decision — the same guard `review glossary
---fix` applies to its own fixes.
+--fix` applies to its own fixes. A `- Command:` bullet carrying
+`--project` (as `--project X` or `--project=X`) is likewise never run:
+the executor prepends its own `--project`, and a hand-added one would
+silently retarget the command (console: `[review fix] skipped [N]:
+command overrides --project`), counted the same way.
 
 Legacy reports (the pre-split format: no YAML frontmatter, findings
 grouped by severity under `## Warnings (fix before translating further)` /
@@ -684,13 +694,25 @@ One translated paragraph per line, same count as the source.
 - `util replace` / `glossary replace` rewrite the body (everything after the
   frontmatter, a legacy baked-in Translator's Notes section included) in
   place when a rendering changes: frontmatter stays byte-verbatim, only
-  files with matches are rewritten, atomically, LF.
+  files with matches are rewritten, atomically, LF. `glossary replace`
+  rewrites every chapter BEFORE saving glossary.json, so a run that dies
+  mid-loop leaves the glossary still saying the old translation — one
+  `[warn] replace incomplete: k/N chapters rewritten; glossary.json not
+  updated - re-run the same command to finish` line, then a clean exit 2 —
+  and re-running the same command finishes it (already-rewritten chapters
+  match zero occurrences and are skipped, so the re-run is idempotent).
+
+`build-epub` writes `export/<slug>.epub` atomically: the book is assembled
+at a tmp sibling of the export path and swapped in with a rename (briefly
+retried on Windows when a reader holds the file open), so a concurrent
+build or reader never observes a half-written epub.
 
 During `translate`/`retry`, `build-epub` also runs automatically after every
 chapter reaches `translated`: per-chapter rebuilds are serialized (with a
-guaranteed final build at batch end) and failures are warnings only (output
-in `logs/epub-build.log`), so `export/` always holds a current epub;
-disable with `auto_build_epub: false`.
+guaranteed final build at batch end; a stalled build is killed after 360s)
+and failures are warnings only (output in `logs/epub-build.log`), so
+`export/` always holds a current epub; disable with `auto_build_epub:
+false`.
 
 ## Prompt templates (`templates/`)
 

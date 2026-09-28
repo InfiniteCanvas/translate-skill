@@ -1,11 +1,12 @@
 """Background epub rebuilds after each translated chapter.
 
 The pipeline triggers a build subprocess after every chapter that reaches
-status "translated". Only one build runs at a time (the epub is written
-non-atomically to a single export path, so overlapping builds would corrupt
-it); triggers arriving while a build runs just set a pending flag. finalize()
-waits out the running build and, when anything is pending, runs one final
-synchronous build so the finished epub always includes every chapter.
+status "translated". Only one build runs at a time (epub.build swaps the
+epub into its single export path atomically, but builds are still serialized
+so concurrent rebuilds never overlap); triggers arriving while a build runs
+just set a pending flag. finalize() waits out the running build and, when
+anything is pending, runs one final synchronous build so the finished epub
+always includes every chapter.
 """
 
 from __future__ import annotations
@@ -17,6 +18,12 @@ from pathlib import Path
 from typing import IO
 
 _SCRIPT_PATH = Path(__file__).resolve().parent.parent / "translate.py"
+
+# Bound for the reaper's blocking wait. The build child's slowest step,
+# epubcheck, bounds itself at 300s (epub.run_epubcheck) and every other
+# step is local file I/O, so a child still running past that plus a margin
+# is hung for another reason and gets killed.
+_REAP_TIMEOUT = 360
 
 
 class AutoBuildScheduler:
@@ -87,13 +94,27 @@ class AutoBuildScheduler:
     def _reap(self, wait: bool = False) -> None:
         if self._proc is None:
             return
+        stalled = False
         if wait:
-            self._proc.wait()
+            try:
+                self._proc.wait(timeout=_REAP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                try:
+                    self._proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                stalled = True
         elif self._proc.poll() is None:
             return  # still running
         code = self._proc.returncode
         self._close_log()
-        if code == 0:
+        if stalled:
+            print(
+                f"[warn] epub auto-build stalled, killed after {_REAP_TIMEOUT}s "
+                f"(after {self._reason}) - see logs/epub-build.log"
+            )
+        elif code == 0:
             print(f"[epub-auto] build ok (after {self._reason})")
         else:
             print(f"[warn] epub auto-build failed, exit {code} (after {self._reason}) - see logs/epub-build.log")

@@ -8,6 +8,17 @@ source-or-variant lookup, alt pruning, noop short-circuit, and dry-run, and
 the matcher pre-flight: a deterministic build_matcher failure (an old
 translation of bare punctuation) must fire BEFORE the glossary save.
 
+The recovery case covers the write-ordering contract: chapters are rewritten
+BEFORE glossary.json is saved, so a mid-loop chapter-write failure (an
+attribute-swapped project.atomic_write_text raising OSError on the second
+chapter) re-raises after printing the exact "[warn] replace incomplete:
+k/N chapters rewritten; glossary.json not updated" line with the glossary
+byte-unchanged and only the pre-failure chapters rewritten -- and re-running
+the same command completes idempotently (already-rewritten chapters match
+zero occurrences) and saves the glossary. replace_chapters' optional
+`progress` list collects each durably-rewritten file name (nothing on a
+dry-run), and the util path still works with no progress argument at all.
+
 All chapter/glossary fixtures are built inside tempfile.TemporaryDirectory()
 sandboxes per case — repo fixtures are never touched. Files are written with
 explicit LF newlines so byte-level comparisons are deterministic.
@@ -17,6 +28,8 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
     python tests/test_replace.py
 """
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -205,6 +218,53 @@ def make_glossary_project(td: str) -> tuple[Path, dict[str, bytes]]:
 def load_glossary_entry(root: Path) -> dict:
     data = json.loads((root / "glossary.json").read_text(encoding="utf-8"))
     return data["terms"][0]
+
+
+# ------------------------------------------------------------ case 7 fixtures
+
+REC_FILES = ("Chapter_0001.md", "Chapter_0002.md", "Chapter_0003.md")
+
+
+def rec_chapter(n: int) -> str:
+    return (
+        "---\n"
+        f"chapter_title: 第{['一', '二', '三'][n - 1]}章 试炼\n"
+        f"title: Trial {n}\n"
+        "---\n"
+        "\n"
+        f"The spirit root flared for the {n}th time.\n"
+    )
+
+
+REC_MANIFEST = [
+    {"file": name, "number": i + 1, "order": i, "status": "translated",
+     "title": f"Trial {i + 1}"}
+    for i, name in enumerate(REC_FILES)
+]
+
+
+def make_recovery_project(td: str) -> tuple[Path, dict[str, bytes]]:
+    """Temp project: glossary 灵根 -> 'spirit root' + three translated
+    chapters each carrying one lowercase occurrence; returns (root,
+    bytes-before for the glossary and every chapter)."""
+    root = Path(td)
+    translated = root / "translated"
+    translated.mkdir()
+    write_lf(root / "glossary.json", json.dumps(
+        {"terms": [{
+            "source": "灵根", "translation": "spirit root", "variants": [],
+            "alt_translations": [],
+        }]}, ensure_ascii=False, indent=2) + "\n")
+    write_lf(root / "chapters.json",
+             json.dumps(REC_MANIFEST, ensure_ascii=False, indent=2) + "\n")
+    for i, name in enumerate(REC_FILES, 1):
+        write_lf(translated / name, rec_chapter(i))
+    before: dict[str, bytes] = {
+        "glossary": (root / "glossary.json").read_bytes(),
+    }
+    for name in REC_FILES:
+        before[name] = (translated / name).read_bytes()
+    return root, before
 
 
 # ---------------------------------------------------------------------- cases
@@ -495,6 +555,119 @@ def case_6_preflight() -> None:
               entry["translation"] == "new rendering", f"entry={entry}")
 
 
+def case_7_progress_and_recovery() -> None:
+    """replace_chapters' progress collection (and the plain no-progress util
+    path), then glossary_replace's write ordering: a chapter-write failure
+    mid-loop leaves glossary.json untouched after the exact warn line, and
+    re-running the same command finishes the job idempotently."""
+    # A: the util path with NO progress argument still rewrites everything
+    with tempfile.TemporaryDirectory() as td:
+        root, _before = make_recovery_project(td)
+        rep = R.replace_chapters(root, REC_MANIFEST, "spirit root",
+                                 "spiritual root")
+        check("7a util: no-progress call reports every chapter",
+              rep["changed"] == 3 and rep["occurrences"] == 3
+              and rep["missing"] == [], f"rep={rep}")
+        check("7b util: every chapter rewritten on disk", all(
+            (root / "translated" / n).read_text(encoding="utf-8")
+            == rec_chapter(i).replace("spirit root", "spiritual root")
+            for i, n in enumerate(REC_FILES, 1)), "")
+
+    # B: progress collects each durably-rewritten file name; dry-run collects
+    # nothing (a rewrite that never landed must not be reported as done)
+    with tempfile.TemporaryDirectory() as td:
+        root, _before = make_recovery_project(td)
+        progress: list[str] = []
+        R.replace_chapters(root, REC_MANIFEST, "spirit root", "spiritual root",
+                           progress=progress)
+        check("7c progress: collects rewritten file names in order",
+              progress == list(REC_FILES), f"progress={progress}")
+
+    with tempfile.TemporaryDirectory() as td:
+        root, before = make_recovery_project(td)
+        progress = []
+        rep = R.replace_chapters(root, REC_MANIFEST, "spirit root",
+                                 "spiritual root", dry_run=True,
+                                 progress=progress)
+        check("7d progress: dry-run computes the report but collects nothing",
+              rep["changed"] == 3 and progress == [],
+              f"rep={rep} progress={progress}")
+        check("7e progress: dry-run wrote nothing", all(
+            (root / "translated" / n).read_bytes() == before[n]
+            for n in REC_FILES), "")
+
+    # C: a chapter-write failure on the 2nd chapter -> warn + re-raise,
+    # glossary.json untouched, only chapter 1 rewritten
+    with tempfile.TemporaryDirectory() as td:
+        root, before = make_recovery_project(td)
+        translated = root / "translated"
+        orig_awt = R.project.atomic_write_text
+
+        def flaky_awt(path, text, newline=None):
+            if Path(path).name == "Chapter_0002.md":
+                raise OSError("simulated chapter-write failure")
+            return orig_awt(path, text, newline=newline)
+
+        R.project.atomic_write_text = flaky_awt
+        try:
+            buf = io.StringIO()
+            exc: BaseException | None = None
+            try:
+                with contextlib.redirect_stdout(buf):
+                    R.glossary_replace(root, "灵根", "spiritual root")
+            except Exception as caught:  # noqa: BLE001 - asserted below
+                exc = caught
+        finally:
+            R.project.atomic_write_text = orig_awt
+        out = buf.getvalue()
+        check("7f recovery: the write failure re-raises out of glossary_replace",
+              isinstance(exc, OSError), f"exc={exc!r}")
+        check("7g recovery: exact incomplete warn line, nothing else printed",
+              out == "[warn] replace incomplete: 1/3 chapters rewritten; "
+                     "glossary.json not updated - re-run the same command "
+                     "to finish\n", f"out={out!r}")
+        check("7h recovery: glossary.json bytes unchanged",
+              (root / "glossary.json").read_bytes() == before["glossary"])
+        check("7i recovery: chapter 1 rewritten before the failure",
+              (translated / "Chapter_0001.md").read_text(encoding="utf-8")
+              == rec_chapter(1).replace("spirit root", "spiritual root"),
+              f"got={(translated / 'Chapter_0001.md').read_text(encoding='utf-8')!r}")
+        check("7j recovery: chapters 2-3 untouched",
+              (translated / "Chapter_0002.md").read_bytes()
+              == before["Chapter_0002.md"]
+              and (translated / "Chapter_0003.md").read_bytes()
+              == before["Chapter_0003.md"], "")
+        check("7k recovery: no *.tmp siblings left in translated/",
+              list(translated.glob("*.tmp")) == [],
+              f"tmp={[str(p) for p in translated.glob('*.tmp')]}")
+
+        # D: re-run the SAME command with the failure removed -> completes,
+        # glossary saved; already-rewritten chapter 1 matches zero and is
+        # skipped, so the recovery is idempotent
+        rep = R.glossary_replace(root, "灵根", "spiritual root")
+        check("7l recovery: re-run completes (only the 2 untouched chapters)",
+              rep["chapters"]["changed"] == 2
+              and rep["chapters"]["occurrences"] == 2
+              and rep["chapters"]["per_chapter"]
+              == [("Chapter_0002.md", 1), ("Chapter_0003.md", 1)],
+              f"chapters={rep['chapters']}")
+        entry = load_glossary_entry(root)
+        check("7m recovery: glossary.json now carries the new translation",
+              entry["translation"] == "spiritual root", f"entry={entry}")
+        check("7n recovery: every chapter rewritten after the re-run", all(
+            (translated / n).read_text(encoding="utf-8")
+            == rec_chapter(i).replace("spirit root", "spiritual root")
+            for i, n in enumerate(REC_FILES, 1)), "")
+        check("7o recovery: no *.tmp siblings after the re-run",
+              list(translated.glob("*.tmp")) == [], "")
+        saved = (root / "glossary.json").read_bytes()
+        rep2 = R.glossary_replace(root, "灵根", "spiritual root")
+        check("7p recovery: a third run is a clean noop (old == new)",
+              rep2["glossary"]["noop"] is True
+              and (root / "glossary.json").read_bytes() == saved,
+              f"g={rep2['glossary']}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -506,6 +679,7 @@ def main() -> int:
     case_4_glossary_replace()
     case_5_guards()
     case_6_preflight()
+    case_7_progress_and_recovery()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

@@ -287,7 +287,9 @@ to `logs/epub-build.log` with
 `=== epub build after Chapter_NNNN.md | timestamp ===` separators; the console
 prints `[epub-auto] build ok (after Chapter_NNNN.md)`. Failures are warnings
 only and never change the translate/retry exit code (which still reflects
-translation status). Set `auto_build_epub: false` (default true) in
+translation status); a stalled build is killed after 360s (`[warn] epub
+auto-build stalled, killed after 360s (after <reason>) - see
+logs/epub-build.log`). Set `auto_build_epub: false` (default true) in
 `config.json` to build only via the command above; Ctrl-C kills a running
 background build too. Builds produce no git commits — `export/` and
 `logs/` are gitignored.
@@ -439,15 +441,23 @@ background build too. Builds produce no git commits — `export/` and
   (`retry --chapters N`): `uv run "$SCRIPT" glossary replace --project .
   --source 灵根 --translation "spiritual root" [--keep-alt] [--no-build]
   [--dry-run]` finds the entry by source or variants (exit 2 when unknown),
-  sets `translation` in place, then rewrites the old rendering across
-  chapters — a friendly no-op (exit 0) when the translation already equals
-  the new one; by default it also prunes the old rendering from the entry's
-  `alt_translations` (a stale alt would let the balance check keep counting
-  the old rendering as valid, masking drift), while `--keep-alt` leaves
-  alt_translations untouched for renderings that should stay accepted
-  variants; use `--no-build` to suppress the auto epub build when running
-  many replaces in a batch (e.g. from `review fix`, which always passes it
-  itself and runs exactly one final epub build at the end).
+  rewrites the old rendering across chapters first and saves the new
+  `translation` to glossary.json last — a friendly no-op (exit 0) when the
+  translation already equals the new one. That ordering is the crash
+  recovery story: a run that dies mid-rewrite (e.g. a chapter file held
+  open by another process) prints `[warn] replace incomplete: k/N
+  chapters rewritten; glossary.json not updated - re-run the same command
+  to finish` and fails cleanly (exit 2) with glossary.json still saying
+  the old translation; re-running the same command finishes the job
+  (already-rewritten chapters match zero occurrences and are skipped, so
+  the re-run is idempotent). By default it also prunes the old rendering
+  from the entry's `alt_translations` (a stale alt would let the balance
+  check keep counting the old rendering as valid, masking drift), while
+  `--keep-alt` leaves alt_translations untouched for renderings that
+  should stay accepted variants; use `--no-build` to suppress the auto
+  epub build when running many replaces in a batch (e.g. from
+  `review fix`, which always passes it itself and runs exactly one final
+  epub build at the end).
   `uv run "$SCRIPT" util replace --project . --source "spirit root"
   --target "spiritual root"` is the raw-phrase variant for arbitrary term
   fixes. Both are offline (no LLM calls) and match smartly, mirroring the
@@ -468,7 +478,9 @@ background build too. Builds produce no git commits — `export/` and
   headers, `[replace] Chapter_NNNN.md: N occurrence(s)` per changed
   chapter, `[ok] replaced X occurrence(s) in Y chapter(s) (Z scanned)`,
   `[warn] no occurrences found ...` (still exit 0). Exit codes: 0 success,
-  2 usage/setup (no manifest, unknown glossary term). After any chapter
+  2 usage/setup (no manifest, unknown glossary term) or an interrupted
+  rewrite (glossary.json untouched — re-run the same command to finish).
+  After any chapter
   actually changes (and not `--dry-run`), one synchronous epub build runs
   when `auto_build_epub` is true (default) and novel_info.json exists
   (console `[epub-auto] build ok (after util replace|glossary replace):
@@ -551,7 +563,11 @@ replace`/`set` command whose `--translation` value contains source-script
 `[review fix] skipped [N]: suggestion not in target language` — the same
 rule `review glossary --fix` already enforces) and excluded from the run
 count, so skipped specs surface as findings that need a decision, not
-runtime failures. **The `- Command:` bullet is the contract**:
+runtime failures. A Command bullet carrying `--project` in either form
+(`--project X` or `--project=X`) is likewise skipped (`[review fix]
+skipped [N]: command overrides --project`) — the executor always prepends
+its own `--project`, and one smuggled into a hand-edited report would
+silently retarget the command. **The `- Command:` bullet is the contract**:
 `write_report()` emits it on every finding whose fix is fully determined by
 its structured fields, and `review fix` reads it; the closed vocabulary is
 documented in `references/file-formats.md` (per-finding `glossary replace`

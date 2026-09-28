@@ -260,6 +260,19 @@ def run_commands(
     changed_chapters = False
 
     for i, spec in enumerate(specs, 1):
+        # The writer never emits --project, but the report is hand-editable:
+        # a smuggled --project token would silently override the project dir
+        # the executor prepends below, so such commands are never run.
+        if any(
+            tok == "--project" or tok.startswith("--project=")
+            for tok in spec.argv
+        ):
+            skipped_invalid += 1
+            print(
+                f"[review fix] skipped [{i}]: command overrides --project"
+                f" ({' '.join(shlex.quote(t) for t in spec.argv)})"
+            )
+            continue
         # Reload per spec: earlier subprocesses mutate glossary.json, so a
         # single up-front load would guard against a stale glossary. A
         # corrupt file defers to the subprocess -- the guard's verdict is

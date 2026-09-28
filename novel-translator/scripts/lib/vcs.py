@@ -16,6 +16,7 @@ one [warn] line at most.
 """
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -39,6 +40,7 @@ GIT_USER_EMAIL = "novel-translator@localhost"
 
 # Foreign-repo warnings are deduped per directory: commit() fires after every
 # mutation, so without this a run inside a foreign repo would warn per commit.
+# Keys are normcase()d so Windows path casing (D:\Proj vs d:\proj) is one key.
 _FOREIGN_REPO_WARNED: set[str] = set()
 
 
@@ -129,8 +131,9 @@ def commit(project_dir: Path, subject: str) -> str | None:
     # the user's own repository, and `git add -A` would sweep their pending
     # changes into a skill-labeled commit.
     if not (project_dir / ".gitignore").exists():
-        if str(project_dir) not in _FOREIGN_REPO_WARNED:
-            _FOREIGN_REPO_WARNED.add(str(project_dir))
+        key = os.path.normcase(str(project_dir))
+        if key not in _FOREIGN_REPO_WARNED:
+            _FOREIGN_REPO_WARNED.add(key)
             print(
                 f"[warn] git: skipping commits - {project_dir} looks like a "
                 "foreign repository (no skill .gitignore); add the skill "

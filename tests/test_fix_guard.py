@@ -1,4 +1,4 @@
-"""Tests for fix.invalid_translation_reason() and run_commands' skip guard.
+"""Tests for fix.invalid_translation_reason() and run_commands' skip guards.
 
 `review fix` shells each report command out to the CLI where nothing would
 otherwise re-check model suggestions; invalid_translation_reason() is the
@@ -9,6 +9,16 @@ language", a blank value with "empty translation". The guard mirrors
 review.apply_fixes(): it only fires for CJK-source entries, and never for
 other verbs, missing --translation flags, or unknown sources -- the
 subprocess reports those cases itself.
+
+The --project guard: the writer never emits --project, but the report is
+hand-editable, and the executor always prepends its own --project (the
+GLOBAL flag) -- a smuggled `--project X` or `--project=X` token inside a
+Command line would override that by argparse precedence and run the verb
+against a different project dir. run_commands skips such commands
+in-process (skipped-invalid, never executed -- proven by a second project
+whose glossary stays byte-identical) while a clean command in the same
+report still runs and the failure count stays 0 (exit semantics
+unchanged).
 
 The final case runs run_commands() end-to-end against a temp project: the
 invalid spec is skipped in-process (skipped_invalid=1, no subprocess, no
@@ -40,6 +50,8 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
     python tests/test_fix_guard.py
 """
 
+import contextlib
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -352,6 +364,82 @@ def case_9_noop_classification() -> None:
               "[glossary] set '灵根': already up-to-date\n") is True, "")
 
 
+def case_10_project_override_guard() -> None:
+    """A smuggled --project (either spelling) inside a Command line is
+    skipped in-process, never executed -- proven by a second project whose
+    glossary stays byte-identical -- while the clean command in the same
+    report still runs; failed stays 0, so the CLI's exit semantics are
+    unchanged by the skips."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "灵根", "variants": [], "translation": "spirit root"},
+        ]})
+        # A real second project the smuggled --project points at: had the
+        # command run, THIS glossary would have been rewritten.
+        other = root / "elsewhere"
+        other.mkdir()
+        glossary.save(other, {"terms": [
+            {"source": "灵根", "variants": [], "translation": "spirit root"},
+        ]})
+        other_before = (other / "glossary.json").read_bytes()
+        # as_posix(): an unquoted Windows backslash path would be mangled
+        # by shlex.split(posix=True)'s escape handling.
+        other_flag = other.as_posix()
+
+        report = root / "review-report.md"
+        report.write_text(
+            f"- Command: glossary replace --source '灵根' "
+            f"--translation 'spiritual root' --project {other_flag}\n"
+            f"- Command: glossary replace --source '灵根' "
+            f"--translation 'new root' --project={other_flag}\n"
+            "- Command: glossary set --source '灵根' "
+            "--definition 'A glossary term.'\n",
+            encoding="utf-8",
+        )
+        specs, _count = fix.parse_report(report)
+        check("10a guard: all three bullets parse (the smuggled tokens "
+              "ride along in argv)",
+              len(specs) == 3
+              and specs[0].argv[-2:] == ["--project", other_flag]
+              and specs[1].argv[-1] == f"--project={other_flag}",
+              f"argvs={[s.argv for s in specs]}")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        out = buf.getvalue()
+        check("10b guard: both smuggled commands skipped (skipped_invalid=2)",
+              result["skipped_invalid"] == 2, f"result={result}")
+        check("10c guard: only the clean command executed (specs_run=1)",
+              result["specs_run"] == 1, f"result={result}")
+        check("10d guard: clean command applied, nothing failed (exit "
+              "semantics unchanged)",
+              result["applied"] == 1 and result["failed"] == 0,
+              f"result={result}")
+        expected_1 = (f"[review fix] skipped [1]: command overrides --project "
+                      f"(glossary replace --source '灵根' "
+                      f"--translation 'spiritual root' --project {other_flag})")
+        expected_2 = (f"[review fix] skipped [2]: command overrides --project "
+                      f"(glossary replace --source '灵根' "
+                      f"--translation 'new root' --project={other_flag})")
+        check("10e guard: exact skip line for the '--project X' spelling",
+              expected_1 in out, f"out={out!r}")
+        check("10f guard: exact skip line for the '--project=X' spelling",
+              expected_2 in out, f"out={out!r}")
+        check("10g guard: exactly two override skips printed",
+              out.count("command overrides --project") == 2, f"out={out!r}")
+
+        entry = glossary.load(root)["terms"][0]
+        check("10h guard: the project's translation untouched (replace "
+              "never ran), the clean set applied",
+              entry.get("translation") == "spirit root"
+              and entry.get("definition") == "A glossary term.",
+              f"entry={entry}")
+        check("10i guard: the smuggled target project byte-unchanged",
+              (other / "glossary.json").read_bytes() == other_before, "")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -366,6 +454,7 @@ def main() -> int:
     case_7_mundane_retire_run()
     case_8_new_format_report_parsing()
     case_9_noop_classification()
+    case_10_project_override_guard()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

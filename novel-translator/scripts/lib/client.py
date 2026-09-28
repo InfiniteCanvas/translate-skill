@@ -22,7 +22,11 @@ class LLMError(Exception):
     """Connection, HTTP, or response-shape failure talking to the LLM server."""
 
 
-_MODEL_CACHE: dict[str, str] = {}
+# Model-resolution cache keyed on (normalized base URL, Authorization header
+# value): two jobs may share a base URL with different API keys and see
+# different model lists, so one job's resolution must not pin the other's.
+# Keys stay in memory only and are never logged.
+_MODEL_CACHE: dict[tuple[str, str | None], str] = {}
 _PAIRS = {"{": "}", "[": "]"}
 _FENCE_RE = re.compile(r"^```[\w+-]*[ \t]*\n?(.*?)\n?[ \t]*```$", re.DOTALL)
 _THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
@@ -54,11 +58,15 @@ def auth_headers(provider_cfg: dict) -> dict | None:
 
 def resolve_model(base_url: str, headers: dict | None = None) -> str:
     """GET {base_url}/v1/models and return the first data[].id (cached per
-    base_url in a module dict). Raises LLMError on connection failure or an
-    unexpected payload."""
+    base_url + auth identity in a module dict). Raises LLMError on connection
+    failure or an unexpected payload."""
     base = _v1_url(base_url)
-    if base in _MODEL_CACHE:
-        return _MODEL_CACHE[base]
+    # Auth identity = the resolved Authorization value the models request
+    # just used (None when anonymous), so per-key model lists stay distinct.
+    auth = headers.get("Authorization") if headers else None
+    key = (base, auth)
+    if key in _MODEL_CACHE:
+        return _MODEL_CACHE[key]
     url = base + "/models"
     try:
         resp = requests.get(url, headers=headers, timeout=_MODELS_TIMEOUT)
@@ -73,7 +81,7 @@ def resolve_model(base_url: str, headers: dict | None = None) -> str:
         raise LLMError(f"unexpected payload from {url}: no 'data' list ({str(payload)[:200]})")
     for item in data:
         if isinstance(item, dict) and item.get("id"):
-            _MODEL_CACHE[base] = item["id"]
+            _MODEL_CACHE[key] = item["id"]
             return item["id"]
     raise LLMError(f"unexpected payload from {url}: no model id in 'data' ({str(payload)[:200]})")
 

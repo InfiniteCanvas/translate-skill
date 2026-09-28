@@ -8,8 +8,10 @@ and an optional cover.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -302,7 +304,22 @@ def build(
     out_dir = Path(paths["export"])
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{_slugify(title)}.epub"
-    epub.write_epub(str(out_path), book)
+    # Atomic swap, mirroring project.atomic_write_text's tmp + os.replace
+    # pattern (binary, so not routed through the text helper): a concurrent
+    # build must never observe a half-written epub at the export path.
+    tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
+    try:
+        epub.write_epub(str(tmp), book)
+        for attempt in range(5):  # Windows: replace can race an open reader
+            try:
+                os.replace(tmp, out_path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.1)
+    finally:
+        tmp.unlink(missing_ok=True)
     print(f"[epub] wrote {out_path}")
 
     if skip_check:

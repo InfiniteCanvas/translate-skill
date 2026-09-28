@@ -13,7 +13,10 @@ exactly one "[warn] git: skipping commits - ... foreign repository ..."
 line -- the module-level dedup set makes the second call on the same
 directory fully silent -- and `git add -A` never runs: the dirty file
 stays untracked and no commit lands; run after every earlier case so the
-per-process warn dedup starts empty), cmd_init end to end (a scaffolded
+per-process warn dedup starts empty), the same guard under path casing
+(the dedup key is os.path.normcase()d, so the same directory passed with
+different letter casing to two commit() calls still warns exactly once --
+skipped with a note on case-sensitive filesystems), cmd_init end to end (a scaffolded
 project gets exactly one
 "init: scaffold project" commit plus "[git] initialized repository" and
 "[git] committed" on stdout, and raw config.json carries
@@ -57,6 +60,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -426,6 +430,68 @@ def case_7_foreign_repo() -> None:
               f"rc={status.returncode} out={status.stdout!r}")
 
 
+def case_8_foreign_warn_casing() -> None:
+    """The foreign-repo warn dedup survives path-casing differences: the
+    same directory passed with different letter casing to two commit()
+    calls (D:\\Proj vs d:\\proj on a case-insensitive filesystem) prints
+    the warn exactly once across both -- the dedup key is
+    os.path.normcase()d. Runs last-ish with its own fresh repo, so the
+    module-level dedup set is uncontaminated; skipped with a note when the
+    filesystem treats the cased variants as distinct (case-sensitive)."""
+    if not vcs.available():
+        print("note: git not found on PATH; skipping the warn-casing checks")
+        return
+    with tempfile.TemporaryDirectory() as td:
+        foreign = Path(td) / "ForeignCase"
+        foreign.mkdir()
+        # git init DIRECTLY: ensure_repo() would write the skill .gitignore
+        # and turn the directory into a skill-managed repo.
+        init = subprocess.run(
+            ["git", "init"], cwd=str(foreign), capture_output=True,
+            encoding="utf-8", errors="replace", check=False,
+        )
+        if init.returncode != 0:
+            check("8 setup: git init succeeded", False,
+                  f"rc={init.returncode} err={init.stderr!r}")
+            return
+        (foreign / "pending.txt").write_text(
+            "the user's uncommitted work\n", encoding="utf-8", newline="\n")
+
+        alt = foreign.with_name(foreign.name.swapcase())
+        if str(alt) == str(foreign) or not (alt / ".git").exists():
+            # Case-sensitive filesystem (or an all-digit temp name): the
+            # two casings are different directories, so the normcase dedup
+            # cannot be observed here.
+            print("note: filesystem is case-sensitive; "
+                  "skipping the warn-casing checks")
+            return
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(foreign, "test: foreign repo")
+        out = buf.getvalue()
+        check("8a casing: first call -> None with the foreign-repo warn",
+              sha is None and out.count("[warn] git: skipping commits") == 1
+              and "foreign repository" in out, f"sha={sha!r} out={out!r}")
+
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            sha2 = vcs.commit(alt, "test: foreign repo, other casing")
+        check("8b casing: differently-cased same dir -> silent (warn once)",
+              sha2 is None and buf2.getvalue() == "",
+              f"sha={sha2!r} out={buf2.getvalue()!r}")
+        check("8c casing: exactly one warn across BOTH calls",
+              (out + buf2.getvalue()).count("[warn] git: skipping commits") == 1,
+              f"combined={out + buf2.getvalue()!r}")
+        check("8d casing: dedup key was normcase()d",
+              os.path.normcase(str(foreign)) in vcs._FOREIGN_REPO_WARNED
+              and str(foreign) not in vcs._FOREIGN_REPO_WARNED,
+              f"warned={vcs._FOREIGN_REPO_WARNED!r}")
+        _rc, subjects = git_log_subjects(foreign)
+        check("8e casing: nothing ever committed",
+              subjects == [], f"subjects={subjects!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -438,6 +504,7 @@ def main() -> int:
     case_5_v003_dry_run()
     case_6_never_raises()
     case_7_foreign_repo()
+    case_8_foreign_warn_casing()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
