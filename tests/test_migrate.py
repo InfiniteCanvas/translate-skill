@@ -21,13 +21,15 @@ missing-project CliError, v002's direct add-only materialize (user-set
 values -- including ones already sitting under the new key names -- survive
 verbatim, a file missing exactly the new keys gets them reported and
 defaulted, a second identical run reports [] and writes nothing), and the
-real package's chain() == [v001, v002, v003, v004, v005, v006] with
-current_version() == 6 (v003's own behavior tests live in
+real package's chain() == [v001, v002, v003, v004, v005, v006, v007] with
+current_version() == 7 (v003's own behavior tests live in
 tests/test_git.py; only the chain shape is pinned here, plus v004's
 direct add-only materialize of min_term_occurrences mirroring the v002
 cases, and v005's direct templates-only sync -- config.json never
 touched; v006 is templates-only like v005, so only its chain shape and
-exact DESCRIPTION are pinned).
+exact DESCRIPTION are pinned; v007's recap-job materialize plus the
+three-template sync has its own direct case AND a chain-walked v6-era
+end-to-end case).
 
 cmd_migrate reads translate.TEMPLATES_SRC_DIR, migrations.chain, and (all
 as module-global lookups at call time) translate._confirm_template_refresh,
@@ -67,7 +69,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
-from migrations import v002, v004, v005, v006  # noqa: E402
+from migrations import v002, v004, v005, v006, v007  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -149,7 +151,7 @@ def case_1_v001() -> None:
     --dry-run); materialize DEFAULTS preserving user values; stamp the
     chain-head version; second run no-op; the already-current maintenance
     pass (trap fixed)."""
-    HEAD = migrations.current_version()  # real chain head (6 since v006)
+    HEAD = migrations.current_version()  # real chain head (7 since v007)
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
@@ -205,7 +207,7 @@ def case_1_v001() -> None:
             check("1h v001: user provider endpoint preserved",
                   disk["providers"]["translator"]["base_url"] == "http://mine:9999/v1"
                   and disk["providers"]["translator"]["model"] == "m1")
-            check("1i v001: all five provider jobs filled",
+            check("1i v001: every provider job filled",
                   sorted(disk["providers"]) == sorted(config.PROVIDER_JOBS),
                   f"jobs={sorted(disk['providers'])}")
             check("1j chain: version stamped to the chain head",
@@ -490,17 +492,17 @@ def case_3_not_a_project() -> None:
 
 def case_4_real_chain() -> None:
     """The real migrations package: exactly [v001, v002, v003, v004, v005,
-    v006], VERSIONs [1, 2, 3, 4, 5, 6], head version 6. v003's behavior is
-    covered in tests/test_git.py, v004's in case 7 and v005's in case 8;
-    only the chain shape is pinned here."""
+    v006, v007], VERSIONs [1, 2, 3, 4, 5, 6, 7], head version 7. v003's
+    behavior is covered in tests/test_git.py, v004's in case 7, v005's in
+    case 8, and v007's in case 9; only the chain shape is pinned here."""
     steps = migrations.chain()
-    check("4a real chain: six steps v001..v006, VERSIONs 1, 2, 3, 4, 5, 6",
-          len(steps) == 6 and [s.VERSION for s in steps] == [1, 2, 3, 4, 5, 6]
+    check("4a real chain: seven steps v001..v007, VERSIONs 1..7",
+          len(steps) == 7 and [s.VERSION for s in steps] == [1, 2, 3, 4, 5, 6, 7]
           and [s.__name__[-4:] for s in steps]
-          == ["v001", "v002", "v003", "v004", "v005", "v006"],
+          == ["v001", "v002", "v003", "v004", "v005", "v006", "v007"],
           f"steps={[getattr(s, '__name__', s) for s in steps]}")
-    check("4b real chain: all six steps expose DESCRIPTION and callable migrate",
-          len(steps) == 6
+    check("4b real chain: all seven steps expose DESCRIPTION and callable migrate",
+          len(steps) == 7
           and all(isinstance(s.DESCRIPTION, str) for s in steps)
           and all(callable(s.migrate) for s in steps))
     check("4c real chain: v003's DESCRIPTION string is exact",
@@ -519,7 +521,11 @@ def case_4_real_chain() -> None:
           steps[5].DESCRIPTION == "transliterated measurement units: "
           "conversion-note guidance and the guide-only unit category",
           f"DESCRIPTION={steps[5].DESCRIPTION!r}")
-    check("4d real chain: current_version() == 6", migrations.current_version() == 6)
+    check("4c5 real chain: v007's DESCRIPTION string is exact",
+          steps[6].DESCRIPTION == "materialize the recap provider job; "
+          "ship recap.md and notes_review.md; refresh tn_generate.md",
+          f"DESCRIPTION={steps[6].DESCRIPTION!r}")
+    check("4d real chain: current_version() == 7", migrations.current_version() == 7)
 
 
 def case_5_confirm_prompt() -> None:
@@ -853,6 +859,192 @@ def case_8_v005() -> None:
               f"lines={lines_s!r}")
 
 
+def case_9_v007() -> None:
+    """v007 called directly AND chain-walked end to end.
+
+    Direct (no cmd_migrate, no version stamping): a v6-era config.json
+    (every DEFAULTS key -- v007 adds none -- full provider blocks for every
+    v6-era job, user-tuned max_attempts, version 6) gains the recap
+    provider block through materialize_config's provider normalization
+    (report: "provider blocks normalized", no materialize-count line since
+    no top-level key is new; the omitted recap job inherits the project's
+    translator block per the documented rule, so its custom endpoint
+    survives). The three template changes land: recap.md and
+    notes_review.md copied as "(new)", a drifted tn_generate.md refreshed
+    with --force and kept with the non-interactive warning at confirm=None.
+    The step never moves the version stamp, and a second identical call
+    over the fully-synced result reports [] and writes nothing.
+
+    Chain-walked (cmd_migrate): a v6-era project applies ONLY v007 (the
+    version gate skips v001-v006), stamps 7, and syncs the drifted
+    tn_generate.md byte-equal to the shipped copy after one accepted
+    prompt; --dry-run reports the same would-be changes ("version 6 -> 7")
+    while writing nothing."""
+    def make_v6_project(root: Path, name: str) -> Path:
+        """A project as v006 left it: every DEFAULTS key (v007 adds none),
+        full provider blocks for every v6-era job EXCEPT recap (the one
+        v007 materializes -- an omitted job inherits the translator block),
+        a user-tuned max_attempts, version stamped to 6, and a templates/
+        dir holding the v6-era tn_generate.md (drifted after v007's
+        rewrite) but neither recap.md nor notes_review.md."""
+        proj = root / name
+        proj.mkdir()
+        cfg = dict(config.DEFAULTS)
+        cfg.update({
+            "source_lang": "zh",
+            "target_lang": "en",
+            "max_attempts": 9,
+            "version": 6,
+            "providers": {
+                job: {**config.PROVIDER_DEFAULTS[job],
+                      "base_url": "http://mine:9999/v1", "model": "m1"}
+                for job in config.PROVIDER_JOBS if job != "recap"
+            },
+        })
+        (proj / "config.json").write_text(
+            json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        tdir = proj / "templates"
+        tdir.mkdir()
+        (tdir / "tn_generate.md").write_text(
+            "v6-era tn prompt\n", encoding="utf-8", newline="\n")
+        return proj
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+        # The three v007 template changes: two newly shipped templates and
+        # the rewritten annotator prompt.
+        (src / "recap.md").write_text("v7 recap prompt\n", encoding="utf-8",
+                                      newline="\n")
+        (src / "notes_review.md").write_text("v7 notes review prompt\n",
+                                             encoding="utf-8", newline="\n")
+        (src / "tn_generate.md").write_text("v7 tn prompt\n", encoding="utf-8",
+                                            newline="\n")
+
+        # Direct call, confirm=None (cmd_migrate's non-interactive form):
+        # recap job materialized, both new templates copied, drifted
+        # tn_generate.md kept with the non-interactive warning.
+        proj = make_v6_project(root, "direct")
+        lines = v007.migrate(proj, src)
+        check("9a v007: recap job materialized, both templates added, drift kept",
+              lines == ["[ok] config: provider blocks normalized (no new top-level keys)",
+                        "[ok] templates + notes_review.md (new)",
+                        "[ok] templates + recap.md (new)",
+                        "[warn] templates ~ tn_generate.md differs from shipped - "
+                        "kept yours (non-interactive; --force to overwrite)"],
+              f"lines={lines!r}")
+        disk = json.loads((proj / "config.json").read_text(encoding="utf-8"))
+        check("9b v007: every provider job present afterwards, recap included",
+              sorted(disk["providers"]) == sorted(config.PROVIDER_JOBS),
+              f"jobs={sorted(disk['providers'])}")
+        check("9c v007: materialized recap job inherits the translator block",
+              disk["providers"]["recap"]["base_url"] == "http://mine:9999/v1"
+              and disk["providers"]["recap"]["model"] == "m1"
+              and disk["providers"]["recap"]["temperature"] == 0.7,
+              f"recap={disk['providers'].get('recap')!r}")
+        check("9d v007: user-set max_attempts survives the materialize",
+              disk.get("max_attempts") == 9, f"max_attempts={disk.get('max_attempts')!r}")
+        check("9e v007: the step itself never moves the version stamp",
+              disk.get("version") == 6, f"version={disk.get('version')!r}")
+        check("9f v007: new templates copied, drifted copy kept at confirm=None",
+              (proj / "templates" / "recap.md").read_text(encoding="utf-8") == "v7 recap prompt\n"
+              and (proj / "templates" / "notes_review.md").read_text(encoding="utf-8")
+              == "v7 notes review prompt\n"
+              and (proj / "templates" / "tn_generate.md").read_text(encoding="utf-8")
+              == "v6-era tn prompt\n")
+
+        # --force: the drifted annotator prompt refreshes to the shipped
+        # bytes silently; config is already merged so it stays untouched.
+        cfg_bytes = (proj / "config.json").read_bytes()
+        lines_f = v007.migrate(proj, src, force=True)
+        check("9g v007: --force refreshes the drifted tn_generate.md",
+              lines_f == ["[ok] templates ~ tn_generate.md refreshed (--force)"]
+              and (proj / "templates" / "tn_generate.md").read_bytes()
+              == (src / "tn_generate.md").read_bytes(), f"lines={lines_f!r}")
+        check("9h v007: --force leaves the already-merged config alone",
+              (proj / "config.json").read_bytes() == cfg_bytes)
+
+        # Idempotency: config merged, all three templates matching -- a
+        # second run reports [] and writes nothing (byte snapshot).
+        before = snapshot(proj)
+        again = v007.migrate(proj, src)
+        check("9i v007: second identical call returns []",
+              again == [], f"lines={again!r}")
+        check("9j v007: second call wrote nothing (byte snapshot equal)",
+              snapshot(proj) == before)
+
+    # Chain-walked end to end through cmd_migrate: the v6 stamp gates the
+    # chain to v007 alone, the applied step stamps 7, and the accepted
+    # prompt refreshes the drifted tn_generate.md byte-equal to the ship
+    # dir. (No git setup needed: v003 never runs for a version-6 project,
+    # and vcs.commit is a silent no-op on a non-repo directory.)
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+        for name, body in (("recap.md", "v7 recap prompt\n"),
+                           ("notes_review.md", "v7 notes review prompt\n"),
+                           ("tn_generate.md", "v7 tn prompt\n")):
+            (src / name).write_text(body, encoding="utf-8", newline="\n")
+
+        ns = argparse.Namespace(dry_run=False, force=False)
+        orig_tpl = translate.TEMPLATES_SRC_DIR
+        translate.TEMPLATES_SRC_DIR = src
+        try:
+            asked: list[str] = []
+
+            def yes_confirm(question: str) -> bool:
+                asked.append(question)
+                return True
+
+            full = make_v6_project(root, "full")
+            with patched_confirm(yes_confirm):
+                code, out, exc = run_migrate(ns, full)
+            disk = json.loads((full / "config.json").read_text(encoding="utf-8"))
+            check("9k v007: chain-walked v6 project applies only v007, exit 0",
+                  code == 0 and exc is None and "applying v007" in out
+                  and "applying v006" not in out
+                  and len([ln for ln in out.splitlines() if ln.startswith("[migrate]")]) == 1,
+                  f"code={code} exc={exc!r} out={out}")
+            check("9l v007: version stamped to 7 with the recap job materialized",
+                  disk.get("version") == 7
+                  and sorted(disk["providers"]) == sorted(config.PROVIDER_JOBS),
+                  f"version={disk.get('version')!r}")
+            check("9m v007: drifted tn_generate.md refreshed byte-equal after one prompt",
+                  (full / "templates" / "tn_generate.md").read_bytes()
+                  == (src / "tn_generate.md").read_bytes()
+                  and (full / "templates" / "recap.md").read_text(encoding="utf-8")
+                  == "v7 recap prompt\n"
+                  and (full / "templates" / "notes_review.md").read_text(encoding="utf-8")
+                  == "v7 notes review prompt\n"
+                  and len(asked) == 1 and "tn_generate.md" in asked[0],
+                  f"asked={asked!r}")
+
+            # --dry-run: same would-be changes reported (the new templates,
+            # the pending y/N choice, "version 6 -> 7"), nothing written --
+            # byte snapshot equal, version still 6, no templates added.
+            dry = make_v6_project(root, "dry")
+            before_dry = snapshot(dry)
+            with patched_confirm(refuse_confirm):
+                code_d, out_d, exc_d = run_migrate(
+                    argparse.Namespace(dry_run=True, force=False), dry)
+            dry_disk = json.loads((dry / "config.json").read_text(encoding="utf-8"))
+            check("9n v007: --dry-run reports the recap materialize and both templates",
+                  code_d == 0 and exc_d is None
+                  and "[dry-run] [ok] config: provider blocks normalized" in out_d
+                  and "[dry-run] [ok] templates + recap.md (new)" in out_d
+                  and "[dry-run] [ok] templates + notes_review.md (new)" in out_d
+                  and "would migrate project: version 6 -> 7" in out_d,
+                  f"code={code_d} exc={exc_d!r} out={out_d}")
+            check("9o v007: --dry-run writes nothing (byte snapshot, version, templates)",
+                  snapshot(dry) == before_dry and dry_disk.get("version") == 6
+                  and not (dry / "templates" / "recap.md").exists(),
+                  f"version={dry_disk.get('version')!r}")
+        finally:
+            translate.TEMPLATES_SRC_DIR = orig_tpl
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -866,6 +1058,7 @@ def main() -> int:
     case_6_v002()
     case_7_v004()
     case_8_v005()
+    case_9_v007()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

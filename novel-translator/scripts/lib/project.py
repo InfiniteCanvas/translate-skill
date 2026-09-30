@@ -40,6 +40,7 @@ def paths(project_dir: Path) -> dict:
         "manifest": root / "chapters.json",
         "glossary": root / "glossary.json",
         "tn_history": root / "tn_history.json",
+        "story_state": root / "story_state.json",
         "notes": root / "notes",
     }
 

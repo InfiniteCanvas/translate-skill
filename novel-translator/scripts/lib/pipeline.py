@@ -9,6 +9,15 @@ in BALANCE are likewise applied only on the accepted attempt.
 Progress is persisted in draft/<stem>.state.json after every stage, so an
 interrupted chapter resumes at the failed stage instead of restarting, and a
 failed attempt re-runs TRANSLATE with the accumulated reviewer feedback.
+Inside TRANSLATE the persistence is per chunk: validated part translations
+append to the state's "chunks" list as they complete (deterministic
+token-budget packing keeps the bounds stable across resumes), so a crash or
+Ctrl-C loses at most the in-flight part.
+
+Cross-chapter context beyond the glossary: a rolling story-so-far recap
+(story_state.json, one <= 120-word entry per chapter maintained by lib/story)
+rides the [Background Information] frame into every prompt that fills
+{{background_section}} -- TRANSLATE, FAITH, and TN_GENERATE.
 """
 
 from __future__ import annotations
@@ -19,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from lib import assemble, autobuild, balance, client, config, glossary, logger, project, styles, tn, vcs
+from lib import assemble, autobuild, balance, client, config, glossary, logger, project, story, styles, tn, vcs
 
 STAGES = (
     "TRANSLATE",
@@ -104,6 +113,10 @@ NOTES_SCHEMA: dict[str, Any] = {
                     "line": {"type": "integer"},
                     "term": {"type": "string"},
                     "note": {"type": "string"},
+                    # What kind of context the note carries (glossary-aware
+                    # TN annotation); OPTIONAL -- models may omit it and
+                    # tn.process silently defaults to "other".
+                    "category": {"type": "string", "enum": list(tn.NOTE_CATEGORIES)},
                     # Optional self-assessed comprehension threshold
                     # (Hy-MT2's cultural-adaptation pattern); tn.process
                     # discards "low" entries. Missing = keep.
@@ -627,21 +640,89 @@ def _apply_pending_cleanup(project_dir: Path, pending: dict, chapter: str, tag: 
     return bool(removed)
 
 
+def _line_output_cost(line: str) -> int:
+    """Per-line TRANSLATE output cost: CJK chars x1.0, other chars /4, plus
+    the numbered-JSON wrapper (~10 tokens per line). The chunk packer sums
+    these; the +256 per-chunk overhead is added once per chunk.
+
+    Same conservatism as _estimate_output_tokens (English renderings run
+    ~0.7 tokens per CJK char, so 1.0 keeps the estimate above reality).
+    Shares balance.CJK_RE with the balance checks so the chunker and the
+    counters speak the same CJK class.
+    """
+    cjk = len(balance.CJK_RE.findall(line))
+    return int(cjk * 1.0 + (len(line) - cjk) / 4) + 10
+
+
 def _estimate_output_tokens(lines: list[str]) -> int:
-    """Conservative estimate of the TRANSLATED output size in tokens.
+    """Conservative estimate of the TRANSLATED output size in tokens
+    (per-line costs + the 256-token chunk overhead applied once).
+
+    Test-facing whole-chapter estimator -- its only caller is
+    tests/test_chunking.py; the chunker itself packs from _line_output_cost
+    directly via _pack_chunks.
 
     The English rendering of CJK text runs roughly 0.7 tokens per character;
     1.0/char plus the numbered-JSON wrapper (~10 tokens per line) keeps the
     estimate safely above reality, so chunk boundaries only trigger when the
     output genuinely cannot fit the per-call cap.
     """
-    text = "\n".join(lines)
-    # balance.CJK_RE is the skill-wide CJK class (slightly wider than the old
-    # local range: adds CJK compat ideographs + halfwidth katakana) -- an
-    # estimate only tolerates the delta, and sharing one regex keeps the
-    # chunker and the balance checks speaking the same language.
-    cjk = len(balance.CJK_RE.findall(text))
-    return int(cjk * 1.0 + (len(text) - cjk) / 4) + len(lines) * 10 + 256
+    return sum(_line_output_cost(ln) for ln in lines) + 256
+
+
+def _pack_chunks(source_lines: list[str], max_out: int,
+                 escalated: int) -> list[tuple[int, int, int]]:
+    """Greedy per-line token-budget packing of the chapter into chunks.
+
+    Chunks are sized by the same per-line output cost the estimator uses,
+    against budget = floor(0.8 * max_out) -- the 0.8 headroom absorbs
+    estimate error -- minus the 256 per-chunk overhead: a chunk closes when
+    the next line would overflow that room, and always takes >= 1 line (no
+    empty chunks). A single line whose cost exceeds the whole budget cannot
+    share a chunk with anything (guaranteed truncation at max_out), so it is
+    isolated as a singleton called directly at the escalated cap.
+
+    Deterministic given (source_lines, max_out, escalated): the same source
+    and config always reproduce identical bounds, which the feedback slicing
+    (_feedback_section's [lo, hi)) and crash resume both rely on.
+
+    Returns [(lo, hi, first_call_max_tokens), ...] with half-open line
+    bounds. Raises ValueError naming the offending line when one line's
+    estimated output cannot fit even the escalated cap (the caller turns it
+    into normal TRANSLATE attempt feedback -- no LLM call is burned).
+    """
+    budget = max_out * 4 // 5  # floor(0.8 * max_out) headroom
+    room = budget - 256
+    plan: list[tuple[int, int, int]] = []
+    lo = 0
+    cost = 0
+    for i, line in enumerate(source_lines):
+        c = _line_output_cost(line)
+        if c + 256 > escalated:
+            raise ValueError(
+                f"source line {i + 1} alone exceeds the output budget "
+                f"(estimated {c} tokens > {escalated} cap); "
+                "split or shorten the line manually"
+            )
+        if i > lo and cost + c > room:
+            plan.append((lo, i, escalated if cost > budget else max_out))
+            lo = i
+            cost = c
+        else:
+            cost += c
+    if lo < len(source_lines):
+        plan.append((lo, len(source_lines),
+                     escalated if cost > budget else max_out))
+    return plan
+
+
+def _response_cut(resp: str) -> bool:
+    """Does an unparseable response look truncated (opened JSON, never
+    closed it)? Drives the escalating corrective retry: a cut response gets
+    one retry at a bumped max_tokens, while other shape problems retry at
+    the same cap."""
+    s = resp.strip()
+    return bool(s) and s[-1] not in "}]"
 
 
 def _chat(project_dir: Path, cfg: dict, job: str, prompt: str,
@@ -657,6 +738,47 @@ def _chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     return client.chat(config.provider(cfg, job), prompt,
                        json_schema=json_schema, meta_hook=hook,
                        max_tokens=max_tokens)
+
+
+def _notes_report_line(tag: str, stem: str, kept: list[dict],
+                       dropped: list[dict]) -> str:
+    """TN_DEDUP summary line: kept notes broken down by category, drops by
+    reason, and -- when anything was dropped -- a pointer to the
+    notes/<stem>.dropped.json review artifact.
+
+    Exact shapes: categories count non-zero entries in NOTE_CATEGORIES
+    order ("wordplay 1, idiom 2, ..."; all-"other" keeps show "other K");
+    a zero-kept chapter omits the parenthetical entirely. Drop reasons
+    count in the fixed order low_threshold -> overflow -> invalid, labeled
+    low-confidence / overflow / invalid ("3 low-confidence, 1 overflow").
+    """
+    counts = {category: 0 for category in tn.NOTE_CATEGORIES}
+    for note in kept:
+        category = note.get("category")
+        counts[category if category in counts else "other"] += 1
+    line = f"{tag} [ok] notes: {len(kept)} kept"
+    if kept:
+        line += " (" + ", ".join(
+            f"{category} {count}"
+            for category, count in counts.items() if count
+        ) + ")"
+    if dropped:
+        labels = {"low_threshold": "low-confidence", "overflow": "overflow",
+                  "invalid": "invalid"}
+        reasons = {reason: 0 for reason in tn.DROP_REASONS}
+        for entry in dropped:
+            reason = entry.get("reason")
+            if reason in reasons:
+                reasons[reason] += 1
+        line += (
+            f"; {len(dropped)} dropped ("
+            + ", ".join(
+                f"{reasons[reason]} {labels[reason]}"
+                for reason in tn.DROP_REASONS if reasons[reason]
+            )
+            + f") -> notes/{stem}.dropped.json"
+        )
+    return line
 
 
 # --------------------------------------------------------------------------
@@ -687,6 +809,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             (paths["draft"] / artifact).unlink(missing_ok=True)
         (paths["translated"] / file).unlink(missing_ok=True)
         (tn.notes_path(project_dir, file)).unlink(missing_ok=True)
+        (tn.dropped_path(project_dir, file)).unlink(missing_ok=True)
         print(f"{tag} [init] force: removed previous draft and translated artifacts")
 
     state = load_state(paths["draft"], file)
@@ -697,6 +820,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             "feedback": [],
             "title": None,
             "lines": None,
+            # Per-chunk TRANSLATE persistence: completed chunk translations
+            # (list of line lists) while TRANSLATE is in flight; popped once
+            # the full lines list lands (see the TRANSLATE stage).
+            "chunks": None,
             "notes": None,
             "rejected": None,
             "updated_at": "",
@@ -707,6 +834,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     state.setdefault("feedback", [])
     state.setdefault("title", None)
     state.setdefault("lines", None)
+    state.setdefault("chunks", None)
     state.setdefault("notes", None)
     state.setdefault("rejected", None)
 
@@ -730,7 +858,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         print(f"{tag} [init] resuming at stage {state['stage']} (attempt {state['attempt']})")
     else:
         state["lines"] = None
-        state["title"] = None
+        # Keep the title stashed alongside resumable chunks (a crash resume
+        # mid-TRANSLATE reuses it); without chunks the attempt starts clean.
+        if not (isinstance(state.get("chunks"), list) and state["chunks"]):
+            state["title"] = None
 
     project.set_status(manifest, file, "in-progress")
     project.save_manifest(project_dir, manifest)
@@ -794,10 +925,20 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         novel_info.get("background") or style_profile.get("background") or ""
     ).strip()
 
+    # Rolling story recap (advisory cross-chapter plot context): resolve the
+    # recap to inject BEFORE the attempt loop -- a state hit costs no LLM
+    # call, and the one-call backfill self-heals a predecessor translated
+    # before the feature existed. Any failure degrades to "" (no recap).
+    prev_recap = story.ensure_recap(project_dir, cfg, manifest, file, tag)
+    recap_section = story.story_part(prev_recap)
+
     def background_section(extra: str = "") -> str:
         """Render the Hy-MT2 [Background Information] frame; empty when there
-        is nothing to say (keeps templates clean for unprofiled projects)."""
-        parts = [p for p in (novel_background, extra.strip()) if p]
+        is nothing to say (keeps templates clean for unprofiled projects).
+        Parts order: novel background, rolling story recap, then the caller's
+        extra (the chunk-tail continuity note), so the recap reaches every
+        prompt that fills {{background_section}}."""
+        parts = [p for p in (novel_background, recap_section, extra.strip()) if p]
         if not parts:
             return ""
         return "[Background Information]\n" + "\n".join(parts) + "\n"
@@ -858,29 +999,53 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 # Whole-chapter translation by default: the model sees the
                 # novel's full context, which beats fragmenting it. Only the
                 # OUTPUT is constrained: when the expected translated output
-                # exceeds translate_max_output_tokens, the chapter splits into
-                # balanced parts (each still carrying style background and
-                # the previous part's tail; the numbered-line protocol and
-                # the corrective retry keep the line contract either way).
+                # exceeds translate_max_output_tokens, the chapter splits
+                # into token-budget-packed parts (each still carrying style
+                # background and the previous part's tail; the numbered-line
+                # protocol and the corrective retry keep the line contract
+                # either way).
                 max_out = int(_cfg_value(cfg, "translate_max_output_tokens"))
-                est_out = _estimate_output_tokens(source_lines)
-                n_chunks = 1 if est_out <= max_out else (est_out + max_out - 1) // max_out
+                # Escalated cap for truncating chunks: ~1.5x the normal cap,
+                # never above the provider's own max_tokens.
+                provider_max = int(
+                    config.provider(cfg, "translator").get("max_tokens") or 16384
+                )
+                escalated = min(int(round(max_out * 1.5)), provider_max)
+                plan = _pack_chunks(source_lines, max_out, escalated)
+                n_chunks = len(plan)
                 src_total = len(source_lines)
-                base, extra = divmod(src_total, n_chunks)
+                # Per-chunk persistence (crash resume): validated chunk
+                # translations were appended to state["chunks"] as they
+                # completed. Packing is deterministic, so the recomputed
+                # bounds line up with the saved ones -- unless the source or
+                # config changed between runs, in which case the saved
+                # chunks are unusable and the chapter restarts from scratch.
+                completed = [c for c in (state.get("chunks") or [])
+                             if isinstance(c, list)]
+                if (len(completed) > n_chunks
+                        or any(len(completed[i]) != plan[i][1] - plan[i][0]
+                               or not all(isinstance(ln, str) for ln in completed[i])
+                               for i in range(len(completed)))):
+                    print(f"{tag} [warn] saved chunks do not match the current packing "
+                          "(source or config changed?) - retranslating from scratch")
+                    completed = []
+                tlines: list[str] = [ln for c in completed for ln in c]
                 title: str | None = None
-                tlines: list[str] = []
-                lo = 0
-                for k in range(n_chunks):
-                    size = base + (1 if k < extra else 0)
-                    chunk = source_lines[lo:lo + size]
-                    hi = lo + size
+                if completed:
+                    # The title stashed by earlier chunks survives the resume.
+                    prev_title = state.get("title")
+                    if isinstance(prev_title, str) and prev_title:
+                        title = prev_title
+                if 0 < len(completed) < n_chunks:
+                    print(f"{tag} [init] resuming translation at part "
+                          f"{len(completed) + 1}/{n_chunks} "
+                          f"({len(tlines)} lines already done)")
+                for k in range(len(completed), n_chunks):
+                    lo, hi, call_max_tokens = plan[k]
+                    chunk = source_lines[lo:hi]
                     expected = list(range(lo + 1, hi + 1))
                     if n_chunks > 1:
                         print(f"{tag} [init] translating part {k + 1}/{n_chunks} (lines {lo + 1}-{hi})")
-                    # Fixed output cap in the model card's recommended range;
-                    # rambles terminate fast, and the chunk sizing above
-                    # guarantees legitimate output always fits.
-                    call_max_tokens = max_out
                     numbered = [{"i": lo + j + 1, "t": ln} for j, ln in enumerate(chunk)]
                     if k == 0 or not tlines:
                         chunk_background = background_section()
@@ -926,6 +1091,9 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                         got = data.get("lines") if isinstance(data, dict) else None
                         ctitle = data.get("title") if isinstance(data, dict) else None
                         problem = ""
+                        # Truncation signature (drives the escalating retry):
+                        # missing line indices, or a response cut mid-JSON.
+                        truncated = data is None and _response_cut(resp)
                         if not isinstance(ctitle, str) or not isinstance(got, list):
                             problem = (
                                 "response was not a JSON object with a 'title' string and a "
@@ -946,6 +1114,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                             else:
                                 bits = []
                                 if missing:
+                                    truncated = True
                                     bits.append("missing line(s) " + ", ".join(map(str, missing)))
                                 if dupes:
                                     bits.append("duplicated line index(es) " + ", ".join(dupes))
@@ -975,6 +1144,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                             "echoing each input line's i."
                         )
                         if chunk_attempt == 1:
+                            if truncated:
+                                # The response looks cut off: retry once at a
+                                # bumped cap (still under the provider max).
+                                call_max_tokens = escalated
                             retry_ctx = dict(chunk_ctx)
                             retry_ctx["feedback_section"] = (
                                 "NOTE: the previous response for this part was rejected. Fix "
@@ -987,7 +1160,15 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     if clines is None:  # defensive; unreachable via the loop above
                         raise ValueError(f"TRANSLATE part {k + 1} produced no valid lines")
                     tlines.extend(clines)
-                    lo = hi
+                    # Persist the validated chunk immediately: a crash or
+                    # Ctrl-C loses at most the in-flight chunk. The title
+                    # rides along so a resume never re-burns a call for it.
+                    completed.append(clines)
+                    state["chunks"] = completed
+                    if title is not None:
+                        state["title"] = title
+                    save_state(paths["draft"], file, state)
+                state.pop("chunks", None)  # the full lines list is authoritative
                 state["title"] = title or ""
                 state["lines"] = tlines
                 project.write_chapter(
@@ -1189,18 +1370,26 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         if failed_stage is None and start_idx <= _STAGE_IDX["TN_DEDUP"]:
             advance("TN_DEDUP")
             # ---------------- TN_DEDUP ----------------
-            kept_notes, history, warnings = tn.process(
+            # max_notes is enforced HERE (not by trusting the model): the
+            # prompt asks for at most max_notes severity-ordered entries,
+            # and the cap truncates whatever actually came back. The cut
+            # tail, the low-threshold discards, and invalid entries land in
+            # notes/<stem>.dropped.json for review.
+            kept_notes, history, warnings, dropped = tn.process(
                 state["notes"] or [],
                 len(lines),
                 chapter_order,
                 tn.load_history(project_dir),
                 int(_cfg_value(cfg, "tn_gap_chapters")),
                 bool(_cfg_value(cfg, "tn_keep_low_confidence")),
+                max_notes=int(_cfg_value(cfg, "max_notes_per_chapter")),
             )
             tn.save_history(project_dir, history)
             state["notes"] = kept_notes
             for warning in warnings:
                 print(f"{tag} [warn] {warning}")
+            tn.save_dropped(project_dir, file, dropped)
+            print(_notes_report_line(tag, stem, kept_notes, dropped))
 
         if failed_stage is None:
             # ---------------- ASSEMBLE ----------------
@@ -1218,6 +1407,16 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 f"{tag} [ok] translated -> {out_path.name} "
                 f"(title: {state['title']}, notes: {len(state['notes'] or [])})"
             )
+            # Rolling recap: record this chapter's own entry after assembly
+            # (run_range's chapter commit versions story_state.json with the
+            # chapter). Its failure must never affect the translated outcome
+            # -- the helper already swallows everything; this belt is cheap.
+            try:
+                story.record_recap(project_dir, cfg, manifest, file,
+                                   state["title"] or "", "\n".join(lines),
+                                   prev_recap, tag)
+            except Exception as exc:  # noqa: BLE001 - defensive only
+                print(f"{tag} [warn] recap generation failed for {file}: {exc}")
             return "translated"
 
         # ---------------- failure handling ----------------
@@ -1228,6 +1427,13 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         # non-null lines would make a crash+resume re-validate the already
         # rejected lines and burn attempts without ever re-translating.
         state["stage"] = "TRANSLATE"
+        if failed_stage != "TRANSLATE":
+            # A gate-rejected attempt retranslates the whole chapter (the
+            # rejected snapshot covers all lines), so per-chunk resume state
+            # must not survive into the retry. A TRANSLATE-stage failure
+            # keeps its chunks: the validated parts are exactly what a
+            # crash resume would reuse.
+            state["chunks"] = []
         if lines:
             # Snapshot the translation the gate just rejected so the retry
             # prompt can show it, not just the feedback bullets. Kept when a

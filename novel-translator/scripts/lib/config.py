@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "profile")
+PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "profile")
 
 DEFAULTS: dict = {
     "seed_min_count": 3,
@@ -26,9 +26,9 @@ DEFAULTS: dict = {
     "max_new_terms_per_chapter": 15,
     "max_notes_per_chapter": 10,
     # Per-call OUTPUT cap for translation (model card recommends 4k-8k) and
-    # the chunking threshold: chapters whose expected output exceeds it split
-    # into balanced parts; smaller ones translate whole. Input context is
-    # never limited by this.
+    # the packing budget: long chapters split into parts sized so each
+    # part's expected output (per-line cost, 0.8 headroom) fits this cap;
+    # smaller ones translate whole. Input context is never limited by this.
     "translate_max_output_tokens": 8192,
     # Style-profile generation at init: how many chapters to sample and
     # roughly how many source characters to include in the prompt.
@@ -53,11 +53,12 @@ DEFAULTS: dict = {
     # by `init`, backfilled by migrate v003). Set false to keep a project
     # un-versioned; lib/vcs.commit is the single gate.
     "git_commits": True,
-    # `review glossary` batching: glossary entries per model review call;
-    # also settable per run with `review glossary --batch-size`.
+    # `review glossary` / `review notes` batching: entries per model review
+    # call; also settable per run with `--batch-size`.
     "review_batch_size": 40,
-    # Filename of the advisory review report written by `review` and read
-    # back by `review fix`; relative to the project dir.
+    # Filename of the advisory review report written by `review glossary` /
+    # `review notes` and read back by `review fix`; relative to the project
+    # dir.
     "review_report_path": "review-report.md",
 }
 
@@ -75,6 +76,9 @@ PROVIDER_DEFAULTS: dict[str, dict] = {
     "glossary": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
     "reviewer": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.0, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
     "annotator": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
+    # Rolling story-so-far recap generation (one cheap call per translated
+    # chapter, story_state.json); point it at a cheap model.
+    "recap": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
     "profile": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.3, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
 }
 

@@ -229,7 +229,11 @@ def case_3_cmd_init() -> None:
               config.DEFAULTS.get("git_commits") is True)
 
         # --force reinitialize: same project, same repo, history kept and
-        # the rewrite labeled as its own commit.
+        # the rewrite labeled as its own commit. A planted story_state.json
+        # must not survive -- the reset wipes it with glossary/history.
+        (proj / "story_state.json").write_text(
+            '{"chapters": {"Chapter_001": {"recap": "stale recap"}}}\n',
+            encoding="utf-8", newline="\n")
         ns_force = translate._build_parser().parse_args(init_argv(proj, "--force"))
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -239,6 +243,8 @@ def case_3_cmd_init() -> None:
               code2 == 0 and rc2 == 0
               and subjects2 == ["init: reinitialize project", "init: scaffold project"],
               f"code={code2} rc={rc2} subjects={subjects2!r}")
+        check("3h init: --force deletes story_state.json",
+              not (proj / "story_state.json").exists(), "")
 
 
 def case_4_v003_direct() -> None:

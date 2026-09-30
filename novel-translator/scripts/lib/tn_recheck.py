@@ -2,10 +2,14 @@
 
 The `tn` subcommand's engine. Per chapter (manifest order): run the
 annotator fresh over the source/translation pair (same tn_generate.md
-template and guided schema as the pipeline's TN_GENERATE) and dedup through
-tn.process (same gap rule and history threading as TN_DEDUP, with history
-saved after each successfully processed chapter), then write the result to
-the notes/<stem>.json sidecar. Legacy chapters whose notes are still baked
+template, guided schema, and [Background Information] frame -- novel
+background plus the predecessor chapter's rolling story recap -- as the
+pipeline's TN_GENERATE) and dedup through
+tn.process (same gap rule, history threading, and max_notes cap as
+TN_DEDUP, with history saved after each successfully processed chapter),
+then write the result to the notes/<stem>.json sidecar and the discarded
+candidates to notes/<stem>.dropped.json. Legacy chapters whose notes are
+still baked
 into the markdown ("[^N]" markers + a "## Translator's Notes" section) are
 detected up front, but the clean-markdown rewrite lands only after the
 annotator succeeded -- a failed run leaves a legacy chapter byte-unchanged
@@ -21,16 +25,43 @@ import json
 from pathlib import Path
 from typing import Callable
 
-from lib import client, pipeline, project, replace, tn, vcs
+from lib import client, glossary, pipeline, project, replace, story, tn, vcs
 from lib.pipeline import fill
 
 
+def _recap_part(recap_state: dict, manifest: list[dict], file: str) -> str:
+    """The [Background Information] frame's recap part for re-checking
+    `file`: the PREDECESSOR chapter's stored recap rendered through
+    story.story_part -- exactly what the pipeline's TN_GENERATE injects for
+    this chapter -- or "" (first chapter, no state yet, no stored entry).
+    Read-only: no LLM call, no backfill, no state writes; any surprise
+    (malformed manifest, broken entry) degrades silently to "" so one bad
+    chapter never aborts the run."""
+    try:
+        prev = story.predecessor(manifest, file)
+        if prev is None:
+            return ""
+        entry = recap_state.get("chapters", {}).get(Path(prev).stem)
+        if (isinstance(entry, dict) and isinstance(entry.get("recap"), str)
+                and entry["recap"].strip()):
+            return story.story_part(entry["recap"])
+        return ""
+    except Exception:  # noqa: BLE001 - advisory: silent per-chapter degrade
+        return ""
+
+
 def _note_signatures(notes: list[dict]) -> list[tuple]:
-    """Comparable form of a note set: (line, term, note) per entry, so
-    'changed' means the sidecar content really differs (a reworded note or
-    a moved line counts), not just a rewritten updated_at."""
+    """Comparable form of a note set: (line, term, note, category) per
+    entry, so 'changed' means the sidecar content really differs (a
+    reworded note, a moved line, or a pure category change counts), not
+    just a rewritten updated_at."""
     return [
-        (note.get("line"), str(note.get("term", "")).strip(), str(note.get("note", "")).strip())
+        (
+            note.get("line"),
+            str(note.get("term", "")).strip(),
+            str(note.get("note", "")).strip(),
+            str(note.get("category", "")).strip(),
+        )
         for note in notes
     ]
 
@@ -65,10 +96,14 @@ def recheck_chapters(
 
     # Run-level setup: the template, config knobs, and novel background are
     # the same for every chapter, so load them once instead of per chapter.
+    # The glossary too: re-annotation never grows it, so one load serves the
+    # whole run (the per-chapter contextual slice is computed per chapter).
     tpl = pipeline._load_template(paths["templates"], "tn_generate.md")
-    max_notes = str(int(pipeline._cfg_value(cfg, "max_notes_per_chapter")))
+    max_notes = int(pipeline._cfg_value(cfg, "max_notes_per_chapter"))
     gap = int(pipeline._cfg_value(cfg, "tn_gap_chapters"))
     keep_low = bool(pipeline._cfg_value(cfg, "tn_keep_low_confidence"))
+    glossary_cap = int(pipeline._cfg_value(cfg, "contextual_glossary_cap"))
+    g = glossary.load(project_dir)
 
     novel_info: dict = {}
     if paths["novel_info"].is_file():
@@ -83,9 +118,19 @@ def recheck_chapters(
     novel_background = str(
         novel_info.get("background") or style_profile.get("background") or ""
     ).strip()
-    background_section = (
-        "[Background Information]\n" + novel_background + "\n" if novel_background else ""
-    )
+
+    # Recap parity with the pipeline's TN_GENERATE: the re-check's
+    # annotator must judge the same [Background Information] frame (novel
+    # background + the predecessor's rolling recap), or the two annotators
+    # evaluate different contexts. READ-ONLY: the state is loaded once per
+    # run, never written, and never backfilled (no LLM call); story.
+    # load_state already warns on a malformed file, and anything else
+    # unexpected degrades to a recap-less run.
+    try:
+        recap_state = story.load_state(project_dir)
+    except Exception as exc:  # noqa: BLE001 - advisory: run without recaps
+        print(f"[warn] story_state.json unloadable ({exc}) - runs without recap")
+        recap_state = {}
 
     # Threaded across chapters in order and saved after each successfully
     # processed one, exactly like the pipeline's TN_DEDUP per chapter.
@@ -154,6 +199,22 @@ def recheck_chapters(
         if first and first == str(fm_s.get("chapter_title", "")).strip().strip("\u3000 "):
             source_lines = source_lines[1:]
 
+        # Same glossary frame the pipeline's build_ctx gives tn_generate.md:
+        # the chapter's contextual slice rendered as Hy-MT2 pairs, so the
+        # annotator can tell pinned renderings from translation errors.
+        glossary_str = glossary.render_contextual(
+            glossary.contextual(g, "\n".join(source_lines), glossary_cap)
+        )
+
+        # Same [Background Information] frame the pipeline's
+        # background_section() builds: novel background, then the
+        # predecessor's rolling recap ("" when there is none).
+        recap_part = _recap_part(recap_state, manifest, file)
+        bg_parts = [p for p in (novel_background, recap_part) if p]
+        chapter_background = (
+            "[Background Information]\n" + "\n".join(bg_parts) + "\n" if bg_parts else ""
+        )
+
         try:
             prompt = fill(
                 tpl,
@@ -162,7 +223,8 @@ def recheck_chapters(
                     "target_lang": pipeline._lang_name(cfg.get("target_lang", "")),
                     "source_lines": json.dumps(source_lines, ensure_ascii=False),
                     "translation_lines": json.dumps(body_lines, ensure_ascii=False),
-                    "background_section": background_section,
+                    "background_section": chapter_background,
+                    "glossary": glossary_str,
                     "max_notes": max_notes,
                 },
                 "tn_generate.md",
@@ -181,8 +243,9 @@ def recheck_chapters(
         # The legacy migration rewrite lands only here, after the annotator
         # succeeded: a failed run must leave a legacy chapter byte-unchanged
         # (its baked notes are the only copy on disk until the sidecar write).
-        kept, history, warnings = tn.process(
+        kept, history, warnings, dropped = tn.process(
             raw_notes, len(body_lines), chapter_order, history, gap, keep_low,
+            max_notes=max_notes,
         )
         for warning in warnings:
             print(f"[tn] {file}: [warn] {warning}")
@@ -198,6 +261,7 @@ def recheck_chapters(
                 project.atomic_write_text(translated_path, out, newline="\n")
             tn.save_history(project_dir, history)
             kept = tn.save_notes(project_dir, file, body_lines, kept)
+            tn.save_dropped(project_dir, file, dropped)
         if did_migrate:
             migrated += 1
             print(f"{prefix}[tn] {file}: migrated baked-in notes to sidecar ({len(baked)})")
@@ -207,11 +271,11 @@ def recheck_chapters(
         after_terms = [str(note.get("term", "")).strip() for note in kept]
         bits = []
         added = [term for term in after_terms if term not in before_terms]
-        dropped = [term for term in before_terms if term not in after_terms]
+        removed_terms = [term for term in before_terms if term not in after_terms]
         if added:
             bits.append(f"+{', '.join(added)}")
-        if dropped:
-            bits.append(f"-{', '.join(dropped)}")
+        if removed_terms:
+            bits.append(f"-{', '.join(removed_terms)}")
         diff = f" ({'; '.join(bits)})" if bits else ""
         if did_migrate or _note_signatures(baseline) != _note_signatures(kept):
             changed += 1

@@ -129,8 +129,8 @@ created by `init`, or backfilled on existing projects by migration v003).
 
 ## Verifying before translating
 
-- `init` prints `manifest: N chapter(s)` - compare N against the TOC's
-  chapter count. `status` lists the chapters.
+- `init` prints `[init] manifest: N chapter(s)` - compare N against the
+  TOC's chapter count. `status` lists the chapters.
 - Spot-check one chapter file: name matches the regex, text decodes
   cleanly (no mojibake), one paragraph per physical line.
 - Run `status` and confirm there are no `[warn] N source file(s) not in

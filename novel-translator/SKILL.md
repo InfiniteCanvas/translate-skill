@@ -1,6 +1,6 @@
 ---
 name: novel-translator
-description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, reviews glossary quality, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, downloading or scraping a novel from the web to set up a translation project, translation glossaries, glossary quality, translation notes, re-evaluating translator's notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters", "review the glossary", "recheck the translation notes", or "rebuild the epub".
+description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, reviews glossary and translation-note quality, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, downloading or scraping a novel from the web to set up a translation project, translation glossaries, glossary quality, translation notes, re-evaluating or auditing translator's notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters", "review the glossary", "recheck the translation notes", or "rebuild the epub".
 ---
 
 # Novel Translator
@@ -140,10 +140,25 @@ sorted by frequency):
 1. **TRANSLATE** — fill `templates/translation.md`, call the `translator`
    provider with the WHOLE chapter when its expected output fits
    `translate_max_output_tokens` (default 8k, the model card's recommended
-   output range); longer chapters split into parts sized to that output cap,
-   each still carrying style background and the previous part's tail as
-   input context. The numbered-line protocol plus the corrective retry keep
-   the one-line-in/one-line-out contract intact.
+   output range); longer chapters split by greedy per-line token-budget
+   packing (parts close past 80% of the cap minus per-part overhead, so
+   every part takes at least one line), each still carrying style
+   background and the previous part's tail as input context. The
+   numbered-line protocol plus the corrective retry keep the
+   one-line-in/one-line-out contract intact; a part whose response looks
+   truncated (missing line indices / cut JSON) retries once at an escalated
+   cap (~1.5x, never above the provider's `max_tokens`), other shape
+   problems at the same cap. A source line whose estimated output exceeds
+   even the escalated cap fails fast with actionable feedback
+   (`TRANSLATE failed: ... source line N alone exceeds the output budget
+   (estimated X tokens > Y cap); split or shorten the line manually`)
+   before any model call. Validated parts are persisted as they complete
+   (`chunks` in the draft state), so a crash or Ctrl-C mid-TRANSLATE
+   resumes at the next part
+   (`[Chapter_NNNN] [init] resuming translation at part k/n (m lines
+   already done)`; a packing that no longer matches the saved parts —
+   source or config changed — discards them with a `[warn]` and restarts
+   from scratch).
 2. **VALIDATE** — line count must match the source exactly; empty lines stay
    empty. Structural violations go back as feedback.
 3. **BALANCE** — for every contextual glossary term: count occurrences in
@@ -210,16 +225,45 @@ sorted by frequency):
    adds no terms). BALANCE's deferred retirements are applied here first,
    on the same acceptance gate.
 6. **TN_GENERATE / TN_DEDUP** — the `annotator` provider proposes translation
-   notes with line indices; self-assessed low-confidence (`threshold: "low"`)
-   notes are dropped by default (set `tn_keep_low_confidence` true to keep
-   them); a note is kept only if the term wasn't annotated
-   within the last `tn_gap_chapters` (default 10) chapters (`tn_history.json`).
+   notes with line indices, glossary-aware (the prompt pins the glossary's
+   deliberate renderings so transliterated or nuance-dropping renderings get
+   a note for what the source term literally carries) and categorized
+   (`cultural` | `idiom` | `wordplay` | `honorific` | `unit` | `other`;
+   a missing/unknown category silently becomes `other`). Self-assessed
+   low-confidence (`threshold: "low"`) notes are dropped by default (set
+   `tn_keep_low_confidence` true to keep them); a note is kept only if the
+   term wasn't annotated within the last `tn_gap_chapters` (default 10)
+   chapters (`tn_history.json`). The `max_notes_per_chapter` cap is enforced
+   in code after the gap rule — the prompt asks for severity-ordered entries
+   (wordplay and idioms first, then references/allusions, then honorific
+   nuances), so truncation keeps the most severe context loss. Every
+   discard (low threshold, cap overflow, invalid entry) is recorded in the
+   `notes/<stem>.dropped.json` review artifact (the epub builder does not
+   read it), and the stage prints
+   `[Chapter_NNNN] [ok] notes: K kept (cats); D dropped (reasons) -> notes/<stem>.dropped.json`
+   (`0 kept` omits the parenthetical; a zero-drop chapter ends at the kept
+   clause).
 7. **ASSEMBLE** — write `translated/Chapter_NNNN.md` as clean markdown (no
    footnote markers, no notes section) plus the `notes/<stem>.json` sidecar
    carrying the kept notes; auto-promote. On gate failure the chapter retried
    up to `max_attempts` (default 3) with all accumulated feedback and the
    rejected translation injected into each retry; then it becomes
    `needs-review`.
+
+**Rolling story recap**: every chapter also maintains a running "story so
+far" in `story_state.json` (one entry per chapter). After ASSEMBLE, one
+`recap`-provider call (`templates/recap.md` — a job meant for a cheap
+model) condenses the previous recap plus the just-finished chapter into a
+≤ 120-word recap, and the next chapter's translate / faithfulness /
+note-annotate prompts receive it inside their `[Background Information]`
+frame, so the model translating chapter N knows the plot of chapters
+1..N-1. A predecessor without an entry (chapters translated before the
+feature, or a crash between assemble and record) is backfilled with one
+extra call before translation starts. The recap is advisory context,
+never a gate: failures only warn (`[warn] recap ...`) and the chapter
+proceeds without it. Retranslating a chapter refreshes only its own entry;
+later entries stay as built until those chapters are themselves
+retranslated.
 
 Gates pass → the chapter is accepted automatically. The user fixes residue by
 hand if any turns up later. Each finished chapter is committed —
@@ -302,12 +346,14 @@ background build too. Builds produce no git commits — `export/` and
 - **Prompts follow the Hy-MT2 model card conventions**: full language names,
   `X translates to "Y"` terminology pairs, structured-data preservation
   rules for the numbered-line protocol, `[Background Information]` context
-  frames (novel background + previous-chunk tail), and the cultural-
+  frames (novel background + rolling story recap + previous-chunk tail),
+  and the cultural-
   adaptation threshold pattern for translation notes. Keep new template
   edits aligned with those patterns.
 - **Providers are per job** in `config.json` (`translator`, `glossary`,
-  `reviewer`, `annotator`, `profile`; the `profile` job only serves
-  `--style auto`). Start with one endpoint doing
+  `reviewer`, `annotator`, `recap`, `profile`; the `recap` job generates
+  the rolling story-so-far recap — a cheap model is a good fit — and the
+  `profile` job only serves `--style auto`). Start with one endpoint doing
   everything; later point `reviewer` at a stronger model without touching
   the rest. `ping` shows what each job resolves to. Temperature and top_p
   are per-provider passthroughs (translator defaults 0.7/1.0 per the model
@@ -325,7 +371,8 @@ background build too. Builds produce no git commits — `export/` and
 - **Upgrading projects (`migrate`)**: `uv run "$SCRIPT" migrate --project .
   [--dry-run] [--force]` upgrades an existing project to the current
   skill version — non-destructive, re-runnable, and it never resets
-  `glossary.json`/`tn_history.json` (unlike `init --force`). Steps live
+  `glossary.json`/`tn_history.json`/`story_state.json` (unlike
+  `init --force`). Steps live
   in `scripts/migrations/` as `v001.py`, `v002.py`, ... — one module per
   version, zero-padded so sort order = version order; the chain is
   discovered from the files present (current version = highest), so a
@@ -362,7 +409,15 @@ background build too. Builds produce no git commits — `export/` and
   guidance and the guide-only unit category`): `tn_generate.md` gains a
   standing exception requiring a conversion note at a transliterated
   unit's first chapter occurrence, and `glossary_review.md` exempts
-  `category: "unit"` entries from the mundane judgment. A template that exists but
+  `category: "unit"` entries from the mundane judgment. v007 lands the
+  rolling-recap batch (DESCRIPTION: `materialize the recap provider job;
+  ship recap.md and notes_review.md; refresh tn_generate.md`): the new
+  `recap` provider block is materialized into config.json (no new
+  top-level key — the omitted job inherits the `translator` block), and
+  the template sync ships the two new templates (`recap.md`, the rolling
+  story recap prompt; `notes_review.md`, the `review notes` tier) plus
+  the rewritten `tn_generate.md` — a pre-v007 project's copy always
+  reads as drifted. A template that exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:
   `templates ~ <name>.md differs from the shipped copy - overwrite
@@ -420,7 +475,9 @@ background build too. Builds produce no git commits — `export/` and
   model calls; model-tier failures fail safe per batch — heuristic findings
   still report. Every run also writes indexed `<project>/review-report.md`
   (filename from config `review_report_path`;
-  overwritten each run, clean runs too; console: `[glossary] report: <path>`)
+  overwritten each run, clean runs too — a `review notes` run rewrites the
+  same file with the notes format, see Translator's-note re-evaluation;
+  console: `[glossary] report: <path>`)
   — a YAML frontmatter block with the run's counts (entries reviewed, batch
   errors, outstanding warn/info, machine-applicable vs manual-review
   tallies, and the `[N]` indices of the manual-review findings), then the
@@ -496,16 +553,19 @@ background build too. Builds produce no git commits — `export/` and
   seeding with `uv run "$SCRIPT" seed --project .` after adding chapters or
   editing a catalogue; `--min-count N` overrides the seed threshold for the
   run, and `--catalogue PATH` (repeatable) adds an explicit catalogue file,
-  bypassing the language filter. Every mutating action in this bullet
-  commits — `seed: N glossary term(s)`, `review: glossary audit`,
-  `glossary replace` / `util replace: '<src>' -> '<dst>'` — while
-  read-only `glossary search` / `glossary count` commit nothing.
+bypassing the language filter. Every mutating action in this bullet
+commits — `seed: N glossary term(s)`, `review: glossary audit` (suffixed
+`review: glossary audit (N fix(es) applied)` when `--fix` landed fixes),
+`glossary replace` / `util replace: '<src>' -> '<dst>'` — while
+read-only `glossary search` / `glossary count` commit nothing.
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.
-- **Cost/cadence**: each chapter ≈ 4 model calls + retries; one glossary
+- **Cost/cadence**: each chapter ≈ 5 model calls + retries (translate,
+  faithfulness, glossary expansion, notes, story recap); one glossary
   review pass ≈ ceil(N/review_batch_size) calls for N entries (40 by
-  default). `status` before long
+  default), one notes review pass ≈ ceil(M/review_batch_size) calls for M
+  notes. `status` before long
   batches; run `ping` first if the server was restarted.
 - Script output is UTF-8 (CJK terms appear in glossary/replace/search
   lines) with stable `[ok]`/`[FAIL]`/`[warn]`/`[git]` markers prefixing
@@ -527,10 +587,15 @@ or updating the `tn_generate.md` template — run:
   re-evaluate translator's notes on already-translated chapters: re-runs the
   annotator over the range (untranslated chapters are skipped with a
   warning) and regenerates each `notes/<chapter>.json` sidecar from scratch
-  through the same prompt and dedup as the pipeline (low-threshold gate,
-  within-chapter dedup, cross-chapter gap rule vs `tn_history.json` — a term
+  through the same prompt and dedup as the pipeline (glossary-aware
+  categorized annotation, low-threshold gate, within-chapter dedup,
+  cross-chapter gap rule vs `tn_history.json` — a term
   annotated within `tn_gap_chapters` in an earlier chapter stays
-  suppressed); chapter prose is never rewritten except the one-time
+  suppressed — and the same code-enforced `max_notes_per_chapter` cap with
+  severity-ordered truncation); the discarded candidates are recorded the
+  same way too (`notes/<chapter>.dropped.json`, review artifact only, and a
+  pure category change counts as a change); chapter prose is never
+  rewritten except the one-time
   stripping of legacy baked-in notes/markers, then the epub rebuilds unless
   `--no-build` (`--dry-run` still makes the annotator LLM calls but writes
   nothing). A re-check that changed at least one chapter — or that
@@ -538,6 +603,48 @@ or updating the `tn_generate.md` template — run:
   even when every sidecar is identical) — commits
   `tn: re-check notes`. Exit 0 success, 1 failed chapters (annotator call
   or unreadable chapter) or no eligible chapters in range, 2 usage error.
+
+To audit the notes that already exist (no re-annotation, nothing
+rewritten) — flagging notes that fail to earn their place, since the goal
+of the whole system is notes that add context or explain context lost in
+translation — run `review notes`:
+
+- `uv run "$SCRIPT" review notes --project . [--chapters SPEC]
+  [--batch-size N]` — audits every chapter with a `notes/<stem>.json`
+  sidecar in manifest order (`--chapters SPEC` restricts, same SPEC
+  semantics as `translate --chapters`; chapters without sidecars are
+  skipped silently; a chapter whose translated or source file is missing
+  or unreadable warns and skips). Each note's stored line index is re-resolved with the epub
+  builder's anchor rules (the stored index wins while its translated line
+  still starts with the stored anchor, else the first anchor-matching
+  line wins, else the note is unresolvable); unresolvable notes become
+  `misanchored` warns deterministically, without a model call. Resolvable
+  notes are judged in `review_batch_size` batches (default 40;
+  `--batch-size N` overrides) by the `reviewer` provider (temperature
+  0.0) through `templates/notes_review.md`, each note paired with its
+  translated line, the line-aligned source line, and the ±2-line target
+  context. Judgment kinds, a closed vocabulary: `restates` (the note adds
+  nothing beyond what the translation already says), `overexplains`
+  (common knowledge or inferable from context — fails the comprehension
+  threshold), `wrong` (the note misexplains the source term),
+  `misanchored` (attached to the wrong line or the term does not appear
+  there). Advisory only: exit 0 on a completed run regardless of finding
+  count — there is no `--fix` and no exit-1-on-warns (that is the
+  glossary tier's contract; usage errors — `--fix`, `--batch-size` < 1,
+  a bad `--chapters` spec — exit 2) — and the report (same file as `review
+  glossary`, config `review_report_path`, same per-run overwrite: a notes
+  run replaces a previous glossary report and vice versa) carries NO
+  `- Command:` bullets; findings are fixed by hand in
+  `notes/<stem>.json` (delete the note, reword it, or re-attach it to
+  the right line). The report footer states the caveat: hand-edited
+  sidecars are overwritten if the `tn` re-check command later regenerates
+  that chapter's notes. Console: `[notes] reviewing batch i/n` per batch,
+  then `[ok] review notes: N findings (restates X, overexplains Y, wrong
+  Z, misanchored W) -> <report path>` and, when N > 0, a `[warn]` hint
+  that fixes are hand edits to `notes/<stem>.json`; a project with no
+  sidecars anywhere prints `[ok] no chapter notes found - nothing to
+  review` and writes no report. Commits `review: notes audit` and logs one
+  `notes_review` trace event.
 
 ## Bulk review fixes
 

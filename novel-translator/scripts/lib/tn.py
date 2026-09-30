@@ -5,7 +5,11 @@ model's self-assessed low-comprehension notes (threshold "low") unless
 cfg tn_keep_low_confidence is set, then drops invalid entries, collapses
 within-chapter duplicates, and suppresses notes for terms that were
 already explained recently (the gap rule), maintaining a persistent
-tn_history.json at the project root.
+tn_history.json at the project root. Every drop the reader might want to
+second-guess (low threshold, invalid entry, cap overflow) is recorded in
+the per-chapter notes/<stem>.dropped.json review artifact (save_dropped);
+within-chapter duplicates and gap-rule suppressions are not (the term is
+still noted elsewhere / deliberately suppressed).
 
 Notes are no longer baked into chapter markdown: they live in a
 per-chapter sidecar notes/<stem>.json (load_notes/save_notes), whose line
@@ -35,6 +39,40 @@ _MARKER_RE = re.compile(r"\[\^\d+\]")
 _MARKER_STRIP_RE = re.compile(r"\s*\[\^\d+\]")
 _DEFINITION_RE = re.compile(r"^\[\^(\d+)\]:\s*(.*)$")
 _TERM_NOTE_RE = re.compile(r"^\*\*(.+?)\*\*\s*\u2014\s*(.*)$")
+
+# The annotator tags each note with one of these categories (the
+# tn_generate.md return schema); anything else -- missing, unknown, wrong
+# type -- silently defaults to "other" (tn._category).
+NOTE_CATEGORIES = ("cultural", "idiom", "wordplay", "honorific", "unit", "other")
+
+# Drop reasons recorded in notes/<stem>.dropped.json, in the fixed report
+# order (low_threshold first, then overflow, then invalid).
+DROP_REASONS = ("low_threshold", "overflow", "invalid")
+
+
+def _category(value: object) -> str:
+    """Normalize a note category: a string in NOTE_CATEGORIES passes
+    through; anything else (missing, unknown, wrong type) becomes
+    "other", silently."""
+    return value if isinstance(value, str) and value in NOTE_CATEGORIES else "other"
+
+
+def _dropped_entry(entry: object, reason: str) -> dict:
+    """Best-effort snapshot of a dropped candidate note: the reason is the
+    only guaranteed field; the rest pass through as-is when the entry is a
+    dict (term/note may be missing or non-string -- invalid entries are
+    recorded for review, not re-validated)."""
+    if not isinstance(entry, dict):
+        return {"line": None, "term": None, "note": None,
+                "category": None, "threshold": None, "reason": reason}
+    return {
+        "line": entry.get("line"),
+        "term": entry.get("term"),
+        "note": entry.get("note"),
+        "category": _category(entry.get("category")),
+        "threshold": entry.get("threshold"),
+        "reason": reason,
+    }
 
 
 def _history_path(project_dir: Path) -> Path:
@@ -71,6 +109,11 @@ def notes_path(project_dir: Path, file: str) -> Path:
     return project.paths(project_dir)["notes"] / (Path(file).stem + ".json")
 
 
+def dropped_path(project_dir: Path, file: str) -> Path:
+    """Path of the dropped-candidates review artifact: notes/<stem>.dropped.json."""
+    return project.paths(project_dir)["notes"] / (Path(file).stem + ".dropped.json")
+
+
 def load_notes(project_dir: Path, file: str) -> list[dict]:
     """Read the notes sidecar for a chapter; [] when missing or malformed
     (load_history's leniency: a broken sidecar means "no notes", never a
@@ -101,12 +144,14 @@ def save_notes(project_dir: Path, file: str, lines: list[str], notes: list) -> l
 
     lines are the exact body lines the indexes refer to (the list assemble
     joins; read_chapter's normalization means there is no phantom trailing
-    "" element). Each kept note is normalized to {line, term, note, anchor},
-    where anchor snapshots the line's first 80 characters so the epub
-    builder can re-resolve the line after hand-edits shift them. Invalid
-    entries are dropped defensively with a warning. An empty kept list
-    DELETES the sidecar (absent = no notes). Returns the kept notes, i.e.
-    the sidecar content.
+    "" element). Each kept note is normalized to {line, term, note,
+    category, anchor}, where anchor snapshots the line's first 80
+    characters so the epub builder can re-resolve the line after
+    hand-edits shift them, and category is normalized via tn._category
+    (hand-edited or legacy entries may lack it; anything unrecognized
+    becomes "other"). Invalid entries are dropped defensively with a
+    warning. An empty kept list DELETES the sidecar (absent = no notes).
+    Returns the kept notes, i.e. the sidecar content.
     """
     kept: list[dict] = []
     for entry in notes:
@@ -127,6 +172,7 @@ def save_notes(project_dir: Path, file: str, lines: list[str], notes: list) -> l
             "line": line,
             "term": term,
             "note": note,
+            "category": _category(entry.get("category")),
             "anchor": lines[line].strip()[:80],
         })
 
@@ -144,6 +190,31 @@ def save_notes(project_dir: Path, file: str, lines: list[str], notes: list) -> l
         path, json.dumps(document, ensure_ascii=False, indent=2) + "\n"
     )
     return kept
+
+
+def save_dropped(project_dir: Path, file: str, dropped: list[dict]) -> None:
+    """Write the dropped-candidates review artifact notes/<stem>.dropped.json.
+
+    dropped is tn.process's fourth return value: [{"line", "term", "note",
+    "category", "threshold", "reason"}] snapshots of candidates that were
+    discarded (low_threshold, overflow, or invalid) -- the record lets a
+    human second-guess the gates without re-running the annotator. Review
+    artifact only: the epub builder does not read it. Same lifecycle as
+    save_notes: an empty list DELETES the file (absent = nothing dropped).
+    """
+    path = dropped_path(project_dir, file)
+    if not dropped:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = {
+        "chapter": Path(file).name,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "dropped": dropped,
+    }
+    project.atomic_write_text(
+        path, json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+    )
 
 
 def strip_marked_notes(body: str) -> tuple[str, list[dict]]:
@@ -197,76 +268,106 @@ def process(
     history: dict,
     gap: int,
     keep_low: bool = False,
-) -> tuple[list[dict], dict, list[str]]:
+    max_notes: int | None = None,
+) -> tuple[list[dict], dict, list[str], list[dict]]:
     """Filter generated notes for one chapter.
 
     notes: [{"line": int (0-based), "term": str, "note": str,
-    "threshold": str (optional)}] from the model.
+    "category": str (optional), "threshold": str (optional)}] from the model.
 
     - Comprehension gate (first, before any other validation or dedup): drop
       every note whose "threshold" is "low" (case-insensitive), silently --
       unless keep_low is true, in which case the gate is skipped entirely.
       This is the model's self-assessed comprehension-threshold gate. Notes
       missing the "threshold" key or carrying any other value are kept.
+      Dropped low-threshold notes are recorded in `dropped` (reason
+      "low_threshold"), still without a warning.
     - Drop invalid entries (line outside [0, line_count), empty term/note,
-      wrong types) with a warning string.
+      wrong types) with a warning string; recorded in `dropped` with reason
+      "invalid" (best-effort fields).
     - Key = term.strip(). Within-chapter duplicates by key: keep the first
-      (warning for the rest).
+      (warning for the rest). NOT recorded in `dropped` (the term is still
+      noted elsewhere).
     - Gap rule: if key in history, was annotated in a DIFFERENT chapter, and
       0 <= chapter_order - last_order <= gap (an earlier chapter, at most
-      `gap` chapters before this one) -> drop silently (expected behavior)
-      and leave history unchanged. A previous annotation in this same chapter
-      (retranslation/retry) or in a LATER chapter (retranslating an earlier
-      chapter after a later one already annotated the term -- negative
-      distance; the reader hits the earlier chapter first) never suppresses
-      the note. Otherwise keep the note and set history[key] = {"note",
-      "last_order", "times": previous times + 1 or 1}.
+      `gap` chapters before this one) -> drop silently (expected behavior,
+      NOT recorded in `dropped`) and leave history unchanged. A previous
+      annotation in this same chapter (retranslation/retry) or in a LATER
+      chapter (retranslating an earlier chapter after a later one already
+      annotated the term -- negative distance; the reader hits the earlier
+      chapter first) never suppresses the note. Otherwise keep the note and
+      set history[key] = {"note", "last_order", "times": previous times + 1
+      or 1}.
+    - Category: each kept entry's "category" is normalized to the entry's
+      value when it is a string in NOTE_CATEGORIES, else "other" (silent
+      default).
+    - Cap (max_notes, None = no cap): AFTER the gap rule has produced the
+      final kept list -- a gap-suppressed note must not waste a cap slot --
+      kept is truncated to max_notes entries; the cut tail goes to
+      `dropped` with reason "overflow". The annotator prompt asks for
+      severity-ordered entries, so the truncation keeps the most severe
+      context loss. An overflow-dropped note was never shown to the
+      reader, so it must not suppress the term in later chapters inside
+      the gap window: each dropped key's history entry is rolled back --
+      restored to its input-history entry when one existed (including a
+      same-chapter retranslation entry whose last_order equals this
+      chapter's), removed when this call introduced the key.
 
-    Returns (kept_notes, updated_history, warnings). The input history dict is
-    not mutated; a shallow copy is returned.
+    Returns (kept_notes, updated_history, warnings, dropped). The input
+    history dict is not mutated; a shallow copy is returned.
     """
     warnings: list[str] = []
     kept: list[dict] = []
+    dropped: list[dict] = []
     seen: set[str] = set()
     updated = dict(history)
 
     # Comprehension gate (Hy-MT2 convention), before any other validation or
     # dedup: notes the model marked threshold="low" (case-insensitive) are
-    # discarded silently, by design -- unless the project opts to keep them
+    # discarded, by design -- unless the project opts to keep them
     # (tn_keep_low_confidence; some models self-assess too harshly). Notes
-    # missing "threshold" or with any other value are kept.
+    # missing "threshold" or with any other value are kept. The discards are
+    # recorded for review (reason "low_threshold") but stay warning-free.
     if not keep_low:
-        notes = [
-            entry for entry in notes
-            if not (
+        survivors: list[object] = []
+        for entry in notes:
+            if (
                 isinstance(entry, dict)
                 and isinstance(entry.get("threshold"), str)
                 and entry["threshold"].lower() == "low"
-            )
-        ]
+            ):
+                dropped.append(_dropped_entry(entry, "low_threshold"))
+            else:
+                survivors.append(entry)
+        notes = survivors
 
     for idx, entry in enumerate(notes):
         position = f"note #{idx + 1}"
         if not isinstance(entry, dict):
             warnings.append(f"dropped {position}: not an object")
+            dropped.append(_dropped_entry(entry, "invalid"))
             continue
         line = entry.get("line")
         term = entry.get("term")
         note = entry.get("note")
         if isinstance(line, bool) or not isinstance(line, int):
             warnings.append(f"dropped {position}: 'line' must be an integer")
+            dropped.append(_dropped_entry(entry, "invalid"))
             continue
         if not isinstance(term, str) or not isinstance(note, str):
             warnings.append(f"dropped {position}: 'term' and 'note' must be strings")
+            dropped.append(_dropped_entry(entry, "invalid"))
             continue
         if line < 0 or line >= line_count:
             warnings.append(
                 f"dropped {position} ('{term.strip() or '?'}'): "
                 f"line {line} out of range [0, {line_count})"
             )
+            dropped.append(_dropped_entry(entry, "invalid"))
             continue
         if not term.strip() or not note.strip():
             warnings.append(f"dropped {position}: empty term or note")
+            dropped.append(_dropped_entry(entry, "invalid"))
             continue
 
         key = term.strip()
@@ -297,6 +398,29 @@ def process(
             "last_order": chapter_order,
             "times": (times if isinstance(times, int) else 0) + 1,
         }
+        entry["category"] = _category(entry.get("category"))
         kept.append(entry)
 
-    return kept, updated, warnings
+    # Cap enforcement, AFTER the gap rule: notes the gap rule suppressed
+    # never consumed a slot, so the kept list truncated here is the most
+    # severe context loss the annotator offered (severity-ordered output).
+    if max_notes is not None and len(kept) > max_notes:
+        overflowed = kept[max_notes:]
+        dropped.extend(_dropped_entry(entry, "overflow") for entry in overflowed)
+        # The reader never saw an overflow-dropped note, so it must not
+        # suppress the term inside the gap window of later chapters: roll
+        # each dropped key back to its input-history entry when one existed
+        # (restoring, not deleting, even when that entry's last_order equals
+        # this chapter's order -- the same-chapter retranslation case), or
+        # remove the key when this call introduced it. Restoring re-points
+        # at the input entry, never mutating it: the input history stays a
+        # pristine lookup table.
+        for entry in overflowed:
+            key = entry["term"].strip()
+            if key in history:
+                updated[key] = history[key]
+            else:
+                del updated[key]
+        kept = kept[:max_notes]
+
+    return kept, updated, warnings, dropped

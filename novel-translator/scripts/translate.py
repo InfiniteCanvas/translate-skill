@@ -8,8 +8,9 @@
 Subcommands: init, ping, seed, migrate, profile, styles, status, sync,
 translate, retry, mark, tn, review, util, glossary, build-epub.
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
-had failures / glossary search found nothing / glossary count below threshold,
-2 usage or setup error.
+had failures / glossary search found nothing / glossary count below threshold /
+tn re-check failed chapters or scanned nothing eligible, 2 usage or setup
+error.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, cover, epub, fix, glossary, logger, pipeline, project, replace, review, tn, tn_recheck, vcs  # noqa: E402
+from lib import client, config, cover, epub, fix, glossary, logger, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
@@ -223,16 +224,18 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         # silently override the regenerated profile.
         (project_dir / "style.md").unlink(missing_ok=True)
 
+    # Derive the job list and per-job sampling knobs from PROVIDER_JOBS /
+    # PROVIDER_DEFAULTS so a job added there can never be missed here (a
+    # fresh project is stamped at the chain head and never migrates).
     providers = {
-        job: {"base_url": args.api_base, "model": None, "temperature": temperature,
-              "max_tokens": 16384, "thinking": False}
-        for job, temperature in (
-            ("translator", 0.7),
-            ("glossary", 0.2),
-            ("reviewer", 0.0),
-            ("annotator", 0.2),
-            ("profile", 0.3),
-        )
+        job: {
+            "base_url": args.api_base,
+            "model": None,
+            "temperature": config.PROVIDER_DEFAULTS[job]["temperature"],
+            "max_tokens": config.PROVIDER_DEFAULTS[job]["max_tokens"],
+            "thinking": config.PROVIDER_DEFAULTS[job]["thinking"],
+        }
+        for job in config.PROVIDER_JOBS
     }
     # Hy-MT2 model card: translation sampling is temperature 0.7, top_p 1.0.
     providers["translator"]["top_p"] = 1.0
@@ -272,20 +275,27 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     )
     print(f"[init] wrote {paths['novel_info'].name}")
 
-    # The reset below silently discards model-grown state (months of
-    # GLOSSARY_EXPAND terms and translator's-note history) whenever a
-    # glossary.json is already there -- including the odd case of a deleted
-    # config.json beside a surviving glossary. Announce the loss; the term
-    # count comes from a best-effort parse (corrupt file -> no count).
+    # The reset below silently discards exactly three model-grown state
+    # files whenever a glossary.json is already there -- glossary.json
+    # (GLOSSARY_EXPAND terms), tn_history.json (translator's-note history),
+    # and story_state.json (rolling story recaps) -- including the odd case
+    # of a deleted config.json beside a surviving glossary. The per-chapter
+    # notes/ sidecars (and their dropped-candidate files) are NOT reset:
+    # they survive with their translated chapters. Announce the loss; the
+    # term count comes from a best-effort parse (corrupt file -> no count).
     if paths["glossary"].is_file():
         try:
             terms = glossary.load(project_dir).get("terms", [])
             note = f" ({len(terms)} term(s))" if isinstance(terms, list) else ""
         except (OSError, ValueError):
             note = ""
-        print(f"[init] --force: resetting glossary.json{note} and tn_history.json")
+        print(
+            f"[init] --force: resetting glossary.json{note}, tn_history.json,"
+            " and story_state.json"
+        )
     glossary.save(project_dir, glossary.empty())
     paths["tn_history"].write_text("{}\n", encoding="utf-8")
+    paths["story_state"].unlink(missing_ok=True)
     print(f"[init] initialized {paths['glossary'].name} and {paths['tn_history'].name}")
 
     copied = 0
@@ -840,6 +850,10 @@ def cmd_retry(args: argparse.Namespace, project_dir: Path) -> int:
             (paths["draft"] / artifact).unlink(missing_ok=True)
         (paths["translated"] / file).unlink(missing_ok=True)
         (tn.notes_path(project_dir, file)).unlink(missing_ok=True)
+        # Same staleness class as the sidecar: the retranslation writes a
+        # fresh dropped artifact at TN_DEDUP, so an orphan from the previous
+        # run must not survive a failed/interrupted retry.
+        (tn.dropped_path(project_dir, file)).unlink(missing_ok=True)
         project.set_status(manifest, file, "pending")
         print(f"[init] {file}: cleared artifacts, status pending")
     project.save_manifest(project_dir, manifest)
@@ -1006,14 +1020,38 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     return 1 if failed else 0
 
 
+def cmd_review_notes(args: argparse.Namespace, project_dir: Path) -> int:
+    """Advisory audit of EXISTING translator's notes (notes/<stem>.json):
+    the deterministic misanchored tier (anchor re-resolution, no model) plus
+    the reviewer-model tier judging whether each note earns its place.
+    Always exits 0 on a completed run -- findings are advisory-only (hand
+    edits to the sidecars), so there is no `--fix` and no exit-1-on-warns
+    path here, unlike `review glossary`."""
+    if args.fix:
+        raise CliError("--fix applies to 'review glossary' only; not 'review notes'")
+    cfg = _load_config(project_dir)
+    batch_size = int(args.batch_size) if args.batch_size is not None else None
+    if batch_size is not None and batch_size < 1:
+        raise CliError("--batch-size must be a positive integer")
+    review_notes.review_notes(
+        project_dir, cfg, chapters=args.chapters, batch_size=batch_size
+    )
+    vcs.commit(project_dir, "review: notes audit")
+    return 0
+
+
 def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
     # The "fix" subject reuses the same dispatcher so `--fix` (apply_fixes),
     # `--batch-size`, and the model pipeline stay attached to "glossary".
-    # The early branch MUST come before batch-size validation: the
-    # parse_report path doesn't need --batch-size and would fail validation
-    # on the way through.
+    # BOTH early branches -- "fix" and "notes" -- MUST come before the
+    # shared batch-size validation below: fix's parse_report path needs no
+    # batch size at all, and notes runs its own validation in
+    # cmd_review_notes (only an explicit --batch-size is checked there;
+    # the glossary config default never applies).
     if args.subject == "fix":
         return cmd_review_fix(args, project_dir)
+    if args.subject == "notes":
+        return cmd_review_notes(args, project_dir)
     cfg = _load_config(project_dir)
     batch_size = (
         int(args.batch_size) if args.batch_size is not None
@@ -1501,12 +1539,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_tn)
 
     p = sub.add_parser("review", parents=[common],
-                       help="advisory quality review (glossary: source-translation alignment audit; fix: apply a report's machine-applicable findings)")
-    p.add_argument("subject", choices=["glossary", "fix"], help="what to review")
+                       help="advisory quality review (glossary: source-translation alignment audit; notes: translator's-note quality audit; fix: apply a report's machine-applicable findings)")
+    p.add_argument("subject", choices=["glossary", "notes", "fix"],
+                   help="what to review")
     p.add_argument("--fix", action="store_true",
                    help="(subject=glossary only) apply guarded model-suggested fixes (translation/definition/category)")
     p.add_argument("--batch-size", type=int, default=None, metavar="N",
-                   help="(subject=glossary) entries per model review call (default: config review_batch_size)")
+                   help="(subject=glossary|notes) entries per model review call (default: config review_batch_size)")
+    p.add_argument("--chapters", metavar="SPEC", default=None,
+                   help="(subject=notes) chapter spec, e.g. 1,3-5,Chapter_0007.md (default: every chapter with a notes sidecar)")
     p.add_argument("--glossary", metavar="PATH", default=None,
                    help="(subject=fix) path to the review report (default: config review_report_path)")
     p.add_argument("--dry-run", action="store_true",

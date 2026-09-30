@@ -2,24 +2,26 @@
 lib/assemble.py's clean-output contract.
 
 Covers save_notes/load_notes round-trip (document shape chapter/updated_at/
-notes, note keys exactly {line, term, note, anchor} with a model-supplied
-threshold dropped, anchor snapshotted from the stripped line and capped at
-80 chars, trailing newline, ensure_ascii=False so CJK stays readable in the
-raw bytes); invalid-entry dropping (non-dict, negative line, line == len,
-bool line, non-str/empty term/note); the empty-kept-list rule (all-invalid
-or notes=[] DELETES the sidecar, pre-existing file included); load_notes
-leniency (missing file, malformed JSON, notes not a list, non-dict notes
-entries -> []); the loud-discard contract for genuinely corrupt files (not
-a BOM): load_history and load_notes keep their lenient defaults ({}, [])
-AND each discard prints exactly one '[warn] ... unreadable (<reason>)'
-line -- the reason in parentheses is 'JSONDecodeError' for a syntax error,
-'list' for a non-object tn_history.json, 'invalid notes' for a sidecar
-without a valid notes list (the pipeline.load_state counterpart lives in
-test_bom_tolerance.py); strip_marked_notes (full legacy body, stacked [^1][^2]
-markers, markers with no section, section with no markers, clean-body
-passthrough, whitespace-tolerant definition lines); and assemble.assemble
-writing clean markdown (no markers, no TN section, title in frontmatter,
-body lines verbatim via project.read_chapter).
+notes, note keys exactly {line, term, note, category, anchor} with a
+model-supplied threshold dropped and a missing/unknown category silently
+defaulted to "other", anchor snapshotted from the stripped line and capped
+at 80 chars, trailing newline, ensure_ascii=False so CJK stays readable in
+the raw bytes); invalid-entry dropping (non-dict, negative line, line ==
+len, bool line, non-str/empty term/note); the empty-kept-list rule
+(all-invalid or notes=[] DELETES the sidecar, pre-existing file included);
+load_notes leniency (missing file, malformed JSON, notes not a list,
+non-dict notes entries -> []); the loud-discard contract for genuinely
+corrupt files (not a BOM): load_history and load_notes keep their lenient
+defaults ({}, []) AND each discard prints exactly one '[warn] ...
+unreadable (<reason>)' line -- the reason in parentheses is
+'JSONDecodeError' for a syntax error, 'list' for a non-object
+tn_history.json, 'invalid notes' for a sidecar without a valid notes list
+(the pipeline.load_state counterpart lives in test_bom_tolerance.py);
+strip_marked_notes (full legacy body, stacked [^1][^2] markers, markers
+with no section, section with no markers, clean-body passthrough,
+whitespace-tolerant definition lines); and assemble.assemble writing clean
+markdown (no markers, no TN section, title in frontmatter, body lines
+verbatim via project.read_chapter).
 
 All chapter fixtures are built inside tempfile.TemporaryDirectory()
 sandboxes per case — repo fixtures are never touched. Files are written with
@@ -89,45 +91,50 @@ def case_1_round_trip() -> None:
         notes = [
             {"line": 0, "term": "清明", "note": "Tomb-sweeping festival.",
              "threshold": "high"},  # model note: threshold must NOT persist
-            {"line": 1, "term": "灵石", "note": "Spirit stones: currency and fuel."},
+            {"line": 1, "term": "灵石", "note": "Spirit stones: currency and fuel.",
+             "category": "cultural"},
         ]
         kept = tn.save_notes(root, "Chapter_0001.md", lines, notes)
 
         check("1a round-trip: kept has exactly the two valid notes",
               len(kept) == 2, f"kept={kept}")
-        check("1b round-trip: note keys exactly {line, term, note, anchor}",
-              all(set(note) == {"line", "term", "note", "anchor"} for note in kept),
+        check("1b round-trip: note keys exactly {line, term, note, category, anchor}",
+              all(set(note) == {"line", "term", "note", "category", "anchor"}
+                  for note in kept),
               f"keys={[sorted(n) for n in kept]}")
         check("1c round-trip: model-supplied 'threshold' dropped",
               all("threshold" not in note for note in kept), "")
-        check("1d round-trip: anchor is the stripped line",
+        check("1d round-trip: category normalized (missing -> other, valid kept)",
+              kept[0]["category"] == "other" and kept[1]["category"] == "cultural",
+              f"categories={[n.get('category') for n in kept]}")
+        check("1e round-trip: anchor is the stripped line",
               kept[0]["anchor"] == "He swept the tombs at Qingming.",
               f"anchor={kept[0]['anchor']!r}")
-        check("1e round-trip: anchor capped at 80 chars",
+        check("1f round-trip: anchor capped at 80 chars",
               kept[1]["anchor"] == long_line.strip()[:80],
               f"len={len(kept[1]['anchor'])}")
 
         path = tn.notes_path(root, "Chapter_0001.md")
-        check("1f round-trip: sidecar at notes/<stem>.json",
+        check("1g round-trip: sidecar at notes/<stem>.json",
               path == root / "notes" / "Chapter_0001.json" and path.is_file(),
               f"path={path}")
         raw = path.read_bytes()
-        check("1g round-trip: file ends with a trailing newline",
+        check("1h round-trip: file ends with a trailing newline",
               raw.endswith(b"\n"), f"tail={raw[-20:]!r}")
         text = raw.decode("utf-8")
-        check("1h round-trip: ensure_ascii=False keeps the CJK term in raw bytes",
+        check("1i round-trip: ensure_ascii=False keeps the CJK term in raw bytes",
               "清明" in text and "\\u" not in text, "")
 
         document = json.loads(text)
-        check("1i round-trip: document shape {chapter, updated_at, notes}",
+        check("1j round-trip: document shape {chapter, updated_at, notes}",
               set(document) == {"chapter", "updated_at", "notes"}
               and document["chapter"] == "Chapter_0001.md"
               and isinstance(document["updated_at"], str) and document["updated_at"],
               f"document keys={sorted(document)}")
-        check("1j round-trip: document notes == kept list",
+        check("1k round-trip: document notes == kept list",
               document["notes"] == kept, f"doc={document['notes']}")
 
-        check("1k round-trip: load_notes returns the same list",
+        check("1l round-trip: load_notes returns the same list",
               tn.load_notes(root, "Chapter_0001.md") == kept, "")
 
 

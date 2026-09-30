@@ -27,11 +27,13 @@ survives with rejected == the last translation and feedback == both
 reasons in order, the second translate prompt carries the rejected
 section, the manifest entry is marked needs-review); and the
 retry-then-success integration (default max_attempts 3, FAILURE then
-SUCCESS -> "translated" with the exact 6-call sequence translate ->
-verdict -> translate -> verdict -> terms -> notes, where attempt 1's
-translate prompt has no rejected NOTE and attempt 2's carries the NOTE,
+SUCCESS -> "translated" with the exact 7-call sequence translate ->
+verdict -> translate -> verdict -> terms -> notes -> recap (the rolling
+story recap recorded post-ASSEMBLE into story_state.json), where attempt
+1's translate prompt has no rejected NOTE and attempt 2's carries the NOTE,
 the feedback bullet, the marker, and the rejected line text; the
-translated chapter lands and the state file is cleaned up).
+translated chapter lands, the state file is cleaned up, and the chapter's
+recap entry is stored).
 
 Mechanics mirror the sibling suites: every fixture lives in a
 TemporaryDirectory sandbox built with test_sync's write_source pattern
@@ -103,6 +105,8 @@ def sniff(prompt: str) -> str:
     """Which pipeline role a prompt targets (mock_server.py convention)."""
     if "verdict" in prompt:
         return "verdict"
+    if '"recap"' in prompt:
+        return "recap"
     if '"terms"' in prompt:
         return "terms"
     if '"notes"' in prompt or '"note"' in prompt:
@@ -120,6 +124,8 @@ def make_fake_chat(calls: list[dict], verdicts: list[tuple[str, list[str]]]):
             verdict, reasons = verdicts.pop(0)
             return json.dumps({"verdict": verdict, "reasons": reasons},
                               ensure_ascii=False)
+        if '"recap"' in prompt:
+            return json.dumps({"recap": "Mock recap of the story so far."})
         if '"terms"' in prompt:
             return json.dumps({"terms": []})
         if '"notes"' in prompt or '"note"' in prompt:
@@ -246,10 +252,11 @@ def case_4_unit_chunk_slicing() -> None:
 def case_5_retry_then_success() -> None:
     """FAILURE then SUCCESS under the default max_attempts 3: the outcome is
     "translated", the call sequence is exactly translate -> verdict ->
-    translate -> verdict -> terms -> notes, attempt 1's translate prompt is
-    clean while attempt 2's carries the NOTE, the feedback bullet, the
-    marker, and the rejected line text, and the artifacts settle (chapter
-    written, state file removed)."""
+    translate -> verdict -> terms -> notes -> recap (the post-ASSEMBLE story
+    recap record), attempt 1's translate prompt is clean while attempt 2's
+    carries the NOTE, the feedback bullet, the marker, and the rejected line
+    text, and the artifacts settle (chapter written, state file removed,
+    recap entry stored)."""
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj")
         calls: list[dict] = []
@@ -265,12 +272,12 @@ def case_5_retry_then_success() -> None:
         check("5a retry: run_chapter returns 'translated'",
               exc is None and outcome == "translated", f"exc={exc!r}")
         kinds = [sniff(c["prompt"]) for c in calls]
-        check("5b retry: exactly 6 model calls",
-              len(calls) == 6, f"kinds={kinds}")
+        check("5b retry: exactly 7 model calls",
+              len(calls) == 7, f"kinds={kinds}")
         check("5c retry: sequence translate->verdict->translate->verdict"
-              "->terms->notes",
+              "->terms->notes->recap",
               kinds == ["translate", "verdict", "translate", "verdict",
-                        "terms", "notes"], f"kinds={kinds}")
+                        "terms", "notes", "recap"], f"kinds={kinds}")
         check("5d retry: verdict called twice",
               kinds.count("verdict") == 2, f"kinds={kinds}")
         check("5e retry: attempt 1 translate prompt has no rejected NOTE",
@@ -290,6 +297,17 @@ def case_5_retry_then_success() -> None:
               (proj / "translated" / "Chapter_0001.md").is_file())
         check("5k retry: draft state file removed on success",
               not (proj / "draft" / "Chapter_0001.state.json").exists())
+        story_state = json.loads(
+            (proj / "story_state.json").read_text(encoding="utf-8"))
+        check("5l retry: rolling recap recorded for the chapter",
+              story_state.get("chapters", {}).get("Chapter_0001", {}).get("recap")
+              == "Mock recap of the story so far.",
+              f"story_state={story_state}")
+        recap_prompt = calls[-1]["prompt"]
+        check("5m retry: recap call received the translated chapter body",
+              "Translated line 1." in recap_prompt
+              and "Translated line 3." in recap_prompt,
+              f"prompt={recap_prompt[:120]!r}")
 
 
 def case_6_give_up() -> None:

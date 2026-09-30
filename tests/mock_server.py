@@ -11,6 +11,11 @@ Serves:
        - "Glossary Review" prompt   -> glossary review: one fixable warn finding
                                        (mistranslation) for the first listed entry
        - asks for "terms"          -> no new glossary terms
+       - asks for "recap"          -> mock running recap (sniffed AFTER the
+                                      translation-array scan below: a
+                                      TRANSLATE prompt whose background
+                                      frame carries the recap label must
+                                      still be answered with a translation)
        - otherwise                 -> translation: fake lines matching the
                                       source array found in the prompt
   GET  /novel                -> HTML page with og:image pointing at /cover.jpg
@@ -119,7 +124,11 @@ def mock_reply(prompt: str) -> str:
             return json.dumps({"title": "Mock Chapter Title", "lines": lines}, ensure_ascii=False)
         if arr and all(isinstance(x, str) for x in arr):
             out = ["Translated line %d." % i if ln.strip() else "" for i, ln in enumerate(arr)]
-            return json.dumps({"title": "Mock Chapter Title", "lines": out}, ensure_ascii=False)
+            return json.dumps({"title": "Mock Chapter Title", "lines": out})
+    # recap generation (story_state's recap.md prompt): AFTER the balanced-
+    # array scan above, BEFORE the empty-translation fallback below.
+    if "recap" in prompt:
+        return json.dumps({"recap": "Mock recap: the story continues."})
     return json.dumps({"title": "Mock Chapter Title", "lines": []})
 
 

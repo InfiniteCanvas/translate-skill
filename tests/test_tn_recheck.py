@@ -17,15 +17,20 @@ sidecar + history byte-unchanged, and — regression — a LEGACY chapter is
 left byte-unchanged too: the migration rewrite must land only after the
 annotator succeeded); unreadable chapter YAML (recorded in `failed`, the
 run continues); the cmd_retry wipe loop (deletes draft artifacts, the
-translated file, AND the notes sidecar — regression: the sidecar unlink
+translated file, the notes sidecar, AND the dropped-candidates artifact —
+regression: the sidecar unlink
 once passed the paths dict where tn.notes_path expects the project dir and
 crashed retry mid-wipe); manifest-order processing (files
 passed out of order are still processed by `order`, so the gap rule
-suppresses the same term in the immediately following chapter); and the
+suppresses the same term in the immediately following chapter); the
 history-only-drift commit (re-annotated notes identical to the sidecar
 leave changed == 0, but tn.process still bumps times in tn_history.json —
 that tracked-file drift alone must land exactly one "tn: re-check notes"
-commit; skipped gracefully when no git binary is on PATH).
+commit; skipped gracefully when no git binary is on PATH); and the recap
+parity (the re-check's annotator prompt frames the novel background plus
+the PREDECESSOR chapter's stored recap, byte-identical to the pipeline's
+TN_GENERATE background frame — read-only: story_state.json is neither
+written nor backfilled, and no recap means no frame).
 
 Every case builds a full sandbox project (source/, translated/,
 chapters.json, optional tn_history.json) inside tempfile.TemporaryDirectory()
@@ -190,7 +195,8 @@ def case_1_happy_path() -> None:
         check("1c happy: sidecar holds the annotated note, normalized",
               len(notes) == 1 and notes[0]["term"] == "清明"
               and notes[0]["note"] == "Tomb-sweeping festival."
-              and set(notes[0]) == {"line", "term", "note", "anchor"},
+              and set(notes[0]) == {"line", "term", "note", "category", "anchor"}
+              and notes[0]["category"] == "other",
               f"notes={notes}")
         check("1d happy: anchor snapshotted from the annotated line",
               notes[0]["line"] == 1 and notes[0]["anchor"] == "Line one body.",
@@ -498,9 +504,10 @@ def case_10_bad_yaml_continues() -> None:
 
 
 def case_11_retry_wipe_sidecar() -> None:
-    """Regression: cmd_retry's wipe loop must unlink the notes sidecar (and
-    not crash -- it once called tn.notes_path with the paths DICT where the
-    project dir belongs, raising TypeError after the chapter was half-wiped).
+    """Regression: cmd_retry's wipe loop must unlink the notes sidecar AND
+    the dropped-candidates artifact (and not crash -- it once called
+    tn.notes_path with the paths DICT where the project dir belongs,
+    raising TypeError after the chapter was half-wiped).
     pipeline.run_range is stubbed so no LLM call happens."""
     import argparse
 
@@ -517,6 +524,11 @@ def case_11_retry_wipe_sidecar() -> None:
         tn.save_notes(
             root, "Chapter_0001.md", ["Line zero body.", "Line one body."],
             [{"line": 0, "term": "旧词", "note": "Old note."}],
+        )
+        tn.save_dropped(
+            root, "Chapter_0001.md",
+            [{"line": 0, "term": "旧词", "note": "Old note.", "category": "other",
+              "threshold": "low", "reason": "low_threshold"}],
         )
 
         real_run_range = translate.pipeline.run_range
@@ -539,8 +551,10 @@ def case_11_retry_wipe_sidecar() -> None:
               not (root / "draft" / "Chapter_0001.state.json").exists(), "")
         check("11d retry wipe: notes sidecar removed",
               not tn.notes_path(root, "Chapter_0001.md").exists(), "")
+        check("11e retry wipe: dropped-candidates artifact removed",
+              not tn.dropped_path(root, "Chapter_0001.md").exists(), "")
         saved = json.loads((root / "chapters.json").read_text(encoding="utf-8"))
-        check("11e retry wipe: manifest status reset to pending",
+        check("11f retry wipe: manifest status reset to pending",
               saved[0]["status"] == "pending", f"status={saved[0].get('status')}")
 
 
@@ -594,6 +608,94 @@ def case_12_history_only_drift_commits() -> None:
                   f"rc={rc} subjects={subjects!r}")
 
 
+def case_13_recap_parity() -> None:
+    """Recap parity: the re-check's annotator prompt carries the same
+    [Background Information] frame the pipeline's TN_GENERATE builds --
+    novel background plus the PREDECESSOR chapter's stored recap (read-only:
+    no LLM backfill, no state writes; the sandbox project has no
+    novel_info.json, so the frame comes from the recap alone)."""
+    label = "Story so far (auto-generated recap of the preceding chapters):"
+    payload = {"notes": []}
+
+    # A: distinct recaps stored for both stems -> 0002's prompt frames the
+    #    PREDECESSOR's recap, never the chapter's own
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+            {"file": "Chapter_0002.md", "order": 1, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+        ])
+        state = {"chapters": {
+            "Chapter_0001": {"recap": "Recap alpha for chapter one."},
+            "Chapter_0002": {"recap": "Recap beta for chapter two."},
+        }}
+        write_lf(root / "story_state.json",
+                 json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+        state_bytes = (root / "story_state.json").read_bytes()
+        prompts: list[str] = []
+        result = run(root, manifest, ["Chapter_0002.md"],
+                     fake_chat_factory(payload, sink=prompts))
+
+        check("13a recap: chapter 2 re-checked (1 LLM call)",
+              result["scanned"] == 1 and result["failed"] == []
+              and len(prompts) == 1,
+              f"result={result} calls={len(prompts)}")
+        check("13b recap: prompt carries the [Background Information] frame",
+              "[Background Information]" in prompts[0], "")
+        check("13c recap: prompt carries the recap label",
+              label in prompts[0], "")
+        check("13d recap: prompt carries the PREDECESSOR's recap text",
+              "Recap alpha for chapter one." in prompts[0], "")
+        check("13e recap: prompt never carries the chapter's OWN recap",
+              "Recap beta for chapter two." not in prompts[0], "")
+        check("13f recap: story_state.json byte-unchanged (read-only)",
+              (root / "story_state.json").read_bytes() == state_bytes, "")
+
+    # B: no story_state.json -> no recap label, and no frame at all (the
+    #    sandbox project has no novel background either)
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+            {"file": "Chapter_0002.md", "order": 1, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+        ])
+        prompts = []
+        result = run(root, manifest, ["Chapter_0002.md"],
+                     fake_chat_factory(payload, sink=prompts))
+
+        check("13g no-state: re-check runs, no recap label in the prompt",
+              result["scanned"] == 1 and label not in prompts[0],
+              f"result={result}")
+        check("13h no-state: no [Background Information] frame (no background)",
+              "[Background Information]" not in prompts[0], "")
+
+    # C: first chapter -> no recap part even with a state present
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+            {"file": "Chapter_0002.md", "order": 1, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+        ])
+        state = {"chapters": {
+            "Chapter_0001": {"recap": "Recap alpha for chapter one."},
+            "Chapter_0002": {"recap": "Recap beta for chapter two."},
+        }}
+        write_lf(root / "story_state.json",
+                 json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+        prompts = []
+        run(root, manifest, ["Chapter_0001.md"],
+            fake_chat_factory(payload, sink=prompts))
+
+        check("13i first chapter: no recap part (no predecessor)",
+              label not in prompts[0]
+              and "Recap alpha for chapter one." not in prompts[0]
+              and "Recap beta for chapter two." not in prompts[0],
+              "")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -611,6 +713,7 @@ def main() -> int:
     case_10_bad_yaml_continues()
     case_11_retry_wipe_sidecar()
     case_12_history_only_drift_commits()
+    case_13_recap_parity()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
