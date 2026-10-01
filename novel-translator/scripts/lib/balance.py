@@ -6,6 +6,15 @@ import re
 CJK_RE = re.compile(r"[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]")
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9'’\-]*")
 
+
+def is_cjk(text: str) -> bool:
+    """Shared "is this string source-script?" predicate over CJK_RE -- the
+    widest CJK class in the skill (compat ideographs and halfwidth katakana
+    included), so glossary.set_fields, review.apply_fixes, and
+    fix.invalid_translation_reason all answer it identically. Callers keep
+    their own surrounding guards (e.g. isinstance(source, str))."""
+    return bool(CJK_RE.search(text))
+
 # Entries in these categories are injected into the translation prompt as
 # rendering guides (contextual glossary) but ignored by the checker: their
 # source strings are short and polysemous (里 in 这里/里面, 寸 in idioms), so

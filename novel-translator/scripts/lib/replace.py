@@ -15,10 +15,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-try:
-    from . import balance, glossary, project
-except ImportError:  # imported with scripts/lib directly on sys.path
-    import balance, glossary, project
+from lib import balance, glossary, project
 
 
 class ReplaceError(Exception):
@@ -124,7 +121,9 @@ def replace_chapters(
             missing.append(file)
             continue
         scanned += 1
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: hand-edited chapters can arrive BOM-prefixed; the extra
+        # "\ufeff" would hide the opening '---' from _split_frontmatter.
+        text = path.read_text(encoding="utf-8-sig")
         head, tail = _split_frontmatter(text)
         new_tail, n = replace_text(tail, phrase, new)
         if not n:

@@ -333,13 +333,13 @@ def case_9_record_recap() -> None:
     byte-unchanged."""
     files = ["Chapter_0001.md", "Chapter_0002.md", "Chapter_0003.md"]
     with tempfile.TemporaryDirectory() as td:
-        root, manifest = make_project(td, files)
+        root, _manifest = make_project(td, files)
         write_lf(root / "story_state.json", json.dumps(
             {"chapters": {"Chapter_0001": entry("R1."),
                           "Chapter_0002": entry("Old own recap.")}}, ensure_ascii=False) + "\n")
         prompts: list[str] = []
         _none, out = capture(
-            story.record_recap, root, CFG, manifest, "Chapter_0002.md",
+            story.record_recap, root, CFG, "Chapter_0002.md",
             "The Second Chapter", "Fresh body line.", "R1.",
             "[Chapter_0002]", chat=fake_recap_chat("New own recap.", sink=prompts))
         state = story.load_state(root)
@@ -360,14 +360,14 @@ def case_9_record_recap() -> None:
 
     # failure: prior state byte-unchanged
     with tempfile.TemporaryDirectory() as td:
-        root, manifest = make_project(td, files)
+        root, _manifest = make_project(td, files)
         seeded = {"chapters": {"Chapter_0001": entry("R1."),
                                "Chapter_0002": entry("Old own recap.")}}
         write_lf(root / "story_state.json",
                  json.dumps(seeded, ensure_ascii=False, indent=2) + "\n")
         before = (root / "story_state.json").read_bytes()
         _none, out = capture(
-            story.record_recap, root, CFG, manifest, "Chapter_0002.md",
+            story.record_recap, root, CFG, "Chapter_0002.md",
             "T", "B", "R1.", "[Chapter_0002]", chat=broken_chat)
         check("9g record fail: warn line names the file and the reason",
               out == "[Chapter_0002] [warn] recap generation failed"

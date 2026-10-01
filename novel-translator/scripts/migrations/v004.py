@@ -32,10 +32,8 @@ DESCRIPTION = ("add min_term_occurrences "
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    # confirm passes straight through to sync_templates: interactivity was
-    # decided once, upstream in cmd_migrate (TTY -> prompt, else None), and
-    # this step never touches stdin itself.
-    return (
-        common.materialize_config(project_dir, dry_run)
-        + common.sync_templates(project_dir, templates_src, dry_run, force, confirm)
-    )
+    # confirm passes straight through to standard_step (which hands it to
+    # sync_templates): interactivity was decided once, upstream in
+    # cmd_migrate (TTY -> prompt, else None), and this step never touches
+    # stdin itself.
+    return common.standard_step(project_dir, templates_src, dry_run, force, confirm)

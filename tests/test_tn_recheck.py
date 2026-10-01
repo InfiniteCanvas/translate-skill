@@ -41,9 +41,13 @@ deterministic.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
-    python tests/test_tn_recheck.py
+    uv run tests/test_tn_recheck.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# ///
 import json
 import subprocess
 import sys

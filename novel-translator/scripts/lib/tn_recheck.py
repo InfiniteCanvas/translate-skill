@@ -105,14 +105,7 @@ def recheck_chapters(
     glossary_cap = int(pipeline._cfg_value(cfg, "contextual_glossary_cap"))
     g = glossary.load(project_dir)
 
-    novel_info: dict = {}
-    if paths["novel_info"].is_file():
-        try:
-            loaded = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
-            if isinstance(loaded, dict):
-                novel_info = loaded
-        except (ValueError, OSError):
-            novel_info = {}
+    novel_info = project.load_novel_info(project_dir)
     style_profile = novel_info.get("style_profile")
     style_profile = style_profile if isinstance(style_profile, dict) else {}
     novel_background = str(
@@ -192,12 +185,11 @@ def recheck_chapters(
         baseline = baked if did_migrate else tn.load_notes(project_dir, file)
 
         # ---- fresh annotator pass (the re-evaluation) ----
-        source_lines = src_body.split("\n")
         # Same leading-title drop as the pipeline: a body line repeating the
         # frontmatter chapter_title was consumed by the title field.
-        first = source_lines[0].strip().strip("\u3000 ") if source_lines else ""
-        if first and first == str(fm_s.get("chapter_title", "")).strip().strip("\u3000 "):
-            source_lines = source_lines[1:]
+        source_lines, _dropped = project.drop_leading_chapter_title(
+            src_body.split("\n"), fm_s
+        )
 
         # Same glossary frame the pipeline's build_ctx gives tn_generate.md:
         # the chapter's contextual slice rendered as Hy-MT2 pairs, so the
@@ -210,10 +202,7 @@ def recheck_chapters(
         # background_section() builds: novel background, then the
         # predecessor's rolling recap ("" when there is none).
         recap_part = _recap_part(recap_state, manifest, file)
-        bg_parts = [p for p in (novel_background, recap_part) if p]
-        chapter_background = (
-            "[Background Information]\n" + "\n".join(bg_parts) + "\n" if bg_parts else ""
-        )
+        chapter_background = pipeline.background_section(novel_background, recap_part)
 
         try:
             prompt = fill(

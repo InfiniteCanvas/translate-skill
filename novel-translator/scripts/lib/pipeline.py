@@ -26,7 +26,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from lib import assemble, autobuild, balance, client, config, glossary, logger, project, story, styles, tn, vcs
 
@@ -185,9 +185,6 @@ LANG_NAMES: dict[str, str] = {
     "sk": "Slovak", "sl": "Slovenian",
 }
 
-# Fallback for projects without a generated style profile.
-DEFAULT_STYLE_SUMMARY = "a faithful literary translation that preserves the original's tone and register"
-
 
 def _lang_name(code: object) -> str:
     return LANG_NAMES.get(str(code).strip().lower(), str(code))
@@ -342,7 +339,9 @@ def load_state(draft_dir: Path, file: str) -> dict | None:
 def save_state(draft_dir: Path, file: str, state: dict) -> None:
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     project.atomic_write_text(
-        _state_path(draft_dir, file), json.dumps(state, ensure_ascii=False, indent=2)
+        _state_path(draft_dir, file),
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+        newline="\n",
     )
 
 
@@ -394,18 +393,35 @@ def _feedback_section(feedback: list[str], rejected_lines: list[str] | None,
     )
 
 
+def background_section(*parts: str) -> str:
+    """Render the Hy-MT2 [Background Information] frame; empty when there
+    is nothing to say (keeps templates clean for unprofiled projects).
+    Parts order: novel background, rolling story recap, then the caller's
+    extra (the chunk-tail continuity note), so the recap reaches every
+    prompt that fills {{background_section}}. Parts are used verbatim --
+    nothing is stripped here (story.py returns recaps unstripped, and a
+    .strip() inside would change prompt bytes); empty parts drop out."""
+    kept = [p for p in parts if p]
+    if not kept:
+        return ""
+    return "[Background Information]\n" + "\n".join(kept) + "\n"
+
+
 # Fallback template source: the skill's shipped assets. Projects initialized
 # before a template was introduced lack a copy in their templates/ dir.
 _SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
 
 
-def _load_template(templates_dir: Path, name: str) -> str:
+def _load_template(templates_dir: Path, name: str, *,
+                   error: Callable[[str], Exception] = PipelineError) -> str:
     path = templates_dir / name
     if not path.is_file():
         path = _SKILL_TEMPLATES / name
     if not path.is_file():
-        raise PipelineError(f"missing template: {name} (looked in {templates_dir} and {_SKILL_TEMPLATES})")
-    return path.read_text(encoding="utf-8")
+        raise error(f"missing template: {name} (looked in {templates_dir} and {_SKILL_TEMPLATES})")
+    # utf-8-sig: the project's templates dir is a user-editable copy, so
+    # tolerate a BOM on the template read.
+    return path.read_text(encoding="utf-8-sig")
 
 
 # Joined source-chapter bodies per project dir, built once per process for
@@ -487,6 +503,13 @@ def _apply_glossary_proposal(
             if seen < min_occurrences:
                 print(f"{tag} [glossary] skip '{src}' - {seen} occurrence(s) across the novel (min {min_occurrences})")
                 return
+        # Category coercion, proposal-side only (upsert stores verbatim):
+        # a model-sourced category outside glossary.CATEGORIES lands as
+        # "other" with a warn -- only when the term actually lands, i.e.
+        # after the retired/nickname/significance returns above.
+        if cat not in glossary.CATEGORIES:
+            print(f"{tag} [glossary] warn unknown category '{cat}' for '{src}' - coerced to 'other'")
+            cat = "other"
         glossary.upsert(
             g,
             {
@@ -537,7 +560,18 @@ def _apply_glossary_proposal(
     for key in ("translation", "definition", "category"):
         new_value = merged.get(key)
         if isinstance(new_value, str) and new_value.strip():
-            updated[key] = new_value
+            if key == "category" and new_value not in glossary.CATEGORIES:
+                # Same coercion as the new-term path, applied ONLY when the
+                # model echoes a category: a merge that omits the field (or
+                # returns garbage) falls through to the keep-existing branch
+                # below and never warns, and a hand-edited illegal category
+                # already on the entry is left untouched. Warns name the
+                # PROPOSAL's source (the [ok] line below prints the same),
+                # not the existing entry's (find() matches variants).
+                print(f"{tag} [glossary] warn unknown category '{new_value}' for '{src}' - coerced to 'other'")
+                updated["category"] = "other"
+            else:
+                updated[key] = new_value
         # absent (or garbage) values keep the existing entry's value
 
     terms = g.setdefault("terms", [])
@@ -645,36 +679,20 @@ def _line_output_cost(line: str) -> int:
     the numbered-JSON wrapper (~10 tokens per line). The chunk packer sums
     these; the +256 per-chunk overhead is added once per chunk.
 
-    Same conservatism as _estimate_output_tokens (English renderings run
-    ~0.7 tokens per CJK char, so 1.0 keeps the estimate above reality).
-    Shares balance.CJK_RE with the balance checks so the chunker and the
-    counters speak the same CJK class.
+    Conservative on purpose: English renderings run ~0.7 tokens per CJK
+    char, so 1.0 keeps the cost above reality. Shares balance.CJK_RE with
+    the balance checks so the chunker and the counters speak the same CJK
+    class.
     """
     cjk = len(balance.CJK_RE.findall(line))
     return int(cjk * 1.0 + (len(line) - cjk) / 4) + 10
-
-
-def _estimate_output_tokens(lines: list[str]) -> int:
-    """Conservative estimate of the TRANSLATED output size in tokens
-    (per-line costs + the 256-token chunk overhead applied once).
-
-    Test-facing whole-chapter estimator -- its only caller is
-    tests/test_chunking.py; the chunker itself packs from _line_output_cost
-    directly via _pack_chunks.
-
-    The English rendering of CJK text runs roughly 0.7 tokens per character;
-    1.0/char plus the numbered-JSON wrapper (~10 tokens per line) keeps the
-    estimate safely above reality, so chunk boundaries only trigger when the
-    output genuinely cannot fit the per-call cap.
-    """
-    return sum(_line_output_cost(ln) for ln in lines) + 256
 
 
 def _pack_chunks(source_lines: list[str], max_out: int,
                  escalated: int) -> list[tuple[int, int, int]]:
     """Greedy per-line token-budget packing of the chapter into chunks.
 
-    Chunks are sized by the same per-line output cost the estimator uses,
+    Chunks are sized by _line_output_cost (the per-line output cost),
     against budget = floor(0.8 * max_out) -- the 0.8 headroom absorbs
     estimate error -- minus the 256 per-chunk overhead: a chunk closes when
     the next line would overflow that room, and always takes >= 1 line (no
@@ -729,7 +747,7 @@ def _chat(project_dir: Path, cfg: dict, job: str, prompt: str,
           json_schema: dict | None = None,
           max_tokens: int | None = None) -> str:
     """client.chat with per-project trace logging of the full exchange."""
-    enabled = bool(cfg.get("log_llm", True))
+    enabled = bool(cfg.get("log_llm", config.DEFAULTS["log_llm"]))
 
     def hook(meta: dict) -> None:
         if enabled:
@@ -875,9 +893,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     # see the title twice (title instruction + body line 1) and emit an empty
     # or dropped first line. Drop the redundant body copy; the translated
     # title lives in the frontmatter "title" field.
-    first = source_lines[0].strip().strip("\u3000 ") if source_lines else ""
-    if first and first == str(fm.get("chapter_title", "")).strip().strip("\u3000 "):
-        source_lines = source_lines[1:]
+    source_lines, dropped_title = project.drop_leading_chapter_title(source_lines, fm)
+    if dropped_title:
         print(f"{tag} [init] leading chapter-title line handled via the title field")
     body_for_counts = "\n".join(source_lines)
     chapter_order = int(entry.get("order", 0))
@@ -897,30 +914,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     # init, hand-editable) wins; the legacy style_profile from --style auto
     # follows; generic default last. Background likewise prefers the
     # top-level novel_info field over the legacy profile field.
-    novel_info: dict = {}
-    if paths["novel_info"].is_file():
-        try:
-            loaded = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
-            if isinstance(loaded, dict):
-                novel_info = loaded
-        except (ValueError, OSError):
-            novel_info = {}
+    novel_info = project.load_novel_info(project_dir)
+    style_summary, _style_tier = styles.resolve_style(project_dir, novel_info)
     style_profile = novel_info.get("style_profile")
     style_profile = style_profile if isinstance(style_profile, dict) else {}
-    style_summary = ""
-    style_path = project_dir / "style.md"
-    if style_path.is_file():
-        try:
-            _, style_summary = styles.parse_style_file(
-                style_path.read_text(encoding="utf-8-sig")
-            )
-        except (OSError, ValueError):  # ValueError covers UnicodeDecodeError
-            style_summary = ""
-    style_summary = style_summary.strip()
-    if not style_summary:
-        style_summary = str(
-            style_profile.get("style_summary") or DEFAULT_STYLE_SUMMARY
-        ).strip()
     novel_background = str(
         novel_info.get("background") or style_profile.get("background") or ""
     ).strip()
@@ -931,17 +928,6 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     # before the feature existed. Any failure degrades to "" (no recap).
     prev_recap = story.ensure_recap(project_dir, cfg, manifest, file, tag)
     recap_section = story.story_part(prev_recap)
-
-    def background_section(extra: str = "") -> str:
-        """Render the Hy-MT2 [Background Information] frame; empty when there
-        is nothing to say (keeps templates clean for unprofiled projects).
-        Parts order: novel background, rolling story recap, then the caller's
-        extra (the chunk-tail continuity note), so the recap reaches every
-        prompt that fills {{background_section}}."""
-        parts = [p for p in (novel_background, recap_section, extra.strip()) if p]
-        if not parts:
-            return ""
-        return "[Background Information]\n" + "\n".join(parts) + "\n"
 
     def advance(next_stage: str) -> None:
         state["stage"] = next_stage
@@ -973,7 +959,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             "feedback_section": feedback,
             "balance_signals_section": "",
             "style": style_summary,
-            "background_section": background_section(),
+            "background_section": background_section(novel_background, recap_section),
         }
         if extra:
             ctx.update(extra)
@@ -1008,7 +994,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 # Escalated cap for truncating chunks: ~1.5x the normal cap,
                 # never above the provider's own max_tokens.
                 provider_max = int(
-                    config.provider(cfg, "translator").get("max_tokens") or 16384
+                    config.provider(cfg, "translator").get("max_tokens")
+                    or config.DEFAULT_MAX_TOKENS
                 )
                 escalated = min(int(round(max_out * 1.5)), provider_max)
                 plan = _pack_chunks(source_lines, max_out, escalated)
@@ -1048,7 +1035,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                         print(f"{tag} [init] translating part {k + 1}/{n_chunks} (lines {lo + 1}-{hi})")
                     numbered = [{"i": lo + j + 1, "t": ln} for j, ln in enumerate(chunk)]
                     if k == 0 or not tlines:
-                        chunk_background = background_section()
+                        chunk_background = background_section(novel_background, recap_section)
                     else:
                         tail = [ln for ln in tlines if ln.strip()][-2:]
                         continuity = (
@@ -1056,7 +1043,9 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                             "(for continuity only - do NOT retranslate them):\n"
                             + "\n".join(tail)
                         )
-                        chunk_background = background_section(continuity)
+                        chunk_background = background_section(
+                            novel_background, recap_section, continuity.strip()
+                        )
                     chunk_ctx = build_ctx(
                         [],
                         feedback=_feedback_section(state["feedback"], state["rejected"], lo, hi),
@@ -1157,8 +1146,6 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                             prompt = fill(tpl_translation, retry_ctx, "translation.md")
                         else:
                             raise ValueError(f"TRANSLATE {problem}")
-                    if clines is None:  # defensive; unreachable via the loop above
-                        raise ValueError(f"TRANSLATE part {k + 1} produced no valid lines")
                     tlines.extend(clines)
                     # Persist the validated chunk immediately: a crash or
                     # Ctrl-C loses at most the in-flight chunk. The title
@@ -1176,7 +1163,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 )
                 (paths["draft"] / f"{stem}.lines.json").write_text(
                     json.dumps({"title": title, "lines": tlines}, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
+                    encoding="utf-8", newline="\n",
                 )
             except PipelineError:
                 raise
@@ -1410,13 +1397,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             # Rolling recap: record this chapter's own entry after assembly
             # (run_range's chapter commit versions story_state.json with the
             # chapter). Its failure must never affect the translated outcome
-            # -- the helper already swallows everything; this belt is cheap.
-            try:
-                story.record_recap(project_dir, cfg, manifest, file,
-                                   state["title"] or "", "\n".join(lines),
-                                   prev_recap, tag)
-            except Exception as exc:  # noqa: BLE001 - defensive only
-                print(f"{tag} [warn] recap generation failed for {file}: {exc}")
+            # -- the helper swallows every exception internally.
+            story.record_recap(project_dir, cfg, file,
+                               state["title"] or "", "\n".join(lines),
+                               prev_recap, tag)
             return "translated"
 
         # ---------------- failure handling ----------------

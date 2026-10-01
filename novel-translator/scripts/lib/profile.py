@@ -7,12 +7,8 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from lib import client, config, logger, project
-from lib.pipeline import LANG_NAMES, fill
-
-# Fallback template source: the skill's shipped assets. Projects initialized
-# before a template was introduced lack a copy in their templates/ dir.
-_SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
+from lib import client, config, logger, pipeline, project
+from lib.pipeline import _lang_name, fill
 
 PROFILE_SCHEMA: dict = {
     "type": "object",
@@ -27,10 +23,6 @@ PROFILE_SCHEMA: dict = {
 
 class ProfileError(Exception):
     """Style profile generation failed."""
-
-
-def _lang_name(code: object) -> str:
-    return LANG_NAMES.get(str(code).strip().lower(), str(code))
 
 
 def generate_profile(
@@ -71,17 +63,11 @@ def generate_profile(
     if not sample_text:
         raise ProfileError("sampled chapters contained no text")
 
-    templates_dir = project.paths(project_dir)["templates"]
-    tpl_path = templates_dir / "style_profile.md"
-    if not tpl_path.is_file():
-        tpl_path = _SKILL_TEMPLATES / "style_profile.md"
-    if not tpl_path.is_file():
-        raise ProfileError(
-            f"missing template: style_profile.md "
-            f"(looked in {templates_dir} and {_SKILL_TEMPLATES})"
-        )
     prompt = fill(
-        tpl_path.read_text(encoding="utf-8"),
+        pipeline._load_template(
+            project.paths(project_dir)["templates"], "style_profile.md",
+            error=ProfileError,
+        ),
         {
             "source_lang": _lang_name(cfg.get("source_lang")),
             "target_lang": _lang_name(cfg.get("target_lang")),
@@ -90,7 +76,7 @@ def generate_profile(
         "style_profile.md",
     )
     def hook(meta: dict) -> None:
-        if bool(cfg.get("log_llm", True)):
+        if bool(cfg.get("log_llm", config.DEFAULTS["log_llm"])):
             logger.log_event(project_dir, {"job": "profile", **meta})
 
     resp = client.chat(

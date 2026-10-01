@@ -29,9 +29,13 @@ sandboxes per case — repo fixtures are never touched.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
-    python tests/test_tn_categories.py
+    uv run tests/test_tn_categories.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests>=2.31", "pyyaml>=6.0"]
+# ///
 import json
 import sys
 import tempfile

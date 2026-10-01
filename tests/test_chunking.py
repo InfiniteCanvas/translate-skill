@@ -4,8 +4,8 @@ for truncating chunks, the oversized-line fail-fast, and per-chunk
 persistence/resume via state["chunks"].
 
 Packing replaces the old line-count-balanced (divmod) splitter: chunks are
-sized by the same per-line output cost the estimator uses (CJK x1.0, other
-chars /4, +10 per line; +256 once per chunk) against
+sized by _line_output_cost (CJK x1.0, other chars /4, +10 per line; +256
+once per chunk) against
 budget = floor(0.8 * translate_max_output_tokens), each chunk taking >= 1
 line. A single line whose cost exceeds the budget is isolated as a
 singleton chunk called directly at the escalated cap
@@ -17,8 +17,8 @@ snapshot) and the crash resume both depend on.
 
 Covered: (1) packing determinism and shape (multi-chapter source -> non-
 empty chunks whose estimated cost fits the budget, bounds identical across
-computations, small source -> exactly 1 chunk, whole-chapter estimate =
-per-line sums + 256); (2) oversized-line fail-fast through run_chapter
+computations, small source -> exactly 1 chunk, per-line cost pinned to
+literals: LINE -> 30, the 10-line chapter -> 300); (2) oversized-line fail-fast through run_chapter
 (feedback names the line, zero model calls); (3) the singleton oversized
 line is called directly at the escalated cap; (4) escalation semantics
 (missing tail indices -> corrective retry at the escalated cap, duplicate
@@ -221,8 +221,8 @@ def translate_calls(calls: list[dict]) -> list[dict]:
 def case_1_packing() -> None:
     """Determinism and shape: a multi-chapter source packs into non-empty
     chunks whose estimated cost fits the budget, identically across two
-    computations; a small source is exactly one chunk; the whole-chapter
-    estimate is the per-line cost sum + 256."""
+    computations; a small source is exactly one chunk; the per-line cost
+    itself is pinned (LINE -> 30, the 10-line chapter -> 300)."""
     big = [LINE] * 10  # cost 30/line, room 144 -> 4 lines per chunk
     plan = pipeline._pack_chunks(big, MAX_OUT, ESCALATED)
     again = pipeline._pack_chunks(big, MAX_OUT, ESCALATED)
@@ -249,10 +249,10 @@ def case_1_packing() -> None:
     check("1f packing: small source -> exactly 1 chunk",
           [(lo, hi) for lo, hi, _cap in plan_small] == [(0, 3)],
           f"plan={plan_small}")
-    check("1g packing: whole-chapter estimate = per-line sums + 256",
-          pipeline._estimate_output_tokens(big)
-          == sum(pipeline._line_output_cost(ln) for ln in big) + 256,
-          f"est={pipeline._estimate_output_tokens(big)}")
+    check("1g packing: per-line cost pinned (LINE -> 30, chapter -> 300)",
+          pipeline._line_output_cost(LINE) == 30
+          and sum(pipeline._line_output_cost(ln) for ln in big) == 300,
+          f"LINE={pipeline._line_output_cost(LINE)}")
     check("1h packing: whole chapter under the budget -> one chunk",
           [(lo, hi) for lo, hi, _cap in
            pipeline._pack_chunks(small, 8192, 12288)] == [(0, 3)])

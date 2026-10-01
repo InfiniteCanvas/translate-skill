@@ -25,6 +25,22 @@ markdown, hides line 1 (read_chapter's opening '---', fix.parse_report's
   modes -- the explicit '- Command:' bullet on line 1 and the legacy
   synthesis '### [N]' heading on line 1 are exactly the ^-anchored patterns
   a file-start BOM used to hide.
+- replace.replace_chapters (translated chapter reads): a BOM'd chapter's
+  frontmatter stays out of the phrase match -- a YAML title containing the
+  search phrase case-insensitively is neither counted nor rewritten (the
+  full rewrite contract, including the BOM-stripping rewrite, is pinned in
+  tests/test_replace.py case 8).
+- migrations.common.sync_templates (drift comparison, BOTH sides): a dest
+  whose only difference from the shipped copy is a BOM is not a user edit
+  worth a prompt (pinned end-to-end in tests/test_migrate.py case 10).
+- pipeline._load_template (project templates/*.md reads): the template text
+  comes back with no leading \ufeff.
+- profile.generate_profile (templates/style_profile.md read): the filled
+  prompt sent to the profile provider carries no \ufeff.
+- styles presets/overrides (list_styles / load_style): a BOM'd style file
+  keeps its 'description:' header out of the body and its description
+  visible in list_styles (the BOM used to hide line 1 from
+  parse_style_file, leaking the header into the body).
 
 Every BOM'd load must also be SILENT: the utf-8-sig read may not fall into
 the malformed-file discard path (which would print a [warn] and return the
@@ -68,7 +84,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts
 sys.path.insert(0, str(SCRIPTS))
 
 import translate  # noqa: E402
-from lib import config, fix, glossary, pipeline, project, tn  # noqa: E402
+from lib import config, fix, glossary, pipeline, profile, project, styles, tn  # noqa: E402
 
 PASSED = 0
 FAILED: list[str] = []
@@ -152,6 +168,17 @@ def case_1_bom_json_project_files() -> None:
         check("1e tn_history: BOM'd file loads with its term",
               exc is None and h == history_in, f"exc={exc!r} h={h}")
         check("1f tn_history: silent", out == "", f"out={out!r}")
+        # The save counterpart (A4 pin, natural to the load it mirrors):
+        # LF newlines and exactly one trailing newline, like every other
+        # project JSON writer.
+        _res, _out_save, exc_save = capture(tn.save_history, root, history_in)
+        raw = (root / "tn_history.json").read_bytes()
+        check("1f2 tn_history: save_history pins LF + one trailing newline",
+              exc_save is None
+              and raw == json.dumps(history_in, ensure_ascii=False, indent=2)
+              .encode("utf-8") + b"\n"
+              and b"\r" not in raw,
+              f"exc={exc_save!r} raw={raw!r}")
 
         # notes sidecar
         notes_in = [{"line": 0, "term": "灵根",
@@ -303,6 +330,101 @@ def case_4_load_state_loud_discard() -> None:
                      "- restarting chapter state\n", f"out={out!r}")
 
 
+def case_5_pipeline_template_bom() -> None:
+    """pipeline._load_template reads the project's templates/ copy
+    BOM-tolerantly. The BOM'd template MUST exist in the project dir -- a
+    missing copy falls back to the skill's shipped assets, which would mask
+    the fixture."""
+    with tempfile.TemporaryDirectory() as td:
+        templates = Path(td) / "templates"
+        write_bom(templates / "translation.md", "Translate {{source_lang}}.\n")
+        tpl, out, exc = capture(pipeline._load_template, templates, "translation.md")
+        check("5a template: BOM'd project template loads without \\ufeff",
+              exc is None and tpl == "Translate {{source_lang}}.\n"
+              and "\ufeff" not in tpl,
+              f"exc={exc!r} tpl={tpl!r}")
+        check("5b template: silent", out == "", f"out={out!r}")
+
+
+def case_6_profile_template_bom() -> None:
+    """profile.generate_profile fills the project's BOM'd style_profile.md
+    copy without leaking the BOM into the prompt. lib.client.chat is
+    stubbed via profile.client (the call site does a module-attribute
+    lookup) with orig/restore in try/finally -- the same harness as the
+    glossary-review suites. log_llm is False in the fixture config, so the
+    meta hook never writes a log."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        write_lf(root / "source" / "Chapter_0001.md",
+                 "第一章 灵根\n\n林枫将手掌贴在水晶上。\n")
+        write_lf(root / "config.json", json.dumps({
+            "source_lang": "zh", "target_lang": "en",
+            "log_llm": False, "providers": {},
+        }, indent=2) + "\n")
+        write_bom(root / "templates" / "style_profile.md",
+                  "Analyze this {{source_lang}} novel for {{target_lang}}.\n\n"
+                  "[Sample]\n{{sample_text}}\n")
+        cfg, _out, _exc = capture(config.load_config, root)
+        prompts: list[str] = []
+
+        def fake_chat(provider_cfg, prompt, json_schema=None, temperature=None,
+                      max_tokens=None, meta_hook=None):
+            prompts.append(prompt)
+            return json.dumps({"style_summary": "Plain, steady wuxia prose.",
+                               "background": "A cultivation epic."},
+                              ensure_ascii=False)
+
+        orig = profile.client.chat
+        profile.client.chat = fake_chat
+        try:
+            result, out, exc = capture(profile.generate_profile, root, cfg, 1, 1000)
+        finally:
+            profile.client.chat = orig
+        check("6a profile: BOM'd style_profile.md fills with no \\ufeff in the prompt",
+              exc is None and len(prompts) == 1
+              and "\ufeff" not in prompts[0]
+              and "林枫将手掌贴在水晶上" in prompts[0],
+              f"exc={exc!r} prompts={prompts!r}")
+        check("6b profile: stub response parsed back",
+              result == {"style_summary": "Plain, steady wuxia prose.",
+                         "background": "A cultivation epic."},
+              f"result={result!r}")
+        check("6c profile: silent", out == "", f"out={out!r}")
+
+
+def case_7_styles_bom() -> None:
+    """A BOM'd style preset keeps its 'description:' header out of the body:
+    list_styles reports the description and load_style returns the clean
+    body (the BOM used to hide line 1 from parse_style_file's startswith
+    check, so list_styles showed an empty description and the header leaked
+    into the body). styles.STYLES_DIR is swapped to a temp dir
+    (module-attribute swap with orig/restore in try/finally); the fixture
+    project has no styles/ overrides of its own."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        presets = Path(td) / "presets"
+        write_bom(presets / "literary.md",
+                  "description: literary prose\n"
+                  "---\n"
+                  "Prefer formal register and longer sentences.\n")
+        orig = styles.STYLES_DIR
+        styles.STYLES_DIR = presets
+        try:
+            listed, out, exc = capture(styles.list_styles, root)
+            check("7a styles: BOM'd preset lists its description",
+                  exc is None and listed == [("literary", "literary prose")],
+                  f"exc={exc!r} listed={listed}")
+            body, out, exc = capture(styles.load_style, root, "literary")
+            check("7b styles: BOM'd preset body has no leaked header",
+                  exc is None
+                  and body == "Prefer formal register and longer sentences."
+                  and "description:" not in body and "\ufeff" not in body,
+                  f"exc={exc!r} body={body!r}")
+            check("7c styles: silent", out == "", f"out={out!r}")
+        finally:
+            styles.STYLES_DIR = orig
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -312,6 +434,9 @@ def main() -> int:
     case_2_read_chapter_bom()
     case_3_parse_report_bom()
     case_4_load_state_loud_discard()
+    case_5_pipeline_template_bom()
+    case_6_profile_template_bom()
+    case_7_styles_bom()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

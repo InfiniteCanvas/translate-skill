@@ -19,15 +19,26 @@ zero occurrences) and saves the glossary. replace_chapters' optional
 `progress` list collects each durably-rewritten file name (nothing on a
 dry-run), and the util path still works with no progress argument at all.
 
+The BOM case pins replace_chapters' utf-8-sig chapter read: a BOM'd
+hand-edited chapter (Windows "UTF-8 with BOM") must not lose its
+frontmatter split -- the YAML title carrying the phrase case-insensitively
+is neither counted nor rewritten -- and a real rewrite strips the BOM while
+no-match and dry-run runs leave the BOM'd bytes untouched.
+
 All chapter/glossary fixtures are built inside tempfile.TemporaryDirectory()
 sandboxes per case — repo fixtures are never touched. Files are written with
 explicit LF newlines so byte-level comparisons are deterministic.
 
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
+Self-contained PASS/FAIL script (no pytest). The lib modules import pyyaml
+and requests, so run via uv (deps declared inline below):
 
-    python tests/test_replace.py
+    uv run tests/test_replace.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests>=2.31", "pyyaml>=6.0"]
+# ///
 import contextlib
 import io
 import json
@@ -59,6 +70,13 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 def write_lf(path: Path, text: str) -> None:
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
+
+
+def write_bom(path: Path, text: str) -> None:
+    """Write text as UTF-8 WITH a leading BOM (EF BB BF) and LF newlines --
+    what a Windows editor saving 'UTF-8 with BOM' produces on a hand-edited
+    chapter."""
+    write_lf(path, "\ufeff" + text)
 
 
 def raises_replace_error(fn) -> bool:
@@ -265,6 +283,39 @@ def make_recovery_project(td: str) -> tuple[Path, dict[str, bytes]]:
     for name in REC_FILES:
         before[name] = (translated / name).read_bytes()
     return root, before
+
+
+# ------------------------------------------------------------ case 8 fixtures
+
+# One translated chapter whose frontmatter title contains the search phrase
+# case-insensitively ("Spirit Root Awakening" vs phrase "spirit root"): a
+# BOM'd read that defeats _split_frontmatter (head "") would count the title
+# hit and rewrite the YAML. Reuses CH1 (title hit + 3 body occurrences).
+BOM_MANIFEST = [
+    {"file": "Chapter_0001.md", "number": 1, "order": 0, "status": "translated",
+     "title": "Spirit Root Awakening"},
+]
+
+# No occurrence of the phrase anywhere (frontmatter or body): the BOM'd file
+# must stay byte-identical, BOM included.
+BOM_NO_MATCH = (
+    "---\n"
+    "chapter_title: 第四章 山雨\n"
+    "title: Rain on the Mountain\n"
+    "---\n"
+    "\n"
+    "The storm gathered over the sect's peaks.\n"
+)
+
+
+def make_bom_project(td: str, chapter_text: str) -> tuple[Path, bytes]:
+    """Temp project with ONE BOM'd translated chapter (Chapter_0001.md);
+    returns (root, chapter bytes-before)."""
+    root = Path(td)
+    translated = root / "translated"
+    translated.mkdir()
+    write_bom(translated / "Chapter_0001.md", chapter_text)
+    return root, (translated / "Chapter_0001.md").read_bytes()
 
 
 # ---------------------------------------------------------------------- cases
@@ -668,6 +719,52 @@ def case_7_progress_and_recovery() -> None:
               f"g={rep2['glossary']}")
 
 
+def case_8_bom_chapters() -> None:
+    """replace_chapters reads chapters BOM-tolerantly: a BOM must not
+    defeat _split_frontmatter, or the frontmatter title carrying the phrase
+    case-insensitively would be counted and rewritten (the old plain-utf-8
+    read). A real rewrite strips the BOM; a no-match or dry-run run leaves
+    the BOM'd bytes untouched."""
+    # Case A: real run -- frontmatter excluded from count and rewrite
+    with tempfile.TemporaryDirectory() as td:
+        root, _before = make_bom_project(td, CH1)
+        rep = R.replace_chapters(root, BOM_MANIFEST, "spirit root", "spiritual root")
+        check("8a BOM: occurrences exclude the frontmatter title hit",
+              rep["occurrences"] == 3
+              and rep["per_chapter"] == [("Chapter_0001.md", 3)]
+              and rep["changed"] == 1, f"rep={rep}")
+        raw = (root / "translated" / "Chapter_0001.md").read_bytes()
+        check("8b BOM: real rewrite drops the EF BB BF prefix",
+              raw[:3] != b"\xef\xbb\xbf", f"head={raw[:6]!r}")
+        text = raw.decode("utf-8")
+        check("8c BOM: frontmatter head byte-identical (YAML title not rewritten)",
+              text.startswith(CH1_HEAD)
+              and "title: Spirit Root Awakening" in text.split("---")[1]
+              and "Spiritual Root" not in text.split("---")[1],
+              f"head={text.split(chr(10))[0:4]!r}")
+        check("8d BOM: rewritten file equals the plain (non-BOM'd) expectation",
+              text == CH1_AFTER, f"got={text!r}")
+
+    # Case B: dry_run -- same body-only count, BOM'd bytes untouched
+    with tempfile.TemporaryDirectory() as td:
+        root, before = make_bom_project(td, CH1)
+        rep = R.replace_chapters(root, BOM_MANIFEST, "spirit root", "spiritual root",
+                                 dry_run=True)
+        check("8e BOM: dry-run still reports the body-only count",
+              rep["occurrences"] == 3 and rep["changed"] == 1, f"rep={rep}")
+        check("8f BOM: dry-run leaves the BOM'd file byte-identical",
+              (root / "translated" / "Chapter_0001.md").read_bytes() == before)
+
+    # Case C: no match anywhere -- nothing rewritten, BOM preserved
+    with tempfile.TemporaryDirectory() as td:
+        root, before = make_bom_project(td, BOM_NO_MATCH)
+        rep = R.replace_chapters(root, BOM_MANIFEST, "spirit root", "spiritual root")
+        check("8g BOM: no-match BOM'd file untouched (BOM preserved)",
+              rep["occurrences"] == 0 and rep["changed"] == 0
+              and (root / "translated" / "Chapter_0001.md").read_bytes() == before,
+              f"rep={rep}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -680,6 +777,7 @@ def main() -> int:
     case_5_guards()
     case_6_preflight()
     case_7_progress_and_recovery()
+    case_8_bom_chapters()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

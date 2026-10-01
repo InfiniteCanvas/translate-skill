@@ -20,9 +20,13 @@ imports the whole lib package (requests, ebooklib, pillow, pyyaml).
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
-    python tests/test_parser_project.py
+    uv run tests/test_parser_project.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# ///
 import argparse
 import sys
 import tempfile

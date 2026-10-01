@@ -12,11 +12,16 @@ in-place replacement swaps the exact list slot (position preserved), and a
 replacement carrying its own alts keeps them verbatim.
 
 All fixtures are plain in-memory glossary dicts. Self-contained PASS/FAIL
-script (no pytest). Run from anywhere:
+script (no pytest). The lib modules import pyyaml, so run via uv (deps
+declared inline below):
 
-    python tests/test_glossary_upsert.py
+    uv run tests/test_glossary_upsert.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pyyaml>=6.0"]
+# ///
 import sys
 from pathlib import Path
 

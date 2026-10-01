@@ -24,7 +24,9 @@ markdown contract).
 ## Prerequisites
 
 - `uv` on PATH (scripts declare their dependencies inline via PEP 723).
-- Docker with an image named `epubcheck` (used to validate built epubs).
+- Docker with an image named `epubcheck` (optional — validates built
+  epubs; without it the epubcheck step is skipped with a warning and
+  builds still succeed).
 - The sglang endpoint reachable (check with `uv run "$SCRIPT" ping`).
 
 ## Project lifecycle
@@ -80,7 +82,10 @@ that is already a repository without the skill `.gitignore` (a foreign
 repo) commits are skipped, with one
 `[warn] git: skipping commits - ...` line per run (details in
 file-formats.md § Git history).
-Refuses to overwrite an existing project unless `--force`.
+Refuses to overwrite an existing project unless `--force`; `--force`
+reinitializes, resetting `glossary.json` and `tn_history.json` to empty
+and deleting `story_state.json` (the per-chapter `notes/` sidecars
+survive with their translated chapters).
 
 Optional: `--cover-url` to point at a cover image directly.
 
@@ -123,7 +128,7 @@ and with `--style auto` it skips the profile LLM call.
 
 ```bash
 uv run "$SCRIPT" translate --project . --chapters 5-20   # inclusive range; also "42" or "5-10,30"
-uv run "$SCRIPT" translate --project . --next 10          # first 10 pending chapters in order
+uv run "$SCRIPT" translate --project . --next 10          # first 10 pending or in-progress chapters in order
 ```
 
 Sequential by design — the glossary is meant to grow as you go, so later
@@ -138,11 +143,12 @@ source into an indexed JSON line array and builds the *contextual glossary*
 sorted by frequency):
 
 1. **TRANSLATE** — fill `templates/translation.md`, call the `translator`
-   provider with the WHOLE chapter when its expected output fits
-   `translate_max_output_tokens` (default 8k, the model card's recommended
-   output range); longer chapters split by greedy per-line token-budget
-   packing (parts close past 80% of the cap minus per-part overhead, so
-   every part takes at least one line), each still carrying style
+   provider with the WHOLE chapter when its expected output fits the
+   one-call budget `floor(0.8 × translate_max_output_tokens) − 256`
+   (the cap defaults to 8k, the model card's recommended output range);
+   longer chapters split by greedy per-line token-budget packing (parts
+   close past that same budget, so every part takes at least one line),
+   each still carrying style
    background and the previous part's tail as input context. The
    numbered-line protocol plus the corrective retry keep the
    one-line-in/one-line-out contract intact; a part whose response looks
@@ -177,7 +183,10 @@ sorted by frequency):
    All three tiers (drift
    signals, under-use warnings, over-count info) surface as
    `balance_advisory` trace events; only drift signals and under-use
-   warnings also print console `[warn]`s (over-count is trace-only).
+   warnings also print console `[warn]`s — under-use warnings capped at
+   the first 5 per chapter (`[warn] ... and N more (see logs)`
+   summarizes the rest), drift signals one `[warn]` each, over-count
+   findings trace-log only.
    Drift signals (canonical rendering absent while the term appears ≥2× in
    the source) first run the same cleanup judgment as before (one
    `glossary`-provider call, `templates/glossary_cleanup.md`): KEEP named
@@ -190,12 +199,12 @@ sorted by frequency):
    The retirement itself is DEFERRED: flagged terms are only dropped from
    `glossary.json` into its `retired` list after FAITH accepts the
    translation (applied alongside GLOSSARY_EXPAND; console: `[glossary]
-   retired mundane term '...'`; trace event `glossary_cleanup`) — a
+   retired mundane term '...' (<reason>)`; trace event `glossary_cleanup`) — a
    rejected attempt retires nothing, since a bad translation is exactly
    what produces false drift. Retired terms are never re-added by `seed`
    or GLOSSARY_EXPAND. Kept signals are appended to the FAITH reviewer's
    prompt (see stage 4), which owns the verdict; cleanup errors are
-   fail-safe (`[warn] glossary cleanup failed - keeping all signals`).
+   fail-safe (`[warn] glossary cleanup failed - keeping all signals: <error>`).
 4. **FAITH** — the `reviewer` provider judges faithfulness line by line.
    The reviewer also receives any kept BALANCE drift signals as heuristic
    term-consistency flags: it fails on genuine terminology drift but not on
@@ -219,7 +228,14 @@ sorted by frequency):
    corpus fails it open), skipped below the floor with
    `[glossary] skip '<src>' - <N> occurrence(s) across the novel (min
    <M>)` — updates, merges, and nickname absorption of entries already
-   in the glossary are never gated. Runs only on the
+   in the glossary are never gated. Proposed categories are validated
+   against the known glossary categories (the model is offered the list
+   minus `unit` — units come from catalogues, not proposals): a known
+   category — `unit` included — passes unchanged, an unknown one is
+   coerced to `other` with `[glossary] warn unknown category '<cat>' for
+   '<source>' - coerced to 'other'`, and the same coercion covers
+   category updates the merge model returns for existing entries. Runs
+   only on the
    attempt FAITH just accepted — new terms lock in after the translation is
    accepted, never from a rejected one (a chapter that ends needs-review
    adds no terms). BALANCE's deferred retirements are applied here first,
@@ -312,7 +328,10 @@ sorted by manifest order), metadata from `novel_info.json`, cover from
 (`epub:type="noteref"`/`"footnote"`, rendered from each chapter's
 `notes/<stem>.json` sidecar, with a fallback to legacy markers baked into
 the markdown), then validates with the epubcheck
-docker image. The build fails loudly if epubcheck reports errors — show the
+docker image (when Docker/epubcheck is unavailable the check degrades
+gracefully — `[warn] docker not found; epubcheck skipped` followed by
+`[warn] epubcheck skipped`, and the build still succeeds with exit 0).
+The build fails loudly if epubcheck reports errors — show the
 report to the user and fix the chapter(s) named in it. To run epubcheck
 manually from Git Bash:
 
@@ -325,7 +344,8 @@ automatically — each chapter that reaches `translated` fires a background
 `build-epub` subprocess (builds run one at a time; triggers arriving
 mid-build coalesce into the next build), and a final synchronous build at
 batch end guarantees the finished epub includes every chapter. `export/`
-thus always holds a current, epubcheck-validated epub — no manual builds
+thus always holds a current epub (epubcheck-validated when Docker is
+available) — no manual builds
 during long batches. Child build output (incl. epubcheck results) appends
 to `logs/epub-build.log` with
 `=== epub build after Chapter_NNNN.md | timestamp ===` separators; the console
@@ -459,7 +479,14 @@ background build too. Builds produce no git commits — `export/` and
   entries exempt) in batches of
   `review_batch_size`
   (default 40; `--batch-size N` overrides per run)
-  through `templates/glossary_review.md`. Report-only: one
+  through `templates/glossary_review.md`. Console sequence: the header
+  `[glossary] review: N entries (B model batch(es) of up to S)` prints
+  before the model calls, `[glossary] reviewing batch i/n` before each
+  batch, `[glossary] warn batch i/n review failed - <error>` after a
+  failed batch, then — after the per-finding lines — the post-run
+  summary `[glossary] review: N entries, W warn / I info findings` (W/I
+  are outstanding counts: findings `--fix` resolved drop out).
+  Report-only: one
   `[glossary] warn|info` line per finding, never touching glossary.json
   unless `--fix`; `--fix`
   applies only model-suggested fixes (direct model-tier warn findings,
@@ -471,7 +498,12 @@ background build too. Builds produce no git commits — `export/` and
   Mundane findings carry no suggestion — `--fix` never retires them; the
   report's `glossary retire` Command bullet does (see Bulk review fixes).
   Exit 0 clean or info-only (or every warn fixed), 1 warns remain,
-  2 usage/setup error; empty glossary exits 0. Cost ceil(N/review_batch_size)
+  2 usage/setup error; empty glossary exits 0. Review flags are per
+  subject: `review glossary` accepts `--fix` and `--batch-size`,
+  `review notes` accepts `--chapters` and `--batch-size`, and `review
+  fix` accepts `--glossary` (the report path), `--dry-run`,
+  `--exit-on-error`; anything else exits 2 with
+  `[FAIL] --<flag> does not apply to 'review <subject>'`. Cost ceil(N/review_batch_size)
   model calls; model-tier failures fail safe per batch — heuristic findings
   still report. Every run also writes indexed `<project>/review-report.md`
   (filename from config `review_report_path`;
@@ -561,8 +593,10 @@ read-only `glossary search` / `glossary count` commit nothing.
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.
-- **Cost/cadence**: each chapter ≈ 5 model calls + retries (translate,
-  faithfulness, glossary expansion, notes, story recap); one glossary
+- **Cost/cadence**: each chapter ≈ 5 model calls + retries (translate —
+  one call per part on longer chapters — faithfulness, glossary
+  expansion, notes, story recap), plus a cleanup-judgment call only when
+  balance flags drift signals; one glossary
   review pass ≈ ceil(N/review_batch_size) calls for N entries (40 by
   default), one notes review pass ≈ ceil(M/review_batch_size) calls for M
   notes. `status` before long
@@ -586,14 +620,14 @@ or updating the `tn_generate.md` template — run:
 - `uv run "$SCRIPT" tn --project . --chapters SPEC [--dry-run] [--no-build]` —
   re-evaluate translator's notes on already-translated chapters: re-runs the
   annotator over the range (untranslated chapters are skipped with a
-  warning) and regenerates each `notes/<chapter>.json` sidecar from scratch
+  warning) and regenerates each `notes/<stem>.json` sidecar from scratch
   through the same prompt and dedup as the pipeline (glossary-aware
   categorized annotation, low-threshold gate, within-chapter dedup,
   cross-chapter gap rule vs `tn_history.json` — a term
   annotated within `tn_gap_chapters` in an earlier chapter stays
   suppressed — and the same code-enforced `max_notes_per_chapter` cap with
   severity-ordered truncation); the discarded candidates are recorded the
-  same way too (`notes/<chapter>.dropped.json`, review artifact only, and a
+  same way too (`notes/<stem>.dropped.json`, review artifact only, and a
   pure category change counts as a change); chapter prose is never
   rewritten except the one-time
   stripping of legacy baked-in notes/markers, then the epub rebuilds unless
@@ -631,7 +665,9 @@ translation — run `review notes`:
   there). Advisory only: exit 0 on a completed run regardless of finding
   count — there is no `--fix` and no exit-1-on-warns (that is the
   glossary tier's contract; usage errors — `--fix`, `--batch-size` < 1,
-  a bad `--chapters` spec — exit 2) — and the report (same file as `review
+  a bad `--chapters` spec, or any other flag that does not apply to the
+  subject (`[FAIL] --<flag> does not apply to 'review <subject>'`) —
+  exit 2) — and the report (same file as `review
   glossary`, config `review_report_path`, same per-run overwrite: a notes
   run replaces a previous glossary report and vice versa) carries NO
   `- Command:` bullets; findings are fixed by hand in
@@ -660,7 +696,14 @@ replace | set | merge | retire`), in order, and exits 0 on full success or
 full no-op, 1 if
 any command failed (continues past failures by default; `--exit-on-error` to
 stop at the first), 2 on a missing/unreadable report or a report with no
-machine-applicable commands. `review fix` makes no commit of its own — each
+machine-applicable commands. `review fix` accepts exactly `--glossary`
+(the report path), `--dry-run`, and `--exit-on-error`; any other review
+flag exits 2 with `[FAIL] --<flag> does not apply to 'review <subject>'`
+(`--fix` on `review fix`/`review notes` keeps its own message:
+`[FAIL] --fix applies to 'review glossary' only; not 'review <subject>'`)
+— mind the naming trap: on `review fix`, `--glossary` is the report
+path, not a glossary selector, so `review glossary --glossary X` is a
+usage error. `review fix` makes no commit of its own — each
 spawned glossary subcommand (`glossary set: <term>`,
 `glossary merge: '<removed>' into '<kept>'`, `glossary retire: <term>`,
 `glossary replace: '<src>' -> '<dst>'`) commits its own action.

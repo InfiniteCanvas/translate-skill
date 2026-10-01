@@ -137,7 +137,7 @@ through uv automatically):
     uv run scripts/translate.py status --project .
     uv run scripts/translate.py translate --next 3 --project .
 
-`--next N` takes the next N pending chapters; `--chapters A-B` (or a spec
+`--next N` takes the next N pending or in-progress chapters; `--chapters A-B` (or a spec
 like `1,3-5,Chapter_0007.md`) picks chapters explicitly. Chapters run
 strictly in sequence on purpose: the glossary, note history, and rolling
 story recap build up as you go. Ctrl-C is safe at any point -- per-chapter
@@ -182,7 +182,7 @@ retranslating a chapter refreshes only its own entry).
 
 - Balance drift signals (advisory, never blocking) trigger automatic pruning
   of mundane glossary terms (console: `[glossary] retired mundane term
-  '...'`, applied only once the chapter's translation is accepted); kept
+  '...' (<reason>)`, applied only once the chapter's translation is accepted); kept
   signals are surfaced to the faithfulness reviewer, which
   makes the final pass/fail call on terminology. The `glossary_cleanup`
   trace events in `logs/llm-*.jsonl` show each removal (source + reason)
@@ -251,14 +251,26 @@ address terms ("great grandmother") that never belonged in the glossary
 (`review_batch_size`; `--batch-size N` overrides for the run).
 Report-only by default -- one
 `[glossary] warn|info '<source>' -> '<translation>': <kind> - <reason>`
-line per finding plus a summary; `--fix` opts in to guarded fixes
+line per finding plus a summary (console: `[glossary] review: N entries
+(B model batch(es) of up to S)` before the model calls, `[glossary]
+reviewing batch i/n` per batch, `[glossary] warn batch i/n review
+failed - <error>` after a failed batch, then the post-run `[glossary]
+review: N entries, W warn / I info findings` with outstanding counts);
+`--fix` opts in to guarded fixes
 (model-suggested fixes only: direct model-tier warn findings, or a
 suggestion the merge borrowed onto a heuristic finding;
 translation/definition/category only; validated; conflicting and
 already-applied suggestions skipped (re-runs are safe); prints
 `[glossary] fixed ...` per change). Mundane findings carry
 no suggestion -- `--fix` never retires them; their `- Command:` bullet
-does. Exit 0 clean or info-only, 1 warns remain, 2 usage error. Cost
+does. Exit 0 clean or info-only, 1 warns remain, 2 usage error (review
+flags are per subject: `review glossary` accepts `--fix` and
+`--batch-size`, `review notes` accepts `--chapters` and `--batch-size`,
+`review fix` accepts `--glossary` / `--dry-run` / `--exit-on-error`;
+anything else exits 2 with
+`[FAIL] --<flag> does not apply to 'review <subject>'`; `--fix` on
+`review fix`/`review notes` keeps its own message,
+`[FAIL] --fix applies to 'review glossary' only; not 'review <subject>'`). Cost
 ceil(N/review_batch_size) model calls.
 
 Every run also writes `<project>/review-report.md` (filename from the
@@ -294,7 +306,13 @@ For the offline machine-actionable path, run
 merge | retire`), in order, and exits 0 on full success or full no-op, 1
 if any command failed (continues past failures by default;
 `--exit-on-error` to stop at the first), 2 on a missing/unreadable report
-or a report with no machine-applicable commands. Legacy reports (the
+or a report with no machine-applicable commands. `review fix` accepts
+exactly `--glossary` (the report path, not a glossary selector --
+`review glossary --glossary X` is a usage error), `--dry-run`, and
+`--exit-on-error`; any other review flag exits 2 with
+`[FAIL] --<flag> does not apply to 'review <subject>'` (`--fix` keeps
+its own message: `[FAIL] --fix applies to 'review glossary' only; not
+'review <subject>'`). Legacy reports (the
 pre-split format: no frontmatter, severity-grouped findings, no
 `- Command:` bullets, old `- Command:` header that records the generating
 command) are synthesized on the fly from the structured parts alone -- no
@@ -336,7 +354,7 @@ itself and runs exactly one final epub build at the end). Build failures
 are warnings only.
 
 Translator's notes have their own re-evaluation path: they live in
-`notes/<chapter>.json` sidecars next to the chapters, never in the chapter
+`notes/<stem>.json` sidecars next to the chapters, never in the chapter
 markdown, so re-running the annotator can't disturb chapter prose. Point it
 at a chapter range:
 
@@ -344,7 +362,7 @@ at a chapter range:
 
 `tn` re-runs the annotator over the range (translated chapters only;
 untranslated ones are skipped with a warning) and regenerates each
-`notes/<chapter>.json` from scratch through the same prompt and dedup as
+`notes/<stem>.json` from scratch through the same prompt and dedup as
 the pipeline (glossary-aware categorized annotation, low-threshold gate,
 within-chapter dedup, cross-chapter gap
 rule vs `tn_history.json` — a term annotated within `tn_gap_chapters` in an
@@ -352,7 +370,7 @@ earlier chapter stays suppressed — and the same code-enforced
 `max_notes_per_chapter` cap: the prompt asks for severity-ordered entries
 and the cap truncates after dedup, so the most severe context loss
 survives). Discarded candidates — low-threshold, cap overflow, invalid —
-are recorded in `notes/<chapter>.dropped.json` next to the sidecar (a
+are recorded in `notes/<stem>.dropped.json` next to the sidecar (a
 review artifact; the epub builder does not read it); the pipeline prints
 the same record as `[Chapter_NNNN] [ok] notes: K kept (cats); D dropped
 (reasons) -> notes/<stem>.dropped.json`. Chapter prose is never rewritten,
@@ -372,7 +390,7 @@ is notes that add context or explain context lost in translation:
     uv run scripts/translate.py review notes --project . \
         [--chapters SPEC] [--batch-size N]
 
-`review notes` audits every chapter with a `notes/<chapter>.json` sidecar
+`review notes` audits every chapter with a `notes/<stem>.json` sidecar
 in manifest order (`--chapters SPEC` restricts; chapters without sidecars
 are skipped silently). Each note's stored line index is re-resolved with
 the epub builder's anchor rules; a note whose anchor matches no translated
@@ -386,10 +404,12 @@ line-aligned source line, and the ±2-line target context. Judgment kinds:
 comprehension threshold), `wrong` (misexplains the source term),
 `misanchored` (rides the wrong line). Advisory only: exit 0 regardless of
 finding count, no `--fix` (passing one is a usage error, exit 2, as are
-`--batch-size` < 1 and a bad `--chapters` spec), and the report it writes (same
+`--batch-size` < 1, a bad `--chapters` spec, and any other flag that
+does not apply to the subject --
+`[FAIL] --<flag> does not apply to 'review <subject>'`), and the report it writes (same
 `review_report_path` file as `review glossary`, same per-run overwrite —
 a notes run replaces a previous glossary report) carries no
-`- Command:` bullets; fixes are hand edits to `notes/<chapter>.json`
+`- Command:` bullets; fixes are hand edits to `notes/<stem>.json`
 (delete the note, reword it, or re-attach it to the right line). The
 report footer carries the caveat: hand-edited sidecars are overwritten if
 the `tn` re-check command later regenerates that chapter's notes. Console:
@@ -519,7 +539,8 @@ book into `export/`. During `translate`/`retry` batches the epub also
 refreshes automatically: a background build runs after every translated
 chapter (serialized; triggers arriving mid-build coalesce) and a final
 build at batch end guarantees the finished epub includes every chapter --
-`export/` always holds a current, validated epub, so the manual command is
+`export/` always holds a current epub (epubcheck-validated when Docker is
+available), so the manual command is
 only needed for one-off builds. Auto-build failures are warnings only, and
 a stalled build is killed after 360s; details land in
 `logs/epub-build.log`.
@@ -550,8 +571,10 @@ a stalled build is killed after 360s; details land in
 - Thresholds: `min_term_coverage` (advisory usage floor; a term with >= 2
   source occurrences and zero renderings becomes a drift signal for the
   FAITH reviewer), `tn_gap_chapters`, `max_attempts`,
-  `translate_max_output_tokens` (per-call output cap and the packing budget:
-  long chapters split into parts whose expected output fits 80% of it; a
+  `translate_max_output_tokens` (per-call output cap and the packing
+  budget: the whole chapter goes in one call while its expected output
+  fits `floor(0.8 × translate_max_output_tokens) − 256`, and longer
+  chapters split into parts that each fit that budget; a
   truncating part retries once at ~1.5x, capped by the provider's
   `max_tokens`; a single line too big for even that fails fast with
   feedback to split or shorten it), `style_sample_chapters` / `style_sample_chars`

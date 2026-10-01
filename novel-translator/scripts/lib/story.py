@@ -210,7 +210,7 @@ def ensure_recap(project_dir: Path, cfg: dict, manifest: list[dict], file: str,
         return ""
 
 
-def record_recap(project_dir: Path, cfg: dict, manifest: list[dict], file: str,
+def record_recap(project_dir: Path, cfg: dict, file: str,
                  title: str, body: str, prev_recap_text: str, tag: str,
                  chat: Callable[[str], str] | None = None) -> None:
     """Generate/overwrite `file`'s OWN recap entry post-ASSEMBLE.
@@ -221,9 +221,8 @@ def record_recap(project_dir: Path, cfg: dict, manifest: list[dict], file: str,
     entry is overwritten unconditionally (retranslation refreshes it), the
     state is saved, and `{tag} [init] recap` is printed. Any failure prints
     `{tag} [warn] recap generation failed for <file>: <exc>` and leaves the
-    prior state intact -- never raises. `manifest` is accepted for call-
-    signature symmetry with ensure_recap; the previous recap arrives as an
-    argument. `chat` overrides the LLM call (tests pass a stub).
+    prior state intact -- never raises. `chat` overrides the LLM call
+    (tests pass a stub).
     """
     try:
         recap = _generate(project_dir, cfg, title, body, prev_recap_text, chat)

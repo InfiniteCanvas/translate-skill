@@ -11,16 +11,12 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import time
 import uuid
 from pathlib import Path
 
 from ebooklib import epub
 
-try:  # package-style import when scripts/lib is imported as a package
-    from . import project, tn
-except ImportError:  # flat import when scripts/lib is on sys.path
-    import project, tn
+from lib import project, tn
 
 
 class EpubError(Exception):
@@ -310,14 +306,8 @@ def build(
     tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
     try:
         epub.write_epub(str(tmp), book)
-        for attempt in range(5):  # Windows: replace can race an open reader
-            try:
-                os.replace(tmp, out_path)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.1)
+        # Windows: replace can race an open reader -- shared retry helper.
+        project._replace_with_retry(tmp, out_path)
     finally:
         tmp.unlink(missing_ok=True)
     print(f"[epub] wrote {out_path}")

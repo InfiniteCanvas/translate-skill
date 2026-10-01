@@ -35,11 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from lib import client, config, logger, pipeline, project, tn
-from lib.pipeline import LANG_NAMES, fill
-
-# Fallback template source: the skill's shipped assets. Projects initialized
-# before a template was introduced lack a copy in their templates/ dir.
-_SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
+from lib.pipeline import _lang_name, fill
 
 KINDS = ("restates", "overexplains", "wrong", "misanchored")
 SEVERITIES = ("warn", "info")
@@ -67,10 +63,6 @@ FINDINGS_SCHEMA: dict[str, Any] = {
     },
     "required": ["findings"],
 }
-
-
-def _lang_name(code: object) -> str:
-    return LANG_NAMES.get(str(code).strip().lower(), str(code))
 
 
 def _kind_counts(findings: list[dict]) -> dict[str, int]:
@@ -176,10 +168,9 @@ def audit_notes(project_dir: Path, cfg: dict, chapters: str | None = None,
         # leading-title drop as the pipeline keeps the alignment (a body
         # line repeating the frontmatter chapter_title was consumed by the
         # title field).
-        source_lines = src_body.split("\n")
-        first = source_lines[0].strip().strip("\u3000 ") if source_lines else ""
-        if first and first == str(fm_s.get("chapter_title", "")).strip().strip("\u3000 "):
-            source_lines = source_lines[1:]
+        source_lines, _dropped = project.drop_leading_chapter_title(
+            src_body.split("\n"), fm_s
+        )
 
         scanned.append(file)
         for note in notes:
@@ -248,19 +239,10 @@ def _model_findings(
         print(f"[notes] reviewing batch {i}/{n}")  # LLM calls are slow; show life
         try:
             lines = "\n".join(json.dumps(unit, ensure_ascii=False) for unit in batch)
-            templates_dir = project.paths(project_dir)["templates"]
-            tpl_path = templates_dir / "notes_review.md"
-            if not tpl_path.is_file():
-                tpl_path = _SKILL_TEMPLATES / "notes_review.md"
-            if not tpl_path.is_file():
-                raise FileNotFoundError(
-                    f"missing template: notes_review.md "
-                    f"(looked in {templates_dir} and {_SKILL_TEMPLATES})"
-                )
             prompt = fill(
-                # utf-8-sig: the project's templates dir is a user-editable
-                # copy, so tolerate a BOM on the template read.
-                tpl_path.read_text(encoding="utf-8-sig"),
+                pipeline._load_template(
+                    project.paths(project_dir)["templates"], "notes_review.md"
+                ),
                 {
                     "source_lang": _lang_name(cfg.get("source_lang")),
                     "target_lang": _lang_name(cfg.get("target_lang")),
@@ -270,7 +252,7 @@ def _model_findings(
             )
 
             def hook(meta: dict) -> None:
-                if bool(cfg.get("log_llm", True)):
+                if bool(cfg.get("log_llm", config.DEFAULTS["log_llm"])):
                     logger.log_event(project_dir, {"job": "reviewer", **meta})
 
             resp = client.chat(

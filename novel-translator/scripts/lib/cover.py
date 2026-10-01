@@ -16,10 +16,7 @@ from urllib.parse import urljoin
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-try:  # package-style import when scripts/lib is imported as a package
-    from . import project
-except ImportError:  # flat import when scripts/lib is on sys.path
-    import project
+from lib import project
 
 COVER_SIZE = (1600, 2560)
 JPEG_QUALITY = 88

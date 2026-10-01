@@ -205,7 +205,7 @@ def invalid_translation_reason(argv: list[str], g: dict) -> str | None:
     out to the CLI where nothing re-checked them -- a wrong-language model
     suggestion would land in glossary.json and be rewritten across every
     translated chapter. Mirrors the review check (CJK source AND CJK
-    suggested value) on balance.CJK_RE so every module shares one range.
+    suggested value) on balance.is_cjk so every module shares one range.
 
     None (guard not applicable) when: not a replace/set command, no
     --translation flag (definitions/categories may legitimately quote
@@ -229,8 +229,8 @@ def invalid_translation_reason(argv: list[str], g: dict) -> str | None:
     entry_source = entry.get("source")
     if (
         isinstance(entry_source, str)
-        and balance.CJK_RE.search(entry_source)
-        and balance.CJK_RE.search(value)
+        and balance.is_cjk(entry_source)
+        and balance.is_cjk(value)
     ):
         return "suggestion not in target language"
     return None

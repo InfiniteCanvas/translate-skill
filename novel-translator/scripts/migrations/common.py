@@ -1,8 +1,9 @@
 """Shared building blocks for version scripts.
 
-Both helpers RETURN complete printable report lines (with their own
+All three helpers RETURN complete printable report lines (with their own
 [ok]/[warn] prefixes) and never print: cmd_migrate owns the console, and
-pure return values keep the steps unit-testable. Both are safe to re-run:
+pure return values keep the steps unit-testable. All three are safe to
+re-run:
 materialize_config writes only when the merged form actually differs from
 what is on disk, and sync_templates only touches missing templates (or,
 with user consent -- --force or an interactive confirm callback -- ones
@@ -69,9 +70,10 @@ def sync_templates(project_dir: Path, templates_src: Path,
                 shutil.copy2(tpl, dest)
             lines.append(f"[ok] templates + {tpl.name} (new)")
             continue
-        # Text comparison, not bytes: line-ending drift alone is not a
-        # meaningful "user edit" worth a prompt.
-        if dest.read_text(encoding="utf-8") == tpl.read_text(encoding="utf-8"):
+        # Text comparison, not bytes: line-ending or BOM drift alone is not
+        # a meaningful "user edit" worth a prompt.
+        if (dest.read_text(encoding="utf-8-sig")
+                == tpl.read_text(encoding="utf-8-sig")):
             continue
         if dry_run:
             fate = "--force would overwrite it" if force else "y/N choice in a real run"
@@ -98,3 +100,19 @@ def sync_templates(project_dir: Path, templates_src: Path,
             "yours (non-interactive; --force to overwrite)"
         )
     return lines
+
+
+def standard_step(project_dir: Path, templates_src: Path,
+                  dry_run: bool = False, force: bool = False,
+                  confirm: Callable[[str], bool] | None = None) -> list[str]:
+    """The shared body of the standard migration step -- materialize config
+    defaults, then sync templates -- for every step whose fix is exactly
+    that pair: runs materialize_config followed by sync_templates and
+    concatenates their report lines ([] on an already-current project, so a
+    step delegating here stays idempotent). v001 keeps its hand-written body
+    as the reference implementation; newer steps delegate here instead of
+    repeating the concatenation."""
+    return (
+        materialize_config(project_dir, dry_run)
+        + sync_templates(project_dir, templates_src, dry_run, force, confirm)
+    )

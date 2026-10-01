@@ -62,8 +62,8 @@ DEFAULTS: dict = {
     "review_report_path": "review-report.md",
 }
 
-_DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"
-_DEFAULT_MAX_TOKENS = 16384
+DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"
+DEFAULT_MAX_TOKENS = 16384
 
 # translator temperature/top_p follow the Hy-MT2 model card recommendation
 # (0.7 / 1.0); every other job keeps the server default for its sampling
@@ -72,14 +72,14 @@ _DEFAULT_MAX_TOKENS = 16384
 # the answer instead of a reasoning chain (recommended for this pipeline);
 # set true per job to experiment.
 PROVIDER_DEFAULTS: dict[str, dict] = {
-    "translator": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.7, "top_p": 1.0, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
-    "glossary": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
-    "reviewer": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.0, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
-    "annotator": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
+    "translator": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.7, "top_p": 1.0, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "glossary": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "reviewer": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.0, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "annotator": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
     # Rolling story-so-far recap generation (one cheap call per translated
     # chapter, story_state.json); point it at a cheap model.
-    "recap": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
-    "profile": {"base_url": _DEFAULT_BASE_URL, "model": None, "temperature": 0.3, "max_tokens": _DEFAULT_MAX_TOKENS, "thinking": False},
+    "recap": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "profile": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.3, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
 }
 
 

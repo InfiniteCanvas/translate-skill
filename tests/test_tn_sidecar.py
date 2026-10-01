@@ -28,11 +28,16 @@ sandboxes per case — repo fixtures are never touched. Files are written with
 explicit LF newlines so byte-level comparisons are deterministic. stdout
 around the loud-discard calls is captured with contextlib.redirect_stdout.
 
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
+Self-contained PASS/FAIL script (no pytest). The lib modules import
+pyyaml, so run via uv (deps declared inline below):
 
-    python tests/test_tn_sidecar.py
+    uv run tests/test_tn_sidecar.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pyyaml>=6.0"]
+# ///
 import contextlib
 import io
 import json

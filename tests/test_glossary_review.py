@@ -21,9 +21,13 @@ repo-fixture mutation -- every glossary file lives in a TemporaryDirectory.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
-    python tests/test_glossary_review.py
+    uv run tests/test_glossary_review.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests>=2.31", "pyyaml>=6.0"]
+# ///
 import json
 import shlex
 import sys

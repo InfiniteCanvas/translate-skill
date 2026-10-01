@@ -41,9 +41,10 @@ latest one:
   returning `[ok]`/`[warn]` report lines. No registry edit is needed:
   `chain()` discovers and validates the scripts automatically, and `init` and
   `migrate` pick up the new head version. `migrations/v001.py` is the
-  reference implementation; reuse the helpers in `migrations/common.py`
-  (`materialize_config()` folds config defaults, `sync_templates()` refreshes
-  templates).
+  hand-written reference implementation; reuse the helpers in
+  `migrations/common.py` (`materialize_config()` folds config defaults,
+  `sync_templates()` refreshes templates, and `standard_step()` is the
+  ready-made combination that newer versions delegate to).
 - `sync_templates()` already copies added templates and refreshes drifted
   ones during migrate; the new migration is still required by this rule, and
   it is also the place for anything that helper can't do (renames, removals,

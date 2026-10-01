@@ -18,7 +18,13 @@ translation) merge in without ever being counted. Only the brand-new-term
 path is gated: when min_occurrences > 0 the term must occur at least that
 many times in `corpus` or it is skipped with an exact-count line;
 min_occurrences == 0 disables the gate (also the fail-open value the
-GLOSSARY_EXPAND stage uses when the source corpus is unreadable).
+GLOSSARY_EXPAND stage uses when the source corpus is unreadable). Both
+model-sourced category flows are coerced: a proposal category outside
+glossary.CATEGORIES lands as "other" with the warn line (known values,
+"unit" included, pass verbatim; an absent category keeps the field
+ValueError and is never coerced), and the same check covers a category
+the merge model ECHOES for an existing entry -- a merge omitting the key
+never warns and never touches the entry's own category.
 
 The gate's corpus cache (pipeline._gate_corpus / _GATE_CORPUS) is covered
 unit-level and end to end: the joined source corpus is read once per
@@ -45,7 +51,12 @@ TERM / negative --min -> CliError and an unknown chapter spec ->
 PipelineError; the threshold read from project config.json
 (min_term_occurrences: 1 lets a single-occurrence term pass, the same term
 without the key stays below DEFAULTS 3); and the gate paths above called
-directly on an in-memory glossary dict.
+directly on an in-memory glossary dict -- including the category coercion
+sub-cases (known "person"/"unit" verbatim with no warn, unknown "faction"
+coerced to "other" with the warn line before the add line, absent category
+-> ValueError) and, through a faked pipeline._chat merge reply, the
+merge-path coercion (unknown echoed category coerced + warned, omitted
+category preserving the entry's own).
 
 Mechanics mirror the sibling suites: cmd handlers are called with plain
 Namespaces under captured stdout (test_command_defaults run_cli style),
@@ -456,6 +467,58 @@ def case_9_gate() -> None:
               and g6["terms"] == [],
               f"exc={exc6!r} out={out6!r} terms={g6.get('terms')}")
 
+        # Category coercion (new-term path, only once the term lands):
+        # KNOWN categories -- "unit" included -- pass verbatim with no warn.
+        g7: dict = {"terms": []}
+        _r, out7, exc7 = capture(
+            pipeline._apply_glossary_proposal, g7,
+            proposal("荒塔", category="person"), 2, {}, "", "[t]", proj,
+            corpus="", min_occurrences=0)
+        check("9h gate: known category 'person' stored verbatim, no warn",
+              exc7 is None and len(g7["terms"]) == 1
+              and g7["terms"][0].get("category") == "person"
+              and out7 == "[t] [ok] glossary + '荒塔' -> 'Spirit Term'\n",
+              f"exc={exc7!r} out={out7!r} terms={g7.get('terms')}")
+        g8: dict = {"terms": []}
+        _r, out8, exc8 = capture(
+            pipeline._apply_glossary_proposal, g8,
+            proposal("古塔", category="unit"), 2, {}, "", "[t]", proj,
+            corpus="", min_occurrences=0)
+        check("9h2 gate: 'unit' is known too - stored verbatim, no warn",
+              exc8 is None and len(g8["terms"]) == 1
+              and g8["terms"][0].get("category") == "unit"
+              and out8 == "[t] [ok] glossary + '古塔' -> 'Spirit Term'\n",
+              f"exc={exc8!r} out={out8!r} terms={g8.get('terms')}")
+
+        # UNKNOWN category: coerced to other, warn line BEFORE the add line.
+        g9: dict = {"terms": []}
+        _r, out9, exc9 = capture(
+            pipeline._apply_glossary_proposal, g9,
+            proposal("荒塔", category="faction"), 2, {}, "", "[t]", proj,
+            corpus="", min_occurrences=0)
+        check("9i gate: unknown category 'faction' coerced to 'other'",
+              exc9 is None and len(g9["terms"]) == 1
+              and g9["terms"][0].get("category") == "other",
+              f"exc={exc9!r} terms={g9.get('terms')}")
+        check("9i2 gate: exactly the warn line then the add line, in order",
+              out9 == "[t] [glossary] warn unknown category 'faction' for "
+                      "'荒塔' - coerced to 'other'\n"
+                     "[t] [ok] glossary + '荒塔' -> 'Spirit Term'\n",
+              f"out={out9!r}")
+
+        # Absent category is NOT coerced: the field validation still
+        # rejects the proposal (a non-string category never lands anywhere).
+        g10: dict = {"terms": []}
+        _r, _out10, exc10 = capture(
+            pipeline._apply_glossary_proposal, g10,
+            proposal("荒塔", category=None), 2, {}, "", "[t]", proj,
+            corpus="", min_occurrences=0)
+        check("9j gate: absent category keeps the ValueError skip",
+              isinstance(exc10, ValueError)
+              and "must be non-empty strings" in str(exc10)
+              and g10 == {"terms": []},
+              f"exc={exc10!r} terms={g10.get('terms')}")
+
 
 # ------------------------------------------- gate corpus cache (_gate_corpus)
 
@@ -693,6 +756,67 @@ def case_11_gate_corpus_run_chapter() -> None:
             pipeline._chat = orig
 
 
+def case_12_merge_category_coercion() -> None:
+    """Merge-path category coercion: a category ECHOED by the merge model
+    is validated exactly like a new-term proposal's -- an unknown value is
+    coerced to other with the warn line before the [ok] glossary ~ line
+    (naming the proposal's source) -- while a merge that omits the category
+    key never warns and leaves the entry's own category untouched.
+    pipeline._chat is swapped for a fake returning a fixed merge JSON
+    (case_11's try/finally monkeypatch pattern); the merge path runs
+    because the proposal's translation differs from the entry's."""
+    existing = {"source": "荒塔", "variants": [], "translation": "Old Tower",
+                "definition": "A recurring term.", "category": "person",
+                "origin": "seeded", "alt_translations": [],
+                "first_seen_chapter": 0}
+
+    def fake_chat_factory(merged: dict):
+        def fake(project_dir, cfg, job, prompt, json_schema=None,
+                 max_tokens=None):
+            return json.dumps(merged, ensure_ascii=False)
+        return fake
+
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)  # _chat is faked; project_dir is never touched
+        orig = pipeline._chat
+        try:
+            # The model echoes an unknown category: coerced + warned.
+            pipeline._chat = fake_chat_factory(
+                {"translation": "Desolate Tower", "category": "faction"})
+            g: dict = {"terms": [dict(existing)]}
+            _r, out, exc = capture(
+                pipeline._apply_glossary_proposal, g,
+                proposal("荒塔", "Spirit Term"), 2, {}, "", "[t]", proj,
+                corpus="", min_occurrences=3)
+            check("12a merge: unknown echoed category stored as 'other'",
+                  exc is None and len(g["terms"]) == 1
+                  and g["terms"][0].get("category") == "other"
+                  and g["terms"][0].get("translation") == "Desolate Tower",
+                  f"exc={exc!r} terms={g.get('terms')}")
+            check("12b merge: warn line precedes the [ok] glossary ~ line",
+                  out == "[t] [glossary] warn unknown category 'faction' "
+                          "for '荒塔' - coerced to 'other'\n"
+                         "[t] [ok] glossary ~ '荒塔' -> 'Desolate Tower'\n",
+                  f"out={out!r}")
+
+            # The model omits the category key: no warn, entry keeps its own
+            # (a hand-edited illegal category would be preserved the same
+            # way -- only an echoed category is ever validated).
+            pipeline._chat = fake_chat_factory({"translation": "Desolate Tower"})
+            g2: dict = {"terms": [dict(existing)]}
+            _r, out2, exc2 = capture(
+                pipeline._apply_glossary_proposal, g2,
+                proposal("荒塔", "Spirit Term"), 2, {}, "", "[t]", proj,
+                corpus="", min_occurrences=3)
+            check("12c merge: omitted category -> no warn, category preserved",
+                  exc2 is None and len(g2["terms"]) == 1
+                  and g2["terms"][0].get("category") == "person"
+                  and out2 == "[t] [ok] glossary ~ '荒塔' -> 'Desolate Tower'\n",
+                  f"exc={exc2!r} out={out2!r} terms={g2.get('terms')}")
+        finally:
+            pipeline._chat = orig
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -709,6 +833,7 @@ def main() -> int:
     case_9_gate()
     case_10_gate_corpus_cache()
     case_11_gate_corpus_run_chapter()
+    case_12_merge_category_coercion()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

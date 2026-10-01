@@ -14,17 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from lib import balance, client, config, glossary, logger, project
-from lib.pipeline import LANG_NAMES, fill
-
-# Fallback template source: the skill's shipped assets. Projects initialized
-# before a template was introduced lack a copy in their templates/ dir.
-_SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
+from lib import balance, client, config, glossary, logger, pipeline, project
+from lib.pipeline import _lang_name, fill
 
 KINDS = ("mistranslation", "wrong_language", "definition", "category",
          "variant", "duplicate", "collision", "mundane", "other")
 SEVERITIES = ("warn", "info")
-DEFAULT_BATCH_SIZE = 40
+DEFAULT_BATCH_SIZE = config.DEFAULTS["review_batch_size"]
 
 # NO additionalProperties inside items -- strict nested schemas truncated
 # sglang guided decoding historically (same constraint as CLEANUP_SCHEMA).
@@ -65,10 +61,6 @@ _FIELD_BY_KIND = {
     "definition": "definition",
     "category": "category",
 }
-
-
-def _lang_name(code: object) -> str:
-    return LANG_NAMES.get(str(code).strip().lower(), str(code))
 
 
 def _finding(
@@ -208,19 +200,10 @@ def _model_findings(
                 )
                 for entry in batch
             )
-            templates_dir = project.paths(project_dir)["templates"]
-            tpl_path = templates_dir / "glossary_review.md"
-            if not tpl_path.is_file():
-                tpl_path = _SKILL_TEMPLATES / "glossary_review.md"
-            if not tpl_path.is_file():
-                raise FileNotFoundError(
-                    f"missing template: glossary_review.md "
-                    f"(looked in {templates_dir} and {_SKILL_TEMPLATES})"
-                )
             prompt = fill(
-                # utf-8-sig: the project's templates dir is a user-editable
-                # copy, so tolerate a BOM on the template read.
-                tpl_path.read_text(encoding="utf-8-sig"),
+                pipeline._load_template(
+                    project.paths(project_dir)["templates"], "glossary_review.md"
+                ),
                 {
                     "source_lang": _lang_name(cfg.get("source_lang")),
                     "target_lang": _lang_name(cfg.get("target_lang")),
@@ -230,7 +213,7 @@ def _model_findings(
             )
 
             def hook(meta: dict) -> None:
-                if bool(cfg.get("log_llm", True)):
+                if bool(cfg.get("log_llm", config.DEFAULTS["log_llm"])):
                     logger.log_event(project_dir, {"job": "glossary", **meta})
 
             resp = client.chat(
@@ -727,8 +710,8 @@ def apply_fixes(project_dir: Path, findings: list[dict]) -> dict:
         if (
             field == "translation"
             and isinstance(entry.get("source"), str)
-            and _CJK_RE.search(entry["source"])
-            and _CJK_RE.search(value)
+            and balance.is_cjk(entry["source"])
+            and balance.is_cjk(value)
         ):
             skip("suggestion not in target language")
             continue

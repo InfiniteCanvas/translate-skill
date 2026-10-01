@@ -26,10 +26,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:  # package-style import when scripts/lib is imported as a package
-    from . import project
-except ImportError:  # flat import when scripts/lib is on sys.path
-    import project
+from lib import project
 
 # Legacy baked-in format (epub.py's chapter parser uses the same rules):
 # markers "[^N]" appended to body lines, definitions "[^N]: **term** — note"
@@ -100,7 +97,9 @@ def load_history(project_dir: Path) -> dict:
 
 def save_history(project_dir: Path, h: dict) -> None:
     project.atomic_write_text(
-        _history_path(project_dir), json.dumps(h, ensure_ascii=False, indent=2)
+        _history_path(project_dir),
+        json.dumps(h, ensure_ascii=False, indent=2) + "\n",
+        newline="\n",
     )
 
 
@@ -187,7 +186,8 @@ def save_notes(project_dir: Path, file: str, lines: list[str], notes: list) -> l
         "notes": kept,
     }
     project.atomic_write_text(
-        path, json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+        path, json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+        newline="\n",
     )
     return kept
 
@@ -213,7 +213,8 @@ def save_dropped(project_dir: Path, file: str, dropped: list[dict]) -> None:
         "dropped": dropped,
     }
     project.atomic_write_text(
-        path, json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+        path, json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+        newline="\n",
     )
 
 

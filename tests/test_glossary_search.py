@@ -15,9 +15,13 @@ load-bearing ones are re-pinned as preconditions inside the cases.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
-    python tests/test_glossary_search.py
+    uv run tests/test_glossary_search.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pyyaml>=6.0"]
+# ///
 import copy
 import sys
 from pathlib import Path

@@ -29,7 +29,10 @@ cases, and v005's direct templates-only sync -- config.json never
 touched; v006 is templates-only like v005, so only its chain shape and
 exact DESCRIPTION are pinned; v007's recap-job materialize plus the
 three-template sync has its own direct case AND a chain-walked v6-era
-end-to-end case).
+end-to-end case), plus direct sync_templates BOM cases: a dest whose only
+difference from the shipped copy is a leading BOM is NOT drift (no prompt,
+no report line, bytes untouched), while a genuinely drifted BOM'd dest
+still refreshes to the shipped bytes after an accepted prompt.
 
 cmd_migrate reads translate.TEMPLATES_SRC_DIR, migrations.chain, and (all
 as module-global lookups at call time) translate._confirm_template_refresh,
@@ -45,11 +48,17 @@ repository and commits after the last step, so byte snapshots exclude the
 .git/ directory: vcs.commit's clean-tree probe runs read-only git
 plumbing that may touch .git internals without any project file changing.
 
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
+Self-contained PASS/FAIL script (no pytest). scripts/translate.py and the
+lib modules import pyyaml, requests, ebooklib and pillow, so run via uv
+(deps declared inline below):
 
-    python tests/test_migrate.py
+    uv run tests/test_migrate.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# ///
 import argparse
 import builtins
 import contextlib
@@ -1045,6 +1054,52 @@ def case_9_v007() -> None:
             translate.TEMPLATES_SRC_DIR = orig_tpl
 
 
+def case_10_sync_bom() -> None:
+    """Direct sync_templates calls (the case-1w precedent): the drift
+    comparison is BOM-blind on both sides. A dest whose only difference
+    from the shipped copy is a leading EF BB BF is identical -- no prompt
+    fires (refuse_confirm would raise the check loudly), no report line,
+    bytes unchanged, BOM preserved. A BOM'd dest that ALSO drifted textually
+    still prompts and refreshes to the shipped bytes (BOM stripped)."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+        (src / "a.md").write_text("alpha\n", encoding="utf-8", newline="\n")
+
+        # Case 1: BOM-only difference -> identical, silent, untouched.
+        quiet = root / "quiet"
+        (quiet / "templates").mkdir(parents=True)
+        bom_alpha = b"\xef\xbb\xbf" + b"alpha\n"
+        (quiet / "templates" / "a.md").write_bytes(bom_alpha)
+        lines = migrations.common.sync_templates(
+            quiet, src, dry_run=False, force=False, confirm=refuse_confirm)
+        check("10a sync: BOM-only dest difference is not drift (no prompt, no line)",
+              lines == []
+              and (quiet / "templates" / "a.md").read_bytes() == bom_alpha,
+              f"lines={lines!r}")
+
+        # Case 2 (positive control): BOM plus real drift -> prompt, refresh
+        # to the shipped bytes (BOM stripped by the copy).
+        drift = root / "drift"
+        (drift / "templates").mkdir(parents=True)
+        (drift / "templates" / "a.md").write_bytes(b"\xef\xbb\xbf" + b"user drift\n")
+        asked: list[str] = []
+
+        def yes_confirm(question: str) -> bool:
+            asked.append(question)
+            return True
+
+        lines_d = migrations.common.sync_templates(
+            drift, src, dry_run=False, force=False, confirm=yes_confirm)
+        check("10b sync: BOM'd drifted dest refreshes to the shipped bytes",
+              lines_d == ["[ok] templates ~ a.md refreshed"]
+              and (drift / "templates" / "a.md").read_bytes()
+              == (src / "a.md").read_bytes()
+              and len(asked) == 1 and "a.md" in asked[0],
+              f"lines={lines_d!r} asked={asked!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -1059,6 +1114,7 @@ def main() -> int:
     case_7_v004()
     case_8_v005()
     case_9_v007()
+    case_10_sync_bom()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

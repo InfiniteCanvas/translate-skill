@@ -28,10 +28,7 @@ import json
 import re
 from pathlib import Path
 
-try:
-    from . import project, balance
-except ImportError:  # imported with scripts/lib directly on sys.path
-    import project, balance
+from lib import balance, project
 
 CATEGORIES = ("place", "person", "org", "skill", "technique", "level",
               "state", "item", "honorific", "unit", "other")
@@ -232,15 +229,15 @@ def set_fields(
         if not new_translation:
             raise ValueError("empty --translation")
         source = entry.get("source") or ""
-        # balance.CJK_RE replaces the old local mirror so every source-script
-        # check pipeline-wide shares one (slightly wider) character range --
-        # compat ideographs U+F900-FAFF and halfwidth katakana U+FF66-FF9F
-        # included.
+        # balance's shared CJK predicate replaces the old local mirror so
+        # every source-script check pipeline-wide answers identically (same
+        # slightly wider character range -- compat ideographs U+F900-FAFF
+        # and halfwidth katakana U+FF66-FF9F included).
         if (
             isinstance(source, str)
             and source
-            and balance.CJK_RE.search(source)
-            and balance.CJK_RE.search(new_translation)
+            and balance.is_cjk(source)
+            and balance.is_cjk(new_translation)
         ):
             raise ValueError(
                 f"translation '{new_translation}' still contains source-language "

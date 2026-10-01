@@ -62,6 +62,24 @@ def discover(project_dir: Path) -> list[Chapter]:
     return chapters
 
 
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    """os.replace() with a brief retry, silently succeeding or re-raising.
+
+    On Windows the replace can raise PermissionError while another process
+    holds the destination open (e.g. a parallel epub-build child reading
+    chapters.json, or a reader holding the exported epub); five attempts
+    0.1s apart, then the error surfaces. Shared by atomic_write_text and
+    the epub builder's binary tmp swap."""
+    for attempt in range(5):
+        try:
+            os.replace(src, dst)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1)
+
+
 def atomic_write_text(path: Path, text: str, newline: str | None = None) -> None:
     """Atomically replace path's contents with text.
 
@@ -78,14 +96,7 @@ def atomic_write_text(path: Path, text: str, newline: str | None = None) -> None
     try:
         with tmp.open("w", encoding="utf-8", newline=newline) as fh:
             fh.write(text)
-        for attempt in range(5):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.1)
+        _replace_with_retry(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -161,6 +172,36 @@ def save_manifest(project_dir: Path, manifest: list[dict]) -> None:
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         newline="\n",
     )
+
+
+def load_novel_info(project_dir: Path) -> dict:
+    """Read novel_info.json LENIENTLY: {} when the file is missing, corrupt,
+    or not a JSON object -- the exact semantics every silent consumer needs
+    (cmd_sync's backfill defaults, cmd_status's style tier, the pipeline's
+    novel background/style resolution, tn_recheck's background frame).
+    translate.py keeps its own STRICT _load_novel_info (raises CliError) for
+    cmd_profile/cmd_build_epub, which rewrite or build from the file; do not
+    route those through this lenient reader."""
+    path = paths(project_dir)["novel_info"]
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):  # json.JSONDecodeError is a ValueError
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def drop_leading_chapter_title(lines: list[str], frontmatter: dict) -> tuple[list[str], bool]:
+    """Drop lines[0] when it repeats the frontmatter chapter_title: models
+    see the title twice (title instruction + body line 1) and emit an empty
+    or dropped first line, and VALIDATE pairs source/translated bodies
+    line-aligned. Returns (lines, dropped); silent by design -- the
+    pipeline's [init] print stays at its call site."""
+    first = lines[0].strip().strip("\u3000 ") if lines else ""
+    if first and first == str(frontmatter.get("chapter_title", "")).strip().strip("\u3000 "):
+        return lines[1:], True
+    return lines, False
 
 
 def backfill_frontmatter(chapters: list[Chapter], novel_title: str, author: str, source_url: str) -> int:

@@ -13,9 +13,13 @@ sandboxes per case -- repo fixtures are never touched.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
-    python tests/test_glossary_retire.py
+    uv run tests/test_glossary_retire.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pyyaml>=6.0"]
+# ///
 import json
 import sys
 import tempfile

@@ -50,7 +50,7 @@ ASSETS_DIR = SKILL_ROOT / "assets"
 CATALOGUES_DIR = ASSETS_DIR / "catalogues"
 TEMPLATES_SRC_DIR = ASSETS_DIR / "templates"
 
-DEFAULT_API_BASE = "http://100.85.218.125:8888/v1"
+DEFAULT_API_BASE = config.DEFAULT_BASE_URL
 MARK_STATUSES = ("translated", "pending", "needs-review")
 
 
@@ -294,7 +294,7 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
             " and story_state.json"
         )
     glossary.save(project_dir, glossary.empty())
-    paths["tn_history"].write_text("{}\n", encoding="utf-8")
+    paths["tn_history"].write_text("{}\n", encoding="utf-8", newline="\n")
     paths["story_state"].unlink(missing_ok=True)
     print(f"[init] initialized {paths['glossary'].name} and {paths['tn_history'].name}")
 
@@ -351,8 +351,10 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         try:
             prof = profile_mod.generate_profile(
                 project_dir, cfg,
-                int(cfg.get("style_sample_chapters", 4)),
-                int(cfg.get("style_sample_chars", 12000)),
+                int(cfg.get("style_sample_chapters",
+                            config.DEFAULTS["style_sample_chapters"])),
+                int(cfg.get("style_sample_chars",
+                            config.DEFAULTS["style_sample_chars"])),
             )
             novel_info["style_profile"] = prof
             # Rewrite novel_info.json (same pretty format as written earlier in init).
@@ -403,12 +405,7 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
     prev = _load_manifest(project_dir)
     # Novel-level backfill defaults come from novel_info.json; a missing or
     # corrupt file just means nothing to backfill, never a sync failure.
-    try:
-        info = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):  # json.JSONDecodeError is a ValueError
-        info = {}
-    if not isinstance(info, dict):
-        info = {}
+    info = project.load_novel_info(project_dir)
     # A scraped batch routinely contains a bad file (broken YAML frontmatter,
     # non-UTF-8 bytes); surface it as a [FAIL] line with exit 2 instead of a
     # traceback. read_chapter's message already names the offending file.
@@ -651,11 +648,13 @@ def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
 
     sample_chapters = (
         int(args.chapters) if args.chapters is not None
-        else int(cfg.get("style_sample_chapters", 4))
+        else int(cfg.get("style_sample_chapters",
+                         config.DEFAULTS["style_sample_chapters"]))
     )
     sample_chars = (
         int(args.chars) if args.chars is not None
-        else int(cfg.get("style_sample_chars", 12000))
+        else int(cfg.get("style_sample_chars",
+                         config.DEFAULTS["style_sample_chars"]))
     )
 
     try:
@@ -739,29 +738,14 @@ def cmd_status(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"{'tn_history':>13}: {len(history)} terms")
 
     if paths["novel_info"].is_file():
-        try:
-            novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError):
-            novel_info = {}
-        if not isinstance(novel_info, dict):
-            novel_info = {}
+        novel_info = project.load_novel_info(project_dir)
         # Mirror the pipeline's style resolution: style.md (tier 1, only when
         # it has a non-empty body) -> style_profile.style_summary -> default.
-        style_body = ""
-        if (project_dir / "style.md").is_file():
-            try:
-                _desc, style_body = styles_mod.parse_style_file(
-                    # utf-8-sig: style.md is user-authored; tolerate a BOM.
-                    (project_dir / "style.md").read_text(encoding="utf-8-sig")
-                )
-            except (OSError, ValueError):
-                style_body = ""
-        if style_body.strip():
+        _style_summary, style_tier = styles_mod.resolve_style(project_dir, novel_info)
+        if style_tier == "style_md":
             name = novel_info["style"] if isinstance(novel_info.get("style"), str) else "custom"
             print(f"{'style':>13}: {name} (style.md)")
-        elif isinstance(novel_info.get("style_profile"), dict) and str(
-            novel_info["style_profile"].get("style_summary") or ""
-        ).strip():
+        elif style_tier == "profile":
             print(f"{'style':>13}: auto profile")
         else:
             print(f"{'style':>13}: default fallback")
@@ -807,7 +791,7 @@ def cmd_translate(args: argparse.Namespace, project_dir: Path) -> int:
             pool = [e["file"] for e in ordered if e.get("status") in ("pending", "in-progress")]
         files = pool[: args.next]
         if not files:
-            print("[ok] nothing to translate (no pending chapters; needs-review chapters require 'retry')")
+            print("[ok] nothing to translate (no pending or in-progress chapters; needs-review chapters require 'retry')")
             return 0
     else:
         files = pipeline.parse_range(args.chapters, manifest)
@@ -1048,6 +1032,32 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
     # batch size at all, and notes runs its own validation in
     # cmd_review_notes (only an explicit --batch-size is checked there;
     # the glossary config default never applies).
+
+    # Flag/subject compatibility, checked BEFORE the dispatch: the parser
+    # shares every flag across the three subjects, but each subject reads
+    # only its own subset, so a flag meant for another subject would be
+    # silently ignored. Typed dests (argparse default None) count as given
+    # iff not None (--batch-size 0 included); store_true dests iff truthy.
+    # --fix is EXCLUDED -- its pinned guards in cmd_review_fix and
+    # cmd_review_notes keep their own message -- and --project (shared
+    # parent) applies to every subject. Direct calls to the cmd_review_*
+    # helpers bypass this guard by design.
+    rejected = {
+        "glossary": ("chapters", "glossary", "dry_run", "exit_on_error"),
+        "notes": ("glossary", "dry_run", "exit_on_error"),
+        "fix": ("chapters", "batch_size"),
+    }.get(args.subject, ())
+    for dest in rejected:
+        given = (
+            getattr(args, dest, None) is not None
+            if dest in ("chapters", "glossary", "batch_size")
+            else bool(getattr(args, dest, False))
+        )
+        if given:
+            raise CliError(
+                f"--{dest.replace('_', '-')} does not apply to 'review {args.subject}'"
+            )
+
     if args.subject == "fix":
         return cmd_review_fix(args, project_dir)
     if args.subject == "notes":

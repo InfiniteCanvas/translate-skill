@@ -43,6 +43,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts
 sys.path.insert(0, str(SCRIPTS))
 
 from lib import epub as E  # noqa: E402
+from lib import project as P  # noqa: E402
 
 PASSED = 0
 FAILED: list[str] = []
@@ -197,9 +198,11 @@ def case_3_replace_retry() -> None:
     """os.replace racing an open reader (Windows PermissionError) is
     retried: two busy failures then a success still land the epub with no
     tmp left; a replace that never succeeds re-raises after its attempts
-    with the tmp cleaned up and no final file. The os attribute on the
-    epub module is swapped for a shim (getpid delegates, replace is
-    scripted) so the real stdlib os module is never touched."""
+    with the tmp cleaned up and no final file. The os attribute on BOTH
+    the epub module (tmp naming) and the project module (the shared
+    _replace_with_retry resolves os.replace there) is swapped for a shim
+    (getpid delegates, replace is scripted) so the retry loop sees the
+    scripted replace while the real stdlib os module is never touched."""
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td)
         _export, final = export_paths(root)
@@ -213,11 +216,13 @@ def case_3_replace_retry() -> None:
             return orig_os.replace(src, dst)
 
         E.os = SimpleNamespace(getpid=orig_os.getpid, replace=flaky_replace)
+        P.os = SimpleNamespace(getpid=orig_os.getpid, replace=flaky_replace)
         try:
             _res, _out, exc = capture(E.build, root, NOVEL_INFO, CFG,
                                       skip_check=True)
         finally:
             E.os = orig_os
+            P.os = orig_os
         check("3a retry: build survives two busy replaces",
               exc is None, f"exc={exc!r}")
         check("3b retry: exactly three replace attempts were made",
@@ -238,11 +243,13 @@ def case_3_replace_retry() -> None:
             raise PermissionError("destination busy")
 
         E.os = SimpleNamespace(getpid=orig_os.getpid, replace=busy_forever)
+        P.os = SimpleNamespace(getpid=orig_os.getpid, replace=busy_forever)
         try:
             _res, _out, exc = capture(E.build, root, NOVEL_INFO, CFG,
                                       skip_check=True)
         finally:
             E.os = orig_os
+            P.os = orig_os
         check("3d retry: a never-free destination re-raises PermissionError",
               isinstance(exc, PermissionError), f"exc={exc!r}")
         check("3e retry: five attempts before giving up",

@@ -24,7 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_DEFAULT_KEEP = 5
+# Plain package import (no cycle: config imports nothing from lib).
+from lib import config
+
 _run_path: Path | None = None
 
 
@@ -55,9 +57,10 @@ def _command_tag() -> str:
 def _keep_count(project_dir: Path) -> int:
     try:
         cfg = json.loads((project_dir / "config.json").read_text(encoding="utf-8-sig"))
-        return max(0, int(cfg.get("log_llm_keep_runs", _DEFAULT_KEEP)))
+        return max(0, int(cfg.get("log_llm_keep_runs",
+                                  config.DEFAULTS["log_llm_keep_runs"])))
     except (OSError, ValueError, TypeError):
-        return _DEFAULT_KEEP
+        return config.DEFAULTS["log_llm_keep_runs"]
 
 
 def _prune(base: Path, keep: int) -> None:

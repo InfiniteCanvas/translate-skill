@@ -19,7 +19,12 @@ CliError); write_report honors review_report_path for the file location
 and the Next-steps interpolation; review fix (dry-run) reads the
 config-named report, honors an explicit --glossary, falls back to
 review-report.md without a config.json, and reports a missing report as
-CliError.
+CliError; cmd_review's flag/subject matrix -- every shared flag that does
+not apply to the invoked subject raises CliError with the exact
+"--<flag> does not apply to 'review <subject>'" message before any
+dispatch (typed dests count as given iff not None, so --batch-size 0 on
+'review fix' is rejected; store_true dests iff truthy; --fix keeps its
+own pinned guards, asserted via cmd_review in test_review_notes 7c).
 
 Mechanics mirror the sibling suites: cmd_* entry points are called with
 plain Namespaces and captured stdout (test_migrate style), the parser is
@@ -36,6 +41,10 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
     python tests/test_command_defaults.py
 """
 
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# ///
 import argparse
 import contextlib
 import io
@@ -167,7 +176,8 @@ def case_2_review_batch_size() -> None:
         nocfg = make_project(root, "nocfg")
         zero = make_project(root, "zero", {"review_batch_size": 0})
         ns = lambda bs: argparse.Namespace(  # noqa: E731 - tiny ns factory
-            subject="glossary", fix=False, batch_size=bs, glossary=None)
+            subject="glossary", fix=False, batch_size=bs, glossary=None,
+            chapters=None, dry_run=False, exit_on_error=False)
 
         with swapped(review, "review_glossary", fake_review), \
                 swapped(review, "write_report", fake_write_report):
@@ -376,6 +386,60 @@ def case_5_fix_reads_config() -> None:
               f"code={code} exc={exc!r} out={out!r}")
 
 
+def case_6_review_flag_matrix() -> None:
+    """cmd_review rejects, before any subject dispatch, every shared flag
+    that does not apply to the invoked subject: '--<flag> does not apply
+    to 'review <subject>''. One cell per matrix entry (glossary rejects
+    --chapters/--glossary/--dry-run/--exit-on-error; notes rejects
+    --glossary/--dry-run/--exit-on-error; fix rejects --chapters/
+    --batch-size). Typed dests (chapters/glossary/batch_size, parser
+    default None) count as given iff NOT None -- the fix/batch-size cell
+    deliberately passes 0, falsy but given, so a truthiness check would
+    miss the rejection -- and store_true dests (dry_run/exit_on_error)
+    iff truthy. --fix is not in the matrix: its pinned per-subject guards
+    keep their own message (test_review_notes case 7c asserts the notes
+    one through cmd_review). The [FAIL] prefix / stderr / exit 2 belong
+    to main(), not the unit call."""
+    def ns(subject: str, **overrides) -> argparse.Namespace:
+        attrs = {"subject": subject, "fix": False, "chapters": None,
+                 "glossary": None, "batch_size": None, "dry_run": False,
+                 "exit_on_error": False}
+        attrs.update(overrides)
+        return argparse.Namespace(**attrs)
+
+    cells = [
+        # (subject, flag attrs that were given) -> exact rejection message
+        ("glossary", {"chapters": "1-2"},
+         "--chapters does not apply to 'review glossary'"),
+        ("glossary", {"glossary": "r.md"},
+         "--glossary does not apply to 'review glossary'"),
+        ("glossary", {"dry_run": True},
+         "--dry-run does not apply to 'review glossary'"),
+        ("glossary", {"exit_on_error": True},
+         "--exit-on-error does not apply to 'review glossary'"),
+        ("notes", {"glossary": "r.md"},
+         "--glossary does not apply to 'review notes'"),
+        ("notes", {"dry_run": True},
+         "--dry-run does not apply to 'review notes'"),
+        ("notes", {"exit_on_error": True},
+         "--exit-on-error does not apply to 'review notes'"),
+        ("fix", {"chapters": "1-2"},
+         "--chapters does not apply to 'review fix'"),
+        ("fix", {"batch_size": 0},
+         "--batch-size does not apply to 'review fix'"),
+    ]
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)  # every cell raises before the project is touched
+        for i, (subject, overrides, message) in enumerate(cells):
+            name = f"6{chr(ord('a') + i)} matrix: '{subject}' rejects {message.split()[0]}"
+            try:
+                translate.cmd_review(ns(subject, **overrides), proj)
+                check(name, False, "no CliError")
+            except translate.CliError as exc:
+                check(name, str(exc) == message,
+                      f"exc={exc!r} expected={message!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -386,6 +450,7 @@ def main() -> int:
     case_3_search_distance()
     case_4_report_path()
     case_5_fix_reads_config()
+    case_6_review_flag_matrix()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
