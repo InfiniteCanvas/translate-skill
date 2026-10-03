@@ -241,8 +241,14 @@ sorted by frequency):
    occurrences (default 3; 0 disables the gate, and an unreadable source
    corpus fails it open), skipped below the floor with
    `[glossary] skip '<src>' - <N> occurrence(s) across the novel (min
-   <M>)` — updates, merges, and nickname absorption of entries already
-   in the glossary are never gated. Proposed categories are validated
+   <M>)` — the gate also runs before nickname absorption, so an absorbed
+   nickname is novel-wide significant too, and any NEW variant a
+   re-proposal carries for an existing entry is gated the same way and
+   dropped below the floor with `[glossary] skip variant '<v>' - <N>
+   occurrence(s) across the novel (min <M>)`. Never gated: the source of
+   a matched entry (matched by source or variant), already-present
+   variants being restated, and real merges of a matched entry.
+   Proposed categories are validated
    against the known glossary categories (the model is offered the list
    minus `unit` — units come from catalogues, not proposals): a known
    category — `unit` included — passes unchanged, an unknown one is
@@ -281,7 +287,7 @@ sorted by frequency):
    footnote markers, no notes section) plus the `notes/<stem>.json` sidecar
    carrying the kept notes; auto-promote. The manifest status update is
    best-effort: after retrying through Windows file-lock contention
-   (exponential backoff, ~3.1s in total) it gives up with `[warn] manifest
+   (exponential backoff, ~6.3s in total) it gives up with `[warn] manifest
    update failed for <file>: <reason> - chapter file is written; status
    stays in-progress` — the chapter file is complete, only the status
    stays `in-progress`. On gate failure the chapter retried
@@ -355,9 +361,14 @@ docker image (when Docker/epubcheck is unavailable the check degrades
 gracefully — `[warn] docker not found; epubcheck skipped` followed by
 `[warn] epubcheck skipped`, and the build still succeeds with exit 0; an
 epubcheck run exceeding 300s degrades the same way — `[warn] epubcheck
-timed out after 300s`; so does a docker infrastructure failure — daemon
-down, image or volume missing — which is also reported as `epubcheck
-skipped`, never as a validation failure).
+timed out after 300s`; so does a recognized docker infrastructure
+failure — exit 125, or the common exit-1 patterns: an unreachable daemon
+(including daemon-socket permission denials), a missing local image,
+platform manifest mismatches, credential-helper failures, and the
+registry pull refusals/rate limits — which is also reported as
+`epubcheck skipped`, never as a validation failure; the pattern list is
+best-effort, not exhaustive, so an unrecognized docker failure can still
+be reported as a validation failure, exit 1).
 The build fails loudly if epubcheck reports errors — show the
 report to the user and fix the chapter(s) named in it. To run epubcheck
 manually from Git Bash:
@@ -378,9 +389,20 @@ to `logs/epub-build.log` with
 `=== epub build after Chapter_NNNN.md | timestamp ===` separators; the console
 prints `[epub-auto] build ok (after Chapter_NNNN.md)`. Failures are warnings
 only and never change the translate/retry exit code (which still reflects
-translation status): a stalled build is killed after 360s — the kill takes the whole process tree, so the builder's own docker run cannot outlive it (`[warn] epub
+translation status): a stalled build is killed after 360s — the kill
+takes the builder's whole process tree (taskkill /T on Windows, killpg
+elsewhere), which reaches the docker CLI and its children, but the
+daemon-side epubcheck container is not the builder's child and may run
+to completion — docker `--rm` reaps it when it exits (`[warn] epub
 auto-build stalled, killed after 360s (after <reason>) - see
-logs/epub-build.log`), a failed child prints `[warn] epub auto-build
+logs/epub-build.log`; on a confirmed kill the dead build's pid-scoped
+`export/*.epub.<pid>.tmp` sibling is swept — `[warn] removed N stale
+epub temp file(s) left by the killed build`). A kill that itself fails
+warns `[warn] epub auto-build: failed to kill builder (taskkill:
+<error>) - it may still be running` (killpg on POSIX) and a builder
+that survives the kill warns `[warn] epub auto-build builder survived
+the kill - it may still be running` — neither raises, and neither
+changes the exit code. A failed child prints `[warn] epub auto-build
 failed, exit <code> (after <reason>) - see logs/epub-build.log`, a Ctrl-C
 interrupt prints `[warn] epub auto-build interrupted`, and the
 end-of-batch finalize can report `[warn] epub auto-build finalize waited
@@ -763,17 +785,28 @@ Commands are pre-validated: a `glossary
 replace`/`set` command whose `--translation` value contains source-script
 (CJK) characters for a CJK-source entry is skipped in-process (console:
 `[review fix] skipped [N]: suggestion not in target language` — the same
-rule `review glossary --fix` already enforces) and excluded from the run
+rule `review glossary --fix` already enforces), and a hand-written
+`glossary set` command whose `--category` value is outside the category
+vocabulary is skipped the same way (console: `[review fix] skipped [N]:
+unknown category '<value>' (must be one of: place, person, org, skill,
+technique, level, state, item, honorific, unit, other) (<command line>)` —
+a glossary-independent check, so it fires even when glossary.json is
+unreadable); both are excluded from the run
 count, so skipped specs surface as findings that need a decision, not
 runtime failures. A Command bullet carrying `--project` in either form
 (`--project X` or `--project=X`) is likewise skipped (`[review fix]
 skipped [N]: command overrides --project`) — the executor always prepends
 its own `--project`, and one smuggled into a hand-edited report would
-silently retarget the command. Two commands targeting the same glossary
-entry with the same verb+target conflict (a `glossary set` verb is its
-edited field, so two `set` commands on different fields of one entry both
-run) — the first one queued wins,
-later ones are skipped (`[review fix] skipped [N]: conflicting command
+silently retarget the command. Conflicts are keyed per FIELD, not per
+verb: a command claims the (field, resolved-source) keys of every field
+it writes — `replace` edits the translation and shares `set
+--translation`'s key (the two collide: two commands writing one field of
+one entry is the exact pair that double-applies), a multi-field `set
+--translation X --definition Y` occupies both keys, sources resolve
+through glossary.find() so a command naming a variant and one naming the
+canonical source collide — and a later command conflicting on ANY
+claimed key is skipped whole; the first one queued wins
+(`[review fix] skipped [N]: conflicting command
 for '<source>' (already queued)`). Each spawned command is killed at a
 1800s timeout (`[review fix] command timed out after 1800s: <command>`).
 **The `- Command:` bullet is the contract**:

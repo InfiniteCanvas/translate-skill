@@ -232,8 +232,12 @@ skipped a proposal -- count its occurrences across the source chapters
 
 Automatic glossary expansion is gated the same way: a proposed brand-new
 term is only added when it occurs at least `min_term_occurrences`
-(default 3) times across the whole novel; updates to entries already in
-the glossary are never gated. Below the threshold the command prints
+(default 3) times across the whole novel -- and the gate covers new
+variants too: a re-proposal of an existing entry is not re-gated on its
+source, but each NEW variant it carries must clear the same floor, and a
+below-threshold variant is dropped. Never gated: real merges, and
+already-present variants being restated. Below the threshold the command
+prints
 `[warn] '<term>' is below the significance threshold: <total> < <min>`
 and exits 1.
 
@@ -457,13 +461,19 @@ Commands are pre-validated: a
 source-script characters
 for a CJK-source entry is skipped in-process (`[review fix] skipped [N]:
 suggestion not in target language`) and counted as needing a decision --
-the same guard `review glossary --fix` enforces. So is a Command bullet
+the same guard `review glossary --fix` enforces. So is a hand-written
+`glossary set` command whose `--category` value is outside the category
+vocabulary (`[review fix] skipped [N]: unknown category '<value>' (must
+be one of: place, person, org, skill, technique, level, state, item,
+honorific, unit, other) (<command line>)`). So is a Command bullet
 carrying `--project` in either form (`[review fix] skipped [N]: command
 overrides --project`) -- the executor always prepends its own `--project`,
 and one smuggled into a hand-edited report would silently retarget the
-command. Two commands targeting the same glossary entry with the same
-verb+target conflict (a `glossary set` verb is its edited field) -- the
-first queued wins, later ones are skipped
+command. Conflicts are keyed per field, not per verb: `replace` shares
+`set --translation`'s key (both rewrite the translation), a multi-field
+`set` claims every field it writes, and a command naming a variant
+collides with one naming the canonical source -- the first queued wins,
+and a later command conflicting on any claimed key is skipped
 (`[review fix] skipped [N]: conflicting command for '<source>' (already
 queued)`). Exit codes: 0 on full
 success or full no-op, 1 if any command failed (continues past failures
@@ -471,10 +481,11 @@ by default; `--exit-on-error` to stop at the first) or the report was
 refused as stale (`--stale-ok` overrides), 2 on a
 missing/unreadable report or a report with no machine-applicable
 commands. `--dry-run` prints each command with its
-finding index — annotating `SKIP` on commands that would be rejected as
-invalid suggestions — plus a one-line summary (`N command(s), M would be
-skipped (invalid suggestion), K finding(s) need a decision`, skip count
-only when nonzero) and applies nothing. The `- Command:` bullet is the contract: `write_report()` emits
+finding index — annotating `SKIP` on commands the real run would skip
+(an invalid suggestion, an unknown `--category`, a smuggled `--project`,
+or a conflict with an earlier command) — plus a one-line summary (`N
+command(s), M would be skipped (invalid or conflicting), K finding(s)
+need a decision`, skip count only when nonzero) and applies nothing. The `- Command:` bullet is the contract: `write_report()` emits
 it on every finding whose fix is fully determined by its structured
 fields; the closed vocabulary is documented in
 `references/file-formats.md` (per-finding `glossary replace` for
@@ -573,7 +584,16 @@ build at batch end guarantees the finished epub includes every chapter --
 `export/` always holds a current epub (epubcheck-validated when Docker is
 available), so the manual command is
 only needed for one-off builds. Auto-build failures are warnings only --
-a stalled build is killed after 360s, a failed child prints
+a stalled build is killed after 360s (the kill takes the builder's whole
+process tree, which reaches the docker CLI and its children, but the
+daemon-side epubcheck container is not the builder's child and may run
+to completion -- docker's `--rm` reaps it; a kill that itself fails or a
+builder that survives it warns `[warn] epub auto-build: failed to kill
+builder (taskkill: <error>) - it may still be running` / `[warn] epub
+auto-build builder survived the kill - it may still be running` instead
+of raising, and a confirmed kill sweeps the dead build's leftover
+`export/*.epub.<pid>.tmp` with `[warn] removed N stale epub temp file(s)
+left by the killed build`), a failed child prints
 `[warn] epub auto-build failed, exit <code> (after <reason>) - see
 logs/epub-build.log`, a Ctrl-C interrupt prints
 `[warn] epub auto-build interrupted`, and with epubcheck unavailable the

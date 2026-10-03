@@ -8,8 +8,8 @@ real Chapter_0007 -- Unicode-digit names must NOT be discovered while ASCII
 still are, with re.IGNORECASE preserved for the name and the a/b suffix),
 the atomic write helpers: atomic_write_text creates a missing parent
 directory (deep paths work on the first write, round-trip their text, and
-leave no *.tmp siblings), _replace_with_retry's exponential backoff (six
-attempts, sleeping 0.1s..1.6s between them, then the error surfaces: a
+leave no *.tmp siblings), _replace_with_retry's exponential backoff (seven
+attempts, sleeping 0.1s..3.2s between them, then the error surfaces: a
 replace failing twice then succeeding lands the file, a permanently busy
 destination re-raises after the full schedule, and a failing atomic write
 leaves the previous content intact with no tmp sibling) -- os/time on the
@@ -150,8 +150,8 @@ def case_2_atomic_write_creates_parent() -> None:
 
 
 def case_3_replace_retry_backoff() -> None:
-    """_replace_with_retry backs off exponentially: six attempts, sleeping
-    0.1/0.2/0.4/0.8/1.6s between them, then the error surfaces. os.replace
+    """_replace_with_retry backs off exponentially: seven attempts, sleeping
+    0.1/0.2/0.4/0.8/1.6/3.2s between them, then the error surfaces. os.replace
     on the project module is swapped for a scripted shim and time.sleep for
     a recorder (the suite's attribute-swap convention), so the schedule is
     pinned without real sleeping: a replace failing twice then succeeding
@@ -212,10 +212,10 @@ def case_3_replace_retry_backoff() -> None:
             P.os, P.time = orig_os, orig_time
         check("3c retry: permanently busy destination re-raises",
               isinstance(raised, PermissionError), f"raised={raised!r}")
-        check("3d retry: six attempts before giving up",
-              attempts["n"] == 6, f"attempts={attempts['n']}")
-        check("3e retry: full backoff schedule 0.1s..1.6s",
-              sleeps == [0.1, 0.2, 0.4, 0.8, 1.6], f"sleeps={sleeps!r}")
+        check("3d retry: seven attempts before giving up",
+              attempts["n"] == 7, f"attempts={attempts['n']}")
+        check("3e retry: full backoff schedule 0.1s..3.2s",
+              sleeps == [0.1, 0.2, 0.4, 0.8, 1.6, 3.2], f"sleeps={sleeps!r}")
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)

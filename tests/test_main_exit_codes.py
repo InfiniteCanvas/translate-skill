@@ -1,9 +1,11 @@
-"""Tests for main()'s [FAIL] exit-code mapping on the glossary-count path (H7).
+"""Tests for main()'s [FAIL] exit-code mapping: the glossary-count guard
+(H7) plus the remaining dispatch try-block arms.
 
 `glossary count` reads every source chapter (read_chapter -> yaml), and a
 scraped batch routinely contains a bad file (broken YAML frontmatter, or
-non-UTF-8 bytes). The chapter read raises ValueError, cmd_review's
-dispatcher maps it to a clean "[FAIL] cannot count - ..." line on stderr
+non-UTF-8 bytes). The chapter read raises ValueError, and the count guard
+in _cmd_glossary_count (translate.py) re-raises it as a CliError that
+main() maps to a clean "[FAIL] cannot count - ..." line on stderr
 with exit code 2 -- never a traceback, whose exit code 1 would misread as
 "below threshold" for batch callers.
 
@@ -20,6 +22,20 @@ never a raw int(None) TypeError traceback -- for both consuming commands
 (`glossary search` reads fuzzy_max_distance, `glossary count` reads
 min_term_occurrences), with key-absent controls exiting normally.
 
+Cases 4-6 pin the remaining arms of main()'s dispatch try-block, which the
+subprocess cases above cannot reach without contrived fixtures: a
+PipelineError escaping the dispatch -> exit 2, a raw OSError -> exit 2,
+and KeyboardInterrupt -> exit 130. These run IN PROCESS (translate imported
+directly; scripts/ put on sys.path like the file's fixture paths):
+translate.cmd_status -- the dispatch target a lightweight `status` call
+resolves to -- is swapped for a raiser with orig/restore in try/finally
+(the attribute-swap convention, no unittest.mock), and main() runs under
+redirect_stdout/redirect_stderr. In-process monkeypatching is the robust
+pattern for the Ctrl-C arm especially: no signal games on Windows. main()
+RETURNS its code (sys.exit fires only under __main__), so the return value
+is the contract; each arm must print its documented [FAIL] line on stderr
+and never a traceback.
+
 Self-contained PASS/FAIL script (no pytest). The subprocess imports the
 same interpreter that runs this script, so the lib deps (pyyaml,
 requests, ebooklib, pillow) must be importable -- run via uv (deps
@@ -34,6 +50,8 @@ declared inline below):
 # ///
 from __future__ import annotations
 
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
@@ -43,6 +61,13 @@ from pathlib import Path
 # (CWD-independent); the child (translate.py) extends sys.path itself.
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 TRANSLATE = SCRIPTS / "translate.py"
+
+# The in-process cases import translate directly (test_git.py's pattern).
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+import translate  # noqa: E402
+from lib import pipeline  # noqa: E402
 
 PASSED = 0
 FAILED: list[str] = []
@@ -80,6 +105,16 @@ def run_cli(argv: list[str]) -> subprocess.CompletedProcess:
         capture_output=True, text=True, check=False,
         encoding="utf-8", errors="replace", timeout=300,
     )
+
+
+def run_main_inproc(argv: list[str]) -> tuple[str, str, int]:
+    """translate.main() in-process with both streams captured: the arms
+    print through sys.stdout/sys.stderr, which redirect_* swap, and main()
+    RETURNS the exit code (sys.exit fires only under __main__)."""
+    out_buf, err_buf = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+        code = translate.main(argv)
+    return out_buf.getvalue(), err_buf.getvalue(), code
 
 
 # ---------------------------------------------------------------------- cases
@@ -210,10 +245,75 @@ def case_3_null_numeric_config_is_fail_exit_2() -> None:
               f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
 
 
+def _dispatch_raiser(exc: BaseException):
+    """A cmd_status stand-in whose body raises `exc` -- the `status`
+    subcommand is the cheapest dispatch target, and the patched function is
+    the first thing main()'s try block calls, so nothing on disk matters."""
+    def func(args, project_dir):
+        raise exc
+    return func
+
+
+def case_4_pipeline_error_arm() -> None:
+    """A PipelineError escaping the dispatch -> [FAIL] line naming the
+    error on stderr, exit 2, no traceback (main()'s second except arm)."""
+    orig = translate.cmd_status
+    translate.cmd_status = _dispatch_raiser(pipeline.PipelineError("boom"))
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            out, err, code = run_main_inproc(["status", "--project", td])
+    finally:
+        translate.cmd_status = orig
+    check("4a PipelineError arm: exit code 2", code == 2, f"rc={code}")
+    check("4b PipelineError arm: [FAIL] names the error on stderr",
+          "[FAIL]" in err and "boom" in err, f"err={err!r}")
+    check("4c PipelineError arm: no traceback", "Traceback" not in out + err,
+          f"out={out!r} err={err!r}")
+
+
+def case_5_os_error_arm() -> None:
+    """A raw OSError escaping the dispatch -> [FAIL] '<Type>: msg' on
+    stderr, exit 2, no traceback (main()'s last except arm)."""
+    orig = translate.cmd_status
+    translate.cmd_status = _dispatch_raiser(OSError("boom"))
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            out, err, code = run_main_inproc(["status", "--project", td])
+    finally:
+        translate.cmd_status = orig
+    check("5a OSError arm: exit code 2", code == 2, f"rc={code}")
+    check("5b OSError arm: [FAIL] names the type and message on stderr",
+          "[FAIL]" in err and "OSError: boom" in err, f"err={err!r}")
+    check("5c OSError arm: no traceback", "Traceback" not in out + err,
+          f"out={out!r} err={err!r}")
+
+
+def case_6_keyboard_interrupt_arm() -> None:
+    """A KeyboardInterrupt escaping the dispatch -> the interrupted [FAIL]
+    line on stderr and exit 130 (main()'s Ctrl-C arm; file-formats.md
+    documents the code)."""
+    orig = translate.cmd_status
+    translate.cmd_status = _dispatch_raiser(KeyboardInterrupt())
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            out, err, code = run_main_inproc(["status", "--project", td])
+    finally:
+        translate.cmd_status = orig
+    check("6a KeyboardInterrupt arm: exit code 130", code == 130,
+          f"rc={code}")
+    check("6b KeyboardInterrupt arm: [FAIL] interrupted line on stderr",
+          "[FAIL]" in err and "interrupted" in err, f"err={err!r}")
+    check("6c KeyboardInterrupt arm: no traceback",
+          "Traceback" not in out + err, f"out={out!r} err={err!r}")
+
+
 def main() -> int:
     case_1_bad_frontmatter_is_fail_exit_2()
     case_2_healthy_project_exits_0()
     case_3_null_numeric_config_is_fail_exit_2()
+    case_4_pipeline_error_arm()
+    case_5_os_error_arm()
+    case_6_keyboard_interrupt_arm()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

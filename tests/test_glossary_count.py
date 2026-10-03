@@ -12,7 +12,11 @@ pipeline.PipelineError through parse_range.
 
 The occurrence gate (pipeline._apply_glossary_proposal) applies one
 GLOSSARY_EXPAND proposal: retired sources are skipped first, then proposals
-matching an existing entry by source merge in without ever being counted.
+matching an existing entry by source merge in -- the entry's source is
+never re-counted, but every NEW variant the re-proposal carries is gated
+like a brand-new term (skipped with an exact `skip variant` count line and
+the entry's variants unchanged; an already-present variant stays a silent
+no-op and a variant equal to the source is dropped ungated).
 Every other source -- nickname absorption included -- is gated: when
 min_occurrences > 0 the term must occur at least that many times in
 `corpus` or it is skipped with an exact-count line BEFORE the nickname
@@ -26,7 +30,12 @@ verbatim; "unit" additionally warns that balance checks skip the category
 while its translation is non-empty; an absent category keeps the field
 ValueError and is never coerced), and the same check covers a category
 the merge model ECHOES for an existing entry -- a merge omitting the key
-never warns and never touches the entry's own category.
+never warns and never touches the entry's own category, while a merge
+landing 'unit' on an entry with a surviving translation prints the same
+guide-only warn before the update line (an empty surviving translation
+stays silent); both pipeline warns route through
+glossary.unit_translation_warning, keeping the text byte-identical with
+the `glossary set` advisory.
 
 The gate's corpus cache (pipeline._gate_corpus / _GATE_CORPUS) is covered
 unit-level and end to end: the joined source corpus is read once per
@@ -58,7 +67,13 @@ sub-cases (known "person" verbatim with no warn, "unit" verbatim with the
 guide-only warn, unknown "faction" coerced to "other" with the warn line
 before the add line, absent category -> ValueError) and, through a faked
 pipeline._chat merge reply, the merge-path coercion (unknown echoed
-category coerced + warned, omitted category preserving the entry's own);
+category coerced + warned, omitted category preserving the entry's own,
+echoed 'unit' warning on a surviving translation with the
+empty-translation control); also the variant gate on the existing-entry
+path (a zero-occurrence new variant skipped with the exact `skip variant`
+line and the entry untouched, a threshold-meeting variant absorbed as
+before, an already-present variant a silent no-op, a source-equal variant
+dropped ungated);
 and balance.count_in_target's target handling (case-variant duplicate
 targets deduped to one count; per-target script split -- a CJK target
 counted exactly while a Latin sibling target keeps word-boundary
@@ -482,6 +497,62 @@ def case_9_gate() -> None:
               and "skip" not in out5b,
               f"exc={exc5b!r} out={out5b!r} terms={g5b['terms']}")
 
+        # A re-proposal of an EXISTING source may carry NEW variants: each
+        # one is gated like a brand-new term, so a zero-occurrence string
+        # can never become a permanently matchable variant through the back
+        # door. Same translation -> the merge path is never taken; only the
+        # skip line prints and the entry is untouched.
+        g5c: dict = {"terms": [dict(known)]}
+        _r, out5c, exc5c = capture(
+            pipeline._apply_glossary_proposal, g5c,
+            proposal("裴小丫", "Pei Xiaoya", variants=["未命中的词"]), 2, {},
+            "", "[t]", proj, corpus="", min_occurrences=3)
+        check("9f3 gate: zero-occurrence new variant dropped, exact line",
+              exc5c is None and len(g5c["terms"]) == 1
+              and g5c["terms"][0] == known
+              and out5c == "[t] [glossary] skip variant '未命中的词' - 0 "
+                          "occurrence(s) across the novel (min 3)\n",
+              f"exc={exc5c!r} out={out5c!r} terms={g5c['terms']}")
+
+        # A new variant that meets min_occurrences in the corpus is still
+        # absorbed onto the existing entry, with the same [ok] line as
+        # before.
+        g5d: dict = {"terms": [dict(known)]}
+        _r, out5d, exc5d = capture(
+            pipeline._apply_glossary_proposal, g5d,
+            proposal("裴小丫", "Pei Xiaoya", variants=["小丫"]), 2, {}, "",
+            "[t]", proj, corpus="小丫。小丫和小丫。", min_occurrences=3)
+        check("9f4 gate: threshold-meeting new variant absorbed as before",
+              exc5d is None and len(g5d["terms"]) == 1
+              and g5d["terms"][0].get("variants") == ["小丫"]
+              and out5d == "[t] [ok] glossary ~ '裴小丫' +variant(s) 小丫\n",
+              f"exc={exc5d!r} out={out5d!r} terms={g5d['terms']}")
+
+        # An ALREADY-PRESENT variant is never re-gated: a re-proposal
+        # restating it stays a silent no-op even against an empty corpus.
+        known_v = dict(known, variants=["小丫"])
+        g5e: dict = {"terms": [dict(known_v)]}
+        _r, out5e, exc5e = capture(
+            pipeline._apply_glossary_proposal, g5e,
+            proposal("裴小丫", "Pei Xiaoya", variants=["小丫"]), 2, {}, "",
+            "[t]", proj, corpus="", min_occurrences=3)
+        check("9f5 gate: already-present variant not re-gated, silent no-op",
+              exc5e is None and len(g5e["terms"]) == 1
+              and g5e["terms"][0] == known_v and out5e == "",
+              f"exc={exc5e!r} out={out5e!r} terms={g5e['terms']}")
+
+        # A variant equal to the entry's source is never gated and
+        # union_variants drops it: fully silent, variants unchanged.
+        g5f: dict = {"terms": [dict(known)]}
+        _r, out5f, exc5f = capture(
+            pipeline._apply_glossary_proposal, g5f,
+            proposal("裴小丫", "Pei Xiaoya", variants=["裴小丫"]), 2, {}, "",
+            "[t]", proj, corpus="", min_occurrences=3)
+        check("9f6 gate: source-equal variant dropped ungated, no skip line",
+              exc5f is None and len(g5f["terms"]) == 1
+              and g5f["terms"][0] == known and out5f == "",
+              f"exc={exc5f!r} out={out5f!r} terms={g5f['terms']}")
+
         # Retired sources: skipped before the gate is consulted.
         g6: dict = {"terms": [], "retired": ["废丹"]}
         _r, out6, exc6 = capture(
@@ -842,6 +913,45 @@ def case_12_merge_category_coercion() -> None:
                   and g2["terms"][0].get("category") == "person"
                   and out2 == "[t] [ok] glossary ~ '荒塔' -> 'Desolate Tower'\n",
                   f"exc={exc2!r} out={out2!r} terms={g2.get('terms')}")
+
+            # The merge lands echoed category 'unit' on an entry whose
+            # translation survives: the same guide-only advisory as the
+            # new-term path, printed after the merge response is validated
+            # and before the entry write.
+            pipeline._chat = fake_chat_factory(
+                {"translation": "Desolate Tower", "category": "unit"})
+            g3: dict = {"terms": [dict(existing)]}
+            _r, out3, exc3 = capture(
+                pipeline._apply_glossary_proposal, g3,
+                proposal("荒塔", "Spirit Term"), 2, {}, "", "[t]", proj,
+                corpus="", min_occurrences=3)
+            check("12d merge: 'unit' with a surviving translation stored",
+                  exc3 is None and len(g3["terms"]) == 1
+                  and g3["terms"][0].get("category") == "unit"
+                  and g3["terms"][0].get("translation") == "Desolate Tower",
+                  f"exc={exc3!r} terms={g3.get('terms')}")
+            check("12e merge: exact guide-only warn before the [ok] ~ line",
+                  out3 == "[t] [warn] glossary: '荒塔' has a translation but "
+                          "category 'unit' (guide-only: balance checks skip "
+                          "it)\n"
+                         "[t] [ok] glossary ~ '荒塔' -> 'Desolate Tower'\n",
+                  f"out={out3!r}")
+
+            # Control: the same echoed 'unit' on an entry whose (empty)
+            # translation stays empty is coherent -- no warn.
+            empty_tr = dict(existing, translation="")
+            pipeline._chat = fake_chat_factory({"category": "unit"})
+            g4: dict = {"terms": [dict(empty_tr)]}
+            _r, out4, exc4 = capture(
+                pipeline._apply_glossary_proposal, g4,
+                proposal("荒塔", "Spirit Term"), 2, {}, "", "[t]", proj,
+                corpus="", min_occurrences=3)
+            check("12f merge: echoed 'unit' on an empty translation no warn",
+                  exc4 is None and len(g4["terms"]) == 1
+                  and g4["terms"][0].get("category") == "unit"
+                  and g4["terms"][0].get("translation") == ""
+                  and out4 == "[t] [ok] glossary ~ '荒塔' -> ''\n",
+                  f"exc={exc4!r} out={out4!r} terms={g4.get('terms')}")
         finally:
             pipeline._chat = orig
 

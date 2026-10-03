@@ -71,16 +71,16 @@ def _replace_with_retry(src: Path, dst: Path) -> None:
 
     On Windows the replace can raise PermissionError while another process
     holds the destination open (e.g. a parallel epub-build child reading
-    chapters.json, or a reader holding the exported epub); six attempts,
-    backing off 0.1s..1.6s between them, then the error surfaces. Shared by
-    atomic_write_text, write_chapter, cover's JPEG writes, and the epub
-    builder's binary tmp swap."""
-    for attempt in range(6):
+    chapters.json, or a reader holding the exported epub); seven attempts,
+    backing off 0.1s..3.2s (~6.3s in total) between them, then the error
+    surfaces. Shared by atomic_write_text, write_chapter, cover's JPEG
+    writes, and the epub builder's binary tmp swap."""
+    for attempt in range(7):
         try:
             os.replace(src, dst)
             return
         except PermissionError:
-            if attempt == 5:
+            if attempt == 6:
                 raise
             time.sleep(0.1 * 2 ** attempt)
 

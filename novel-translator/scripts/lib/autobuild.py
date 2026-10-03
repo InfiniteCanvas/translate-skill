@@ -7,6 +7,14 @@ so concurrent rebuilds never overlap); triggers arriving while a build runs
 just set a pending flag. finalize() waits out the running build and, when
 anything is pending, runs one final synchronous build so the finished epub
 always includes every chapter.
+
+abort() (the pipeline's Ctrl-C path) and finalize()'s stall arm kill the
+running builder's process tree; the kill is best-effort and never raises
+-- a builder that survives it is warned about, and on a confirmed death
+the child's pid-named epub tmp (a hard kill skips epub.py's finally
+cleanup) is swept. The tree kill reaches the docker CLI and its children
+only: the daemon-side epubcheck container is not our child and may run to
+completion (docker --rm reaps it when it exits).
 """
 
 from __future__ import annotations
@@ -45,14 +53,24 @@ else:
 
 def _kill_tree(proc: subprocess.Popen) -> None:
     """Kill proc and its whole process subtree. A plain proc.kill() would
-    orphan the build child's docker grandchild (epubcheck keeps running) and
-    skip epub.py's finally cleanup; taskkill /T (Windows) and killpg (POSIX)
-    take the whole tree down."""
+    orphan the build child's docker CLI grandchild and skip epub.py's
+    finally cleanup; taskkill /T (Windows) and killpg (POSIX) take the whole
+    tree down. The tree is the docker CLI and its children only -- the
+    daemon-side epubcheck container is not our child and may run to
+    completion (docker --rm reaps it when it exits). Never raises: a kill
+    tool that itself fails (taskkill missing, its own timeout, a killpg
+    error) is warned about instead."""
     if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
-            stdin=subprocess.DEVNULL, timeout=60,
-        )
+        # Guarded so a broken/missing taskkill (or its own timeout) cannot
+        # blow up abort()'s KeyboardInterrupt handler with a traceback.
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
+                stdin=subprocess.DEVNULL, timeout=60,
+            )
+        except Exception as exc:  # noqa: BLE001 - never raise from a kill
+            print(f"[warn] epub auto-build: failed to kill builder "
+                  f"(taskkill: {exc}) - it may still be running")
     else:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -61,6 +79,9 @@ def _kill_tree(proc: subprocess.Popen) -> None:
                 proc.kill()  # the pid vanished between getpgid and the signal
             except ProcessLookupError:
                 pass
+        except OSError as exc:
+            print(f"[warn] epub auto-build: failed to kill builder "
+                  f"(killpg: {exc}) - it may still be running")
 
 
 class AutoBuildScheduler:
@@ -95,14 +116,12 @@ class AutoBuildScheduler:
 
     def abort(self) -> None:
         """Interrupt path: kill the running child and its subtree; never
-        spawn another."""
+        spawn another, never raise (runs inside the pipeline's
+        KeyboardInterrupt handler -- a raise here would replace the clean
+        Ctrl-C with a traceback)."""
         self._pending = None
         if self._proc is not None:
-            _kill_tree(self._proc)
-            try:
-                self._proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
+            self._kill_and_reap()
             self._close_log()
             self._proc = None
             self._reason = ""
@@ -146,11 +165,7 @@ class AutoBuildScheduler:
                 except subprocess.TimeoutExpired:
                     waited += _FINALIZE_POLL_S
                     if waited >= _REAP_TIMEOUT:
-                        _kill_tree(self._proc)
-                        try:
-                            self._proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            pass
+                        self._kill_and_reap()
                         stalled = True
                         break
                     if not warned and waited >= _FINALIZE_WARN_S:
@@ -172,6 +187,39 @@ class AutoBuildScheduler:
             print(f"[warn] epub auto-build failed, exit {code} (after {self._reason}) - see logs/epub-build.log")
         self._proc = None
         self._reason = ""
+
+    def _kill_and_reap(self) -> bool:
+        """Tree-kill the running child and wait out its death; True only on
+        a confirmed death. A kill that did not stick is warned about, never
+        raised -- abort() runs inside the pipeline's KeyboardInterrupt
+        handler, and a raise here would replace the clean Ctrl-C (exit 130)
+        with a traceback. On a confirmed death, sweeps the dead child's own
+        epub tmp: the hard kill skips epub.py's finally cleanup, and the tmp
+        is named after the child's pid (epub.py's os.getpid() inside the
+        child). The pid-scoped glob never touches another process's tmp.
+
+        Callers must still hold the child in _proc (it is cleared only
+        after this returns)."""
+        proc = self._proc
+        _kill_tree(proc)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            print("[warn] epub auto-build builder survived the kill - "
+                  "it may still be running")
+            return False
+        removed: list[Path] = []
+        try:
+            for path in sorted((self._project_dir / "export").glob(
+                    f"*.epub.{proc.pid}.tmp")):
+                path.unlink(missing_ok=True)
+                removed.append(path)
+        except OSError:
+            pass
+        if removed:
+            print(f"[warn] removed {len(removed)} stale epub temp file(s) "
+                  f"left by the killed build")
+        return True
 
     def _close_log(self) -> None:
         if self._log_fh is not None:

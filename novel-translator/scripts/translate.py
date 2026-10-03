@@ -11,7 +11,8 @@ Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
 had failures or the report was refused as stale / glossary search found nothing
 / glossary count below threshold / tn re-check failed chapters or scanned
 nothing eligible / profile generation failed, 2 usage or setup error /
-build-epub builder crashed / ping with one or more providers unreachable.
+build-epub builder crashed / ping with one or more providers unreachable /
+130 interrupted (Ctrl-C).
 """
 
 from __future__ import annotations
@@ -401,10 +402,12 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     # The scaffold commit above captured the bare chapters; commit the
     # backfilled frontmatter, rebuilt manifest and seeded glossary too, so
     # init never leaves the tree dirty for the next action's commit to sweep
-    # up (silent no-op when nothing changed). Distinct subject: both commits
-    # are real stages of one init, and identical subjects would make the
-    # history unreadable.
-    vcs.commit(project_dir, "init: reinitialize project" if was_repo else "init: backfill and seed")
+    # up (silent no-op when nothing changed). The two subjects are four-way
+    # distinct -- scaffold/backfill and seed on a fresh directory,
+    # reinitialize/reseed-after-reinitialize when --force keeps an existing
+    # repo's history -- so identical subjects never make the history
+    # unreadable.
+    vcs.commit(project_dir, "init: reseed after reinitialize" if was_repo else "init: backfill and seed")
 
     print("[ok] project initialized")
     print(f"     title:    {args.title}")
@@ -966,33 +969,55 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError(str(exc)) from exc
 
     # Dry-run: list every spec + summary, apply nothing. Specs whose command
-    # would be rejected as an invalid translation (e.g. a suggestion that is
-    # still source-language CJK) get a SKIP annotation via the same guard
-    # run_commands applies before executing (an unreadable glossary just
-    # means plain lines).
+    # run_commands would refuse before executing get a SKIP annotation via
+    # the same guards, in the same order: the --project smuggle guard,
+    # static_skip_reason (invalid translation -- e.g. a suggestion still in
+    # source-language CJK -- or an unknown --category, the latter
+    # glossary-independent) and conflict_keys (any field key already claimed
+    # by an earlier spec queued in THIS report -- the first command wins, the
+    # conflicting duplicate never runs and its keys are never queued). An
+    # unreadable glossary (None) only mutes the translation-language check
+    # and empties the conflict keys -- the --category check still fires.
     if args.dry_run:
         try:
             g = glossary.load(project_dir)
         except (OSError, ValueError):
             g = None
         n_skip = 0
+        seen: set[tuple] = set()
         for i, spec in enumerate(specs, 1):
             f = spec.finding
             tag = f.get("kind", "?")
             src = f.get("source", "?")
             line = " ".join(shlex.quote(t) for t in spec.argv)
-            reason = fix.invalid_translation_reason(spec.argv, g) if g is not None else None
-            if reason:
+            if any(
+                tok == "--project" or tok.startswith("--project=")
+                for tok in spec.argv
+            ):
+                n_skip += 1
+                print(f"[review fix] [{i}] SKIP (command overrides --project): {line}")
+                continue
+            reason = fix.static_skip_reason(spec.argv, g)
+            keys = fix.conflict_keys(spec.argv, g)
+            if reason is None and keys and not keys.isdisjoint(seen):
+                # CONFLICT skip: run_commands skips it BEFORE queueing, so its
+                # keys stay out of `seen`. All keys of one spec share the
+                # resolved source; sorted() picks one deterministically.
+                n_skip += 1
+                source = sorted(keys & seen)[0][1]
+                print(f"[review fix] [{i}] SKIP (conflicting command for '{source}' (already queued)): {line}")
+            elif reason is not None:
                 n_skip += 1
                 print(f"[review fix] [{i}] SKIP ({reason}): {line}")
             else:
+                seen |= keys
                 print(f"[review fix] [{i}] {tag} {src}: {line}")
         # Skipped specs never execute, so (like the real run's specs_run)
         # they still count as findings awaiting a decision.
         needs_decision = max(findings_count - (len(specs) - n_skip), 0)
         print(
             f"[review fix] dry-run: {len(specs)} command(s)"
-            + (f", {n_skip} would be skipped (invalid suggestion)" if n_skip else "")
+            + (f", {n_skip} would be skipped (invalid or conflicting)" if n_skip else "")
             + f", {needs_decision} finding(s) need a decision"
         )
         return 0
@@ -1302,9 +1327,10 @@ def _cmd_glossary_set(args: argparse.Namespace, project_dir: Path) -> int:
     # Same advisory as the pipeline's model proposals: a 'unit' entry is a
     # rendering guide only -- balance.check skips the category entirely, so
     # a stored translation would never be counted or enforced.
-    if entry.get("category") == "unit" and str(entry.get("translation") or "").strip():
-        print(f"[warn] glossary: '{args.source}' has a translation but "
-              "category 'unit' (guide-only: balance checks skip it)")
+    if entry.get("category") == "unit":
+        warn = glossary.unit_translation_warning(args.source, entry.get("translation"))
+        if warn is not None:
+            print(f"[warn] {warn}")
     vcs.commit(project_dir, f"glossary set: {args.source}")
     return 0
 

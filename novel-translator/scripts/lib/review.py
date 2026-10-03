@@ -689,7 +689,10 @@ def apply_fixes(project_dir: Path, findings: list[dict]) -> dict:
     every side. Returns
     {"applied": [{"source","field","kind","old","new"}],
      "skipped": [{"source","field","reason"}]}; saves only when something
-    applied. Never prints -- the CLI prints from the return value."""
+    applied. Silent except for one console line: assigning guide-only
+    'unit' to an entry that carries a translation prints the same
+    "[warn] glossary: ..." line the other assignment paths print at the
+    point of the write (the fix itself still applies)."""
     g = glossary.load(project_dir)
     eligible: list[tuple[str, str, str, str]] = []  # (source, field, kind, suggestion)
     for f in findings:
@@ -752,6 +755,13 @@ def apply_fixes(project_dir: Path, findings: list[dict]) -> dict:
         if value == old:
             skip("already set")  # re-run: suggested value is already live
             continue
+        if field == "category" and value == "unit":
+            # key[0] is the resolved entry source; the advisory matches the
+            # new-term/merge paths' line for the same assignment.
+            text = glossary.unit_translation_warning(
+                key[0], entry.get("translation"))
+            if text:
+                print(f"[warn] {text}")
         entry[field] = value  # mutate in place; keep every other field
         applied.append({"source": source, "field": field, "kind": kind,
                         "old": old, "new": value})

@@ -88,7 +88,7 @@ actually changed:
 | Action | Commit subject |
 |---|---|
 | fresh `init` | `init: scaffold project`, then `init: backfill and seed` |
-| `init --force` over an existing repository (history is kept) | `init: reinitialize project` (twice: the scaffold, then the backfill/seed stage) |
+| `init --force` over an existing repository (history is kept) | `init: reinitialize project`, then `init: reseed after reinitialize` |
 | `sync` that changed anything | `sync: rescan source` |
 | finished chapter — `translate` and `retry`; skipped chapters commit nothing | `translate: chapter NNNN (translated)` / `translate: chapter NNNN (needs-review)` |
 | `mark` | `mark: <file> -> <status>[, ...]` |
@@ -304,7 +304,7 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
 `in-progress` is a real status but only the pipeline writes it — `mark`
 refuses to. Status updates after ASSEMBLE are best-effort: the write
 retries through Windows file-lock contention with exponential backoff
-(~3.1s in total) and on exhaustion prints
+(~6.3s in total) and on exhaustion prints
 `[warn] manifest update failed for <file>: <reason> - chapter file is
 written; status stays in-progress`, leaving the status `in-progress`.
 
@@ -340,8 +340,9 @@ written; status stays in-progress`, leaving the status `in-progress`.
   counting pure noise, and emitting no signals also puts them beyond
   auto-cleanup retirement. Assigning `unit` to an entry with a non-empty
   translation warns (`[warn] glossary: '<source>' has a translation but
-  category 'unit' (guide-only: balance checks skip it)`) — from model
-  proposals and `glossary set` alike. An entry with no `translation` yet
+  category 'unit' (guide-only: balance checks skip it)`) — from every
+  assignment path: model proposals, glossary-merge responses, `glossary
+  set`, and review's in-review `--fix` (apply_fixes) alike. An entry with no `translation` yet
   (a minimal
   hand-added stub) is skipped too — without a canonical rendering there is
   nothing to count. The check is FULLY
@@ -564,15 +565,28 @@ replace` / `set --translation` whose suggested value still contains
 source-script characters for a CJK-source entry is skipped in-process
 (console: `[review fix] skipped [N]: suggestion not in target language`)
 and counted as needing a decision — the same guard `review glossary
---fix` applies to its own fixes. A `- Command:` bullet carrying
+--fix` applies to its own fixes. A hand-written `glossary set` command
+whose `--category` value is outside the category vocabulary is skipped
+the same way, before any subprocess runs (console: `[review fix]
+skipped [N]: unknown category '<value>' (must be one of: place, person,
+org, skill, technique, level, state, item, honorific, unit, other)
+(<command line>)`) — the vocabulary check is glossary-independent, so it
+also fires when glossary.json is unreadable. A `- Command:` bullet carrying
 `--project` (as `--project X` or `--project=X`) is likewise never run:
 the executor prepends its own `--project`, and a hand-added one would
 silently retarget the command (console: `[review fix] skipped [N]:
-command overrides --project`), counted the same way. Two commands
-targeting the same glossary entry with the same verb+target conflict
-(where a `glossary set` verb is its edited field, so two `set` commands
-editing different fields of one entry both run) —
-the first one queued wins, later ones are skipped (console:
+command overrides --project`), counted the same way. Conflicts are keyed
+per (field, resolved source), not per verb: `replace` edits the
+translation and shares `set --translation`'s key, so the two collide —
+two commands writing one field of one entry is the exact pair that
+double-applies (the second rewriting every chapter back); a multi-field
+`set --translation X --definition Y` occupies BOTH field keys; sources
+resolve through glossary.find(), so a command naming a variant and one
+naming the canonical source collide; `merge` keys the resolved
+(`--keep`, `--remove`) pair — one report legitimately emits two merges
+into one keeper — and `retire` keys the resolved source. A later command
+conflicting on ANY of a queued command's keys is skipped whole — the
+first one queued wins, later ones are skipped (console:
 `[review fix] skipped [N]: conflicting command for '<source>' (already
 queued)`). Before running anything, `review fix` compares the report's
 `glossary_digest` frontmatter against the live glossary.json; a mismatch
@@ -1067,7 +1081,16 @@ build or reader never observes a half-written epub.
 
 During `translate`/`retry`, `build-epub` also runs automatically after every
 chapter reaches `translated`: per-chapter rebuilds are serialized (with a
-guaranteed final build at batch end; a stalled build is killed after 360s)
+guaranteed final build at batch end; a stalled build is killed after 360s —
+the kill takes the builder's whole process tree, which reaches the docker
+CLI and its children, but the daemon-side epubcheck container is not the
+builder's child and may run to completion, docker `--rm` reaps it; a kill
+that itself fails, or a builder that survives the kill, is warned about,
+never raised — `[warn] epub auto-build: failed to kill builder (taskkill:
+<error>) - it may still be running` / `[warn] epub auto-build builder
+survived the kill - it may still be running` — and a confirmed kill sweeps
+the dead build's pid-scoped `export/*.epub.<pid>.tmp` sibling with
+`[warn] removed N stale epub temp file(s) left by the killed build`)
 and failures are warnings only (output in `logs/epub-build.log`), so
 `export/` always holds a current epub; disable with `auto_build_epub:
 false`.
@@ -1157,15 +1180,25 @@ robust extraction as fallback:
   preparation, before TRANSLATE — the title is carried by the frontmatter
   `title` field instead.
 - GLOSSARY_EXPAND → `{"terms": [{"source", "variants": [str], "translation", "definition", "category"}]}` —
-  a proposal whose source is contained in a known term's source, or contains
-  it, with the same translation (nicknames/short forms) is absorbed as a
-  variant of the known entry, never a separate entry. Brand-new-term
-  proposals then pass a client-side significance gate: each is counted
-  across the whole source corpus (all `source/Chapter_*.md` bodies joined)
-  and added only at >= `min_term_occurrences` occurrences (default 3; 0
-  disables the gate, and an unreadable corpus fails it open) — updates,
-  conflict-merges, and variant absorption of entries already in the
-  glossary are never gated; the model output schema itself is unchanged.
+  every proposal whose source does not match an existing entry (by source
+  or variant) passes the client-side significance gate FIRST: its source
+  (plus its proposed variants) is counted across the whole source corpus
+  (all `source/Chapter_*.md` bodies joined) and it is dropped below
+  `min_term_occurrences` occurrences (default 3; 0 disables the gate, and
+  an unreadable corpus fails it open) with `[glossary] skip '<src>' - <N>
+  occurrence(s) across the novel (min <M>)`. Only gate-passing proposals
+  reach the nickname rule: a proposal whose source is contained in a known
+  term's source, or contains it, with the same translation
+  (nicknames/short forms) is absorbed as a variant of the known entry,
+  never a separate entry — so an absorbed nickname is novel-wide
+  significant too. A re-proposal whose source matches an existing entry is
+  never gated on that source, and real merges of a matched entry stay
+  ungated — but any NEW variant the re-proposal carries is counted
+  individually across the same corpus and gated like a brand-new term,
+  dropped below the floor with `[glossary] skip variant '<v>' - <N>
+  occurrence(s) across the novel (min <M>)`; already-present variants
+  being restated are never re-gated. The model output schema itself is
+  unchanged.
   Category handling end to end: the model is offered the glossary
   categories minus `unit` in `glossary_expand.md`'s enum (units come
   from catalogues, not proposals); a proposal carrying any KNOWN

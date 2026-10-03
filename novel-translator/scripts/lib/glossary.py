@@ -27,11 +27,26 @@ changes.
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from lib import balance, project
 
 CATEGORIES = ("place", "person", "org", "skill", "technique", "level",
               "state", "item", "honorific", "unit", "other")
+
+
+def unit_translation_warning(source: str, translation: Any) -> str | None:
+    """The [warn] body for assigning guide-only 'unit' to an entry that
+    carries a translation, or None when the assignment is coherent.
+
+    balance.check skips the category entirely, so a stored translation on a
+    'unit' entry would never be counted or enforced -- every assignment path
+    (model proposal, merge, `glossary set`, review apply_fixes) says so
+    instead of storing it silently."""
+    if str(translation or "").strip():
+        return (f"glossary: '{source}' has a translation but "
+                "category 'unit' (guide-only: balance checks skip it)")
+    return None
 
 
 def empty() -> dict:

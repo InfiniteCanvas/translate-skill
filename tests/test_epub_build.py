@@ -15,9 +15,14 @@ with skip_check=True (no docker, no epubcheck):
 - os.replace racing an open reader (Windows PermissionError) is retried
   with exponential backoff: two failed swaps followed by a success still
   produce the final epub, while a replace that never succeeds re-raises
-  after six attempts (0.1s..1.6s backoff) with the tmp cleaned up;
-- docker infrastructure failures (exit 125, daemon down, image missing)
-  read as "could not run" (ok=None), never as a validation failure;
+  after seven attempts (0.1s..3.2s backoff) with the tmp cleaned up;
+- docker infrastructure failures (exit 125 or a known exit-1 pattern:
+  daemon down, image missing, daemon-socket permission denied, platform
+  manifest mismatch, credential-helper failure, pull rate limit) read as
+  "could not run" (ok=None), never as a validation failure -- while an
+  epubcheck-side "permission denied" finding still reads as a validation
+  failure, and the fake docker run records its kwargs so the round-2
+  hardening (stdin=DEVNULL, timeout=300) stays pinned;
 - a covers/cover.jpg fixture is embedded into the epub (the written zip
   carries EPUB/cover.jpg with the exact source bytes), while a project
   without covers/ embeds no cover;
@@ -224,13 +229,13 @@ def case_3_replace_retry() -> None:
     """os.replace racing an open reader (Windows PermissionError) is
     retried with exponential backoff: two busy failures then a success
     still land the epub with no tmp left; a replace that never succeeds
-    re-raises after six attempts (0.1s..1.6s backoff) with the tmp cleaned
-    up and no final file. The os attribute on BOTH the epub module (tmp
-    naming) and the project module (the shared _replace_with_retry resolves
-    os.replace there) is swapped for a shim (getpid delegates, replace is
-    scripted), and project time for a sleep recorder, so the retry schedule
-    is pinned without real sleeping -- the real stdlib modules are never
-    touched."""
+    re-raises after seven attempts (0.1s..3.2s backoff) with the tmp
+    cleaned up and no final file. The os attribute on BOTH the epub module
+    (tmp naming) and the project module (the shared _replace_with_retry
+    resolves os.replace there) is swapped for a shim (getpid delegates,
+    replace is scripted), and project time for a sleep recorder, so the
+    retry schedule is pinned without real sleeping -- the real stdlib
+    modules are never touched."""
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td)
         _export, final = export_paths(root)
@@ -287,10 +292,10 @@ def case_3_replace_retry() -> None:
             P.time = orig_time
         check("3d retry: a never-free destination re-raises PermissionError",
               isinstance(exc, PermissionError), f"exc={exc!r}")
-        check("3e retry: six attempts before giving up",
-              attempts["n"] == 6, f"attempts={attempts['n']}")
-        check("3f retry: full backoff schedule 0.1s..1.6s",
-              sleeps == [0.1, 0.2, 0.4, 0.8, 1.6], f"sleeps={sleeps!r}")
+        check("3e retry: seven attempts before giving up",
+              attempts["n"] == 7, f"attempts={attempts['n']}")
+        check("3f retry: full backoff schedule 0.1s..3.2s",
+              sleeps == [0.1, 0.2, 0.4, 0.8, 1.6, 3.2], f"sleeps={sleeps!r}")
         check("3g retry: no final epub and no tmp sibling left",
               not final.exists()
               and list(final.parent.glob("*.tmp")) == [],
@@ -303,7 +308,8 @@ def case_4_docker_infra_tri_state() -> None:
     exit 125 and the daemon-down / image-missing / connection errors
     (case-insensitively) and nothing else, and run_epubcheck -- with the
     epub module's subprocess swapped for a scripted fake, per the file's
-    attribute-swap convention -- maps exit 125 and an 'error during connect'
+    attribute-swap convention (the fake records the run kwargs, pinning the
+    round-2 hardening) -- maps exit 125 and an 'error during connect'
     exit 1 to (None, output) while a genuine validation failure stays
     (False, output) and exit 0 stays (True, output)."""
     pairs = [
@@ -326,6 +332,19 @@ def case_4_docker_infra_tri_state() -> None:
             "image", True),
         (1, "dial tcp: lookup epubcheck on host: no such host", True),
         (1, "manifest for epubcheck:1.0 not found: manifest unknown", True),
+        # Proven real exit-1 infra failures the original needle set missed:
+        # daemon-socket permission denial, platform manifest mismatch,
+        # credential-helper failure, pull rate limit.
+        (1, "docker: permission denied while trying to connect to the "
+            "docker daemon socket at unix:///var/run/docker.sock", True),
+        (1, "docker: no matching manifest for windows/amd64 in the "
+            "manifest list entries", True),
+        (1, "error getting credentials - err: exec: "
+            "\"docker-credential-desktop\": executable file not found", True),
+        (1, "toomanyrequests: You have reached your pull rate limit", True),
+        # An epubcheck-side "denied" finding must not read as docker infra
+        # (near-collision with the daemon-socket needle).
+        (1, "ERROR: permission denied to write output file", False),
     ]
     for i, (rc, output, expected) in enumerate(pairs):
         got = E._docker_infra_failure(rc, output)
@@ -334,8 +353,11 @@ def case_4_docker_infra_tri_state() -> None:
 
     def run_with(rc: int, stdout: str, stderr: str):
         orig_subprocess = E.subprocess
+        recorded: dict = {}
 
         def fake_run(cmd, **kwargs):
+            recorded["cmd"] = cmd
+            recorded["kwargs"] = kwargs
             return SimpleNamespace(returncode=rc, stdout=stdout, stderr=stderr)
 
         E.subprocess = SimpleNamespace(
@@ -345,25 +367,32 @@ def case_4_docker_infra_tri_state() -> None:
             DEVNULL=subprocess.DEVNULL,
         )
         try:
-            return E.run_epubcheck(Path("nowhere") / "book.epub")
+            ok, out = E.run_epubcheck(Path("nowhere") / "book.epub")
         finally:
             E.subprocess = orig_subprocess
+        return ok, out, recorded
 
-    ok, out = run_with(125, "docker: Error response from daemon.", "")
+    ok, out, recorded = run_with(125, "docker: Error response from daemon.", "")
     check("4b epubcheck: exit 125 -> (None, output)",
           ok is None and out == "docker: Error response from daemon.",
           f"ok={ok!r} out={out!r}")
-    ok, out = run_with(1, "", "error during connect: daemon down")
+    ok, out, _ = run_with(1, "", "error during connect: daemon down")
     check("4c epubcheck: connect-error exit 1 -> (None, output)",
           ok is None and out == "error during connect: daemon down",
           f"ok={ok!r} out={out!r}")
-    ok, out = run_with(1, "ERROR ITunes: assets not present in the OPF", "")
+    ok, out, _ = run_with(1, "ERROR ITunes: assets not present in the OPF", "")
     check("4d epubcheck: real validation failure stays (False, output)",
           ok is False and "ERROR ITunes" in out, f"ok={ok!r} out={out!r}")
-    ok, out = run_with(0, "No errors or warnings detected", "")
+    ok, out, _ = run_with(0, "No errors or warnings detected", "")
     check("4e epubcheck: exit 0 stays (True, output)",
           ok is True and out == "No errors or warnings detected",
           f"ok={ok!r} out={out!r}")
+    check("4f epubcheck: docker run stdin=DEVNULL",
+          recorded["kwargs"].get("stdin") is subprocess.DEVNULL,
+          f"kwargs={recorded['kwargs']!r}")
+    check("4g epubcheck: docker run timeout=300",
+          recorded["kwargs"].get("timeout") == 300,
+          f"kwargs={recorded['kwargs']!r}")
 
 
 def make_autobuild_project(td: str) -> Path:

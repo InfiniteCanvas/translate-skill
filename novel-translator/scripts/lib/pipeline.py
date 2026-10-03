@@ -470,10 +470,13 @@ def _apply_glossary_proposal(
     Every proposal whose source does not match an existing entry -- nickname
     absorption included -- is gated on novel-wide significance: when
     min_occurrences > 0 it is added (or absorbed as a variant) only if the
-    term occurs at least that many times in `corpus`. Re-proposals of an
-    exact existing source and real merges of a matched entry are never
-    gated. Raises on malformed proposals or merge failures; callers treat
-    those as non-fatal and skip the proposal.
+    term occurs at least that many times in `corpus`. The source of a
+    matched entry is never re-gated and real merges of a matched entry stay
+    ungated, but any NEW variant a re-proposal carries is gated like a
+    brand-new term (same corpus, same threshold), so a one-occurrence
+    string can never become a permanently matchable variant through the
+    back door. Raises on malformed proposals or merge failures; callers
+    treat those as non-fatal and skip the proposal.
     """
     if not isinstance(proposal, dict):
         raise ValueError(f"proposal is {type(proposal).__name__}, expected an object")
@@ -537,10 +540,7 @@ def _apply_glossary_proposal(
             # A 'unit' entry is a rendering guide only: balance.check skips
             # the category entirely, so a stored translation would never be
             # counted or enforced -- say so instead of storing it silently.
-            print(
-                f"{tag} [warn] glossary: '{src}' has a translation but "
-                "category 'unit' (guide-only: balance checks skip it)"
-            )
+            print(f"{tag} [warn] {glossary.unit_translation_warning(src, tr)}")
         glossary.upsert(
             g,
             {
@@ -557,8 +557,30 @@ def _apply_glossary_proposal(
         return
 
     # Newly proposed variants belong on the existing entry regardless of
-    # whether the translation matches.
-    union_variants(existing, variants)
+    # whether the translation matches -- but a NEW variant (not already on
+    # the entry, not the source itself) is gated exactly like a brand-new
+    # term, so a one-occurrence string can never become a permanently
+    # matchable variant through the back door.
+    addable = variants
+    if min_occurrences > 0:
+        current = [v for v in (existing.get("variants") or [])
+                   if isinstance(v, str) and v]
+        source_str = str(existing.get("source", ""))
+        addable = []
+        for v in variants:
+            if v in current or v == source_str:
+                # Already-present variants are never re-gated (a re-proposal
+                # restating one stays a silent no-op, mirroring
+                # union_variants' dedupe) and a variant equal to the entry's
+                # source is dropped by union_variants anyway.
+                addable.append(v)
+                continue
+            seen = glossary.count_in_text({"source": v, "variants": []}, corpus)
+            if seen < min_occurrences:
+                print(f"{tag} [glossary] skip variant '{v}' - {seen} occurrence(s) across the novel (min {min_occurrences})")
+            else:
+                addable.append(v)
+    union_variants(existing, addable)
 
     if str(existing.get("translation", "")).strip().lower() == tr.strip().lower():
         return  # already known under the same translation
@@ -604,6 +626,14 @@ def _apply_glossary_proposal(
             else:
                 updated[key] = new_value
         # absent (or garbage) values keep the existing entry's value
+
+    # Same guide-only advisory as the new-term path, applied ONLY when the
+    # merge actually lands: a 'unit' entry with a surviving translation
+    # would never be counted or enforced by balance.check.
+    if updated.get("category") == "unit":
+        text = glossary.unit_translation_warning(src, updated.get("translation"))
+        if text:
+            print(f"{tag} [warn] {text}")
 
     terms = g.setdefault("terms", [])
     for idx, term in enumerate(terms):

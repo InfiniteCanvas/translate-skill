@@ -63,6 +63,26 @@ variant that resolves to it -- is skipped in-process with its own
 skipped_conflict counter and an exact console line, while different
 sources never conflict.
 
+The multi-field cases extend the conflict guard to EVERY field a command
+writes: _conflict_keys returns the set of edited-field keys (replace ->
+set:translation, every present `set` field flag -> its own key, merge ->
+the resolved pair, retire -> the source), so `set --translation B
+--definition D` occupies both keys -- it cannot slip past a queued
+translation edit and rewrite the field back, and once it runs a later set
+on either field is conflict-skipped (the whole command skips: none of its
+fields apply). conflict_keys() is the public dry-run wrapper: the full
+key set, empty for an unreadable glossary or an untracked verb.
+
+The category cases pin static_skip_reason's --category vocabulary check:
+parse_report's explicit mode only checks the verb allowlist, so a
+hand-edited `glossary set --category 'TOTAL GARBAGE'` bullet used to
+reach the child, exit 2 (counting failed, aborting every later finding
+under --exit-on-error). It is now skipped in-process (skipped_invalid,
+never executed) while a following valid spec still runs, and the check is
+glossary-independent -- it fires even when glossary.json fails to parse
+(invalid_translation_reason needs a readable glossary; the category check
+does not).
+
 The staleness case pins fix.report_is_stale against the writer's
 glossary_digest frontmatter anchor (sha256 of glossary.json's bytes at
 write time, first 12 hex chars): a fresh report is not stale, any later
@@ -744,6 +764,109 @@ def case_12_conflict_guard() -> None:
               and entry.get("category") == "skill",
               f"result={result} entry={entry}")
 
+    # F: a multi-field `set` occupies EVERY field key it writes -- keying
+    # only the first present flag let it slip past a queued translation
+    # edit and rewrite the field back (the exact double-apply the guard
+    # exists to stop). The whole command is skipped: the definition a
+    # conflict-doomed command carries is not applied either.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "灵根", "translation": "spirit root",
+             "definition": "the root of spirit"},
+        ]})
+        (root / "chapters.json").write_text("[]\n", encoding="utf-8")
+        lines = [
+            "- Command: glossary replace --source '灵根' "
+            "--translation 'spiritual root'",
+            "- Command: glossary set --source '灵根' "
+            "--translation 'B' --definition 'D'",
+        ]
+        report = root / "review-report.md"
+        report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        specs, _count = fix.parse_report(report)
+        result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        entry = glossary.load(root)["terms"][0]
+        check("12k conflict-key: multi-field set collides on the queued "
+              "translation field (replace applied, set skipped)",
+              result["applied"] == 1 and result["skipped_conflict"] == 1
+              and result["failed"] == 0,
+              f"result={result}")
+        check("12l conflict-key: the skipped set applied NEITHER field "
+              "(translation stays the replace's, no definition written)",
+              entry.get("translation") == "spiritual root"
+              and entry.get("definition") == "the root of spirit",
+              f"entry={entry}")
+
+    # G: ordering variant -- the multi-field set runs FIRST and claims both
+    # keys, so a later set on ONE of them is conflict-skipped too.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "灵根", "translation": "spirit root",
+             "definition": "the root of spirit"},
+        ]})
+        (root / "chapters.json").write_text("[]\n", encoding="utf-8")
+        lines = [
+            "- Command: glossary set --source '灵根' "
+            "--translation 'B' --definition 'D'",
+            "- Command: glossary set --source '灵根' --definition 'Z'",
+        ]
+        report = root / "review-report.md"
+        report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        specs, _count = fix.parse_report(report)
+        result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        entry = glossary.load(root)["terms"][0]
+        check("12m conflict-key: multi-field set first claims both fields -- "
+              "a later set on one of them is skipped, disk keeps the first",
+              result["applied"] == 1 and result["skipped_conflict"] == 1
+              and entry.get("translation") == "B"
+              and entry.get("definition") == "D",
+              f"result={result} entry={entry}")
+
+    # H: control -- one multi-field set alone writes every field it names
+    # (the guard collides commands, never the fields within one command).
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "灵根", "translation": "spirit root",
+             "definition": "the root of spirit"},
+        ]})
+        (root / "chapters.json").write_text("[]\n", encoding="utf-8")
+        report = root / "review-report.md"
+        report.write_text(
+            "- Command: glossary set --source '灵根' "
+            "--translation 'B' --definition 'D'\n",
+            encoding="utf-8",
+        )
+        specs, _count = fix.parse_report(report)
+        result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        entry = glossary.load(root)["terms"][0]
+        check("12n conflict-key: a lone multi-field set applies BOTH fields",
+              result["applied"] == 1 and result["skipped_conflict"] == 0
+              and entry.get("translation") == "B"
+              and entry.get("definition") == "D",
+              f"result={result} entry={entry}")
+
+    # I: conflict_keys() is the public dry-run wrapper -- the full
+    # per-written-field key set, empty when the glossary is unreadable or
+    # the command writes nothing the guard tracks.
+    g = make_glossary()
+    check("12o conflict_keys: a multi-field set yields one key per written "
+          "field, sharing the resolved source",
+          fix.conflict_keys(
+              ["glossary", "set", "--source", "灵根",
+               "--translation", "B", "--definition", "D"], g)
+          == {("set:translation", "灵根"), ("set:definition", "灵根")},
+          "")
+    check("12p conflict_keys: empty for an unreadable glossary (None) and "
+          "an untracked verb",
+          fix.conflict_keys(
+              ["glossary", "set", "--source", "灵根", "--translation", "B"],
+              None) == set()
+          and fix.conflict_keys(["glossary", "search", "灵根"], g) == set(),
+          "")
+
 
 def case_13_report_staleness() -> None:
     """report_is_stale + the writer's glossary_digest frontmatter anchor
@@ -1009,6 +1132,127 @@ def case_15_staleness_cli_refusal() -> None:
               f"terms={g['terms']}")
 
 
+def case_16_category_guard() -> None:
+    """static_skip_reason's --category vocabulary check closes the
+    hand-edit vector: parse_report's explicit mode only checks the verb
+    allowlist, so a hand-edited off-vocabulary `glossary set --category`
+    bullet used to reach the child, exit 2 (counting failed -- aborting
+    every later finding under --exit-on-error). It is now skipped
+    in-process (skipped_invalid, never executed -- the entry on disk stays
+    untouched) while a following valid spec still runs, and the check is
+    glossary-independent: it also fires when glossary.json fails to parse,
+    where invalid_translation_reason has nothing readable to check."""
+    # A: the category-invalid spec first, a valid spec after it -- the run
+    #    must not abort and nothing may count as failed.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "灵根", "variants": [], "translation": "spirit root"},
+            {"source": "Excalibur", "variants": [], "translation": "the sword"},
+        ]})
+        report = root / "review-report.md"
+        report.write_text(
+            "- Command: glossary set --source '灵根' "
+            "--category 'TOTAL GARBAGE' --translation 'ok'\n"
+            "- Command: glossary set --source 'Excalibur' "
+            "--definition 'the true sword'\n",
+            encoding="utf-8",
+        )
+        specs, _count = fix.parse_report(report)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        out = buf.getvalue()
+        check("16a category: the off-vocabulary bullet counts under "
+              "skipped_invalid",
+              result["skipped_invalid"] == 1
+              and result["skipped_conflict"] == 0, f"result={result}")
+        check("16b category: never executed, nothing failed, the valid "
+              "spec after it still ran (no abort)",
+              result["specs_run"] == 1 and result["failed"] == 0
+              and result["applied"] == 1, f"result={result}")
+        check("16c category: exact skip reason with the vocabulary hint",
+              "[review fix] skipped [1]: unknown category 'TOTAL GARBAGE' "
+              "(must be one of:" in out, f"out={out!r}")
+        terms = {e["source"]: e for e in glossary.load(root)["terms"]}
+        check("16d category: 灵根 untouched on disk (neither the category "
+              "nor the translation landed), the valid definition applied",
+              terms["灵根"].get("category") is None
+              and terms["灵根"].get("translation") == "spirit root"
+              and terms["Excalibur"].get("definition") == "the true sword",
+              f"terms={terms}")
+
+    # B: the category check is glossary-independent -- glossary.json that
+    #    fails to parse leaves g=None (the translation guard defers to the
+    #    subprocess there) and the invalid command is STILL skipped.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "glossary.json").write_text("[1, 2]\n", encoding="utf-8")
+        report = root / "review-report.md"
+        report.write_text(
+            "- Command: glossary set --source '灵根' "
+            "--category 'TOTAL GARBAGE' --translation 'ok'\n",
+            encoding="utf-8",
+        )
+        specs, _count = fix.parse_report(report)
+        result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        check("16e category: fires with an unreadable glossary too "
+              "(skipped_invalid, never executed, nothing failed)",
+              result["skipped_invalid"] == 1 and result["specs_run"] == 0
+              and result["failed"] == 0, f"result={result}")
+        check("16f category: the parse-broken glossary.json byte-unchanged",
+              (root / "glossary.json").read_text(encoding="utf-8")
+              == "[1, 2]\n", "")
+
+
+def case_17_dryrun_skip_parity() -> None:
+    """review fix --dry-run must annotate every spec the real run would
+    skip, so the preview can never list a doomed command as runnable: the
+    --project smuggle guard (run_commands refuses such specs before any
+    other check) and the conflict guard (a later command conflicting on a
+    claimed field key) both surface as SKIP lines, and the summary counts
+    them under 'would be skipped (invalid or conflicting)'."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "灵根", "variants": [], "translation": "spirit root"},
+        ]})
+        (root / "chapters.json").write_text("[]\n", encoding="utf-8")
+        before = (root / "glossary.json").read_bytes()
+        report = review.write_report(
+            root, findings=[], terms=[], applied=[], skipped=[],
+            ran_fix=False, batches=0, batch_errors=[],
+            cfg={"source_lang": "zh", "target_lang": "en"},
+        )
+        with report.open("a", encoding="utf-8") as fh:
+            fh.write("- Command: glossary replace --source '灵根' "
+                     "--translation 'x' --project /elsewhere\n")
+            fh.write("- Command: glossary replace --source '灵根' "
+                     "--translation 'first'\n")
+            fh.write("- Command: glossary set --source '灵根' "
+                     "--translation 'second' --definition 'D.'\n")
+
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPTS / "translate.py"),
+             "review", "fix", "--project", str(root), "--dry-run"],
+            capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace", timeout=300,
+        )
+        check("17a dry-run parity: exits 0", proc.returncode == 0,
+              f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
+        check("17b dry-run parity: the --project smuggle is annotated SKIP",
+              "SKIP (command overrides --project)" in proc.stdout,
+              f"out={proc.stdout!r}")
+        check("17c dry-run parity: the conflicting command is annotated SKIP",
+              "SKIP (conflicting command for '灵根' (already queued))"
+              in proc.stdout, f"out={proc.stdout!r}")
+        check("17d dry-run parity: summary counts both skips",
+              "3 command(s), 2 would be skipped (invalid or conflicting)"
+              in proc.stdout, f"out={proc.stdout!r}")
+        check("17e dry-run parity: nothing executed (glossary unchanged)",
+              (root / "glossary.json").read_bytes() == before, "")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -1029,6 +1273,8 @@ def main() -> int:
     case_13_report_staleness()
     case_14_subprocess_timeout()
     case_15_staleness_cli_refusal()
+    case_16_category_guard()
+    case_17_dryrun_skip_parity()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

@@ -5,7 +5,9 @@ build child's slowest step, epubcheck, self-bounds at 300s, so a child
 still running past that plus a margin is hung for another reason). On
 TimeoutExpired the child AND its process subtree are killed (the tree kill
 -- taskkill /T on Windows, killpg on POSIX -- so the build child's docker
-grandchild cannot outlive the reaper) and the stall is reported with the
+CLI grandchild cannot outlive the reaper; the daemon-side epubcheck
+container is NOT our child -- docker --rm reaps it when it exits) and the
+stall is reported with the
 exact "[warn] epub auto-build stalled, killed after Ns (after <reason>)"
 line; a child that exited 0 reports "[epub-auto] build ok", a non-zero
 exit the failed warn, and a still-running child is left alone by the
@@ -14,6 +16,19 @@ and, once the cumulative wait crosses _FINALIZE_WARN_S, reports exactly
 once "[warn] epub auto-build finalize waited Ns for the builder to exit"
 while continuing to the existing bound. After every reap the scheduler is
 idle again (_proc cleared).
+
+The kill path itself is covered hermetically, with the kill tools swapped
+for fakes (no real taskkill/killpg invoked directly): a kill tool that
+fails (taskkill missing, killpg refusing) warns instead of raising --
+abort() runs inside the pipeline's KeyboardInterrupt handler and must
+never turn the clean Ctrl-C (exit 130) into a traceback; a builder that
+survives the kill (the post-kill wait keeps timing out) prints the
+survived warn and still reports the interrupt/stall; on a confirmed death
+the killed child's pid-named export/<name>.epub.<pid>.tmp is swept (a tmp
+with any other pid suffix is never touched) while a survivor's tmp is
+left alone; and the round-2 subprocess-hardening kwargs are pinned
+(taskkill with capture_output=True, stdin=DEVNULL, timeout=60; POSIX
+killpg SIGKILL to the child's own group).
 
 Hermetic: no docker, no epubcheck, no real build script. The scheduler's
 _proc is pointed directly at plain `sys.executable -c` children (a
@@ -40,10 +55,12 @@ from __future__ import annotations
 
 import contextlib
 import io
+import signal
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 # lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
@@ -197,13 +214,15 @@ class FakeProc:
     """A Popen stand-in for the finalize wait loop: the first `timeouts`
     wait() calls raise TimeoutExpired, then it exits 0. Records the wait
     timeouts it saw and whether a kill was requested; after a kill it
-    reports exit 1 (what a force-killed child would return)."""
+    reports exit 1 (what a force-killed child would return). Carries a fake
+    pid for _kill_and_reap's tmp-sweep glob."""
 
     def __init__(self, timeouts: int):
         self.remaining = timeouts
         self.returncode = None
         self.killed = False
         self.timeouts: list[float] = []
+        self.pid = 424242
 
     def wait(self, timeout=None):
         if self.killed:
@@ -280,8 +299,13 @@ def case_5_finalize_stall_kill() -> None:
         sched._proc = fake
         sched._reason = "translate Chapter_0003.md"
         killed: list[object] = []
+
+        def fake_tree_kill(proc):
+            killed.append(proc)
+            proc.killed = True  # the tree kill "worked": the child reports dead
+
         orig_kill = autobuild._kill_tree
-        autobuild._kill_tree = killed.append
+        autobuild._kill_tree = fake_tree_kill
         orig_timeout, orig_poll = autobuild._REAP_TIMEOUT, autobuild._FINALIZE_POLL_S
         autobuild._REAP_TIMEOUT = 0.3
         autobuild._FINALIZE_POLL_S = 0.1
@@ -306,6 +330,257 @@ def case_5_finalize_stall_kill() -> None:
               f"proc={sched._proc!r} reason={sched._reason!r}")
 
 
+def case_6_kill_tool_failure() -> None:
+    """abort() with a failing kill tool, hermetic: the tool raising
+    (taskkill missing from PATH on win32, killpg refusing on POSIX) prints
+    the exact "failed to kill builder" warn AND the "[warn] epub auto-build
+    interrupted" line, in that order, and returns without raising -- abort
+    runs inside the pipeline's KeyboardInterrupt handler, and a raise here
+    would replace the clean Ctrl-C (exit 130) with a traceback.
+    _kill_tree's module-level tool binding (subprocess on win32, os on
+    POSIX) is swapped for a raiser per the file's attribute-swap
+    convention; the child is a fake that reports dead so the post-kill
+    wait never blocks."""
+    with tempfile.TemporaryDirectory() as td:
+        sched = make_scheduler(td)
+        fake = FakeProc(timeouts=0)
+        sched._proc = fake
+        sched._reason = "translate Chapter_0004.md"
+        if sys.platform == "win32":
+            orig_binding = autobuild.subprocess
+
+            def raise_run(*args, **kwargs):
+                raise FileNotFoundError(2, "taskkill not on PATH")
+
+            autobuild.subprocess = SimpleNamespace(
+                run=raise_run,
+                DEVNULL=orig_binding.DEVNULL,
+                TimeoutExpired=orig_binding.TimeoutExpired,
+            )
+            tool = "taskkill"
+        else:
+            orig_binding = autobuild.os
+
+            def raise_getpgid(pid):
+                raise PermissionError(1, "Operation not permitted")
+
+            autobuild.os = SimpleNamespace(getpgid=raise_getpgid)
+            tool = "killpg"
+        try:
+            _r, out, exc = capture(sched.abort)
+        finally:
+            if sys.platform == "win32":
+                autobuild.subprocess = orig_binding
+            else:
+                autobuild.os = orig_binding
+        warn = (f"[warn] epub auto-build: failed to kill builder "
+                f"({tool}: ")
+        check("6a kill-tool: abort returns without raising", exc is None,
+              f"exc={exc!r}")
+        check(f"6b kill-tool: exact kill-failed warn ({tool})",
+              warn in out, f"out={out!r}")
+        check("6c kill-tool: the interrupted warn still prints",
+              "[warn] epub auto-build interrupted" in out, f"out={out!r}")
+        check("6d kill-tool: the kill-failed warn precedes the interrupt",
+              0 <= out.index(warn) < out.index("[warn] epub auto-build "
+                                               "interrupted"),
+              f"out={out!r}")
+        check("6e kill-tool: scheduler idle again",
+              sched._proc is None and sched._reason == "",
+              f"proc={sched._proc!r} reason={sched._reason!r}")
+
+
+def case_7_survivor_abort() -> None:
+    """A builder that survives the kill (the post-kill wait keeps raising
+    TimeoutExpired): abort() prints the exact survived warn and still
+    prints the interrupted warn, clears _proc, and returns without
+    raising -- a kill that did not stick must be reported, not read as
+    done. _kill_tree is swapped for a recorder (no real taskkill/killpg
+    invoked) and the fake child never dies."""
+    with tempfile.TemporaryDirectory() as td:
+        sched = make_scheduler(td)
+        fake = FakeProc(timeouts=10 ** 9)  # never exits, even after a kill
+        sched._proc = fake
+        sched._reason = "translate Chapter_0005.md"
+        killed: list[object] = []
+        orig_kill = autobuild._kill_tree
+        autobuild._kill_tree = killed.append
+        try:
+            _r, out, exc = capture(sched.abort)
+        finally:
+            autobuild._kill_tree = orig_kill
+        check("7a survivor: abort returns without raising", exc is None,
+              f"exc={exc!r}")
+        check("7b survivor: the tree kill ran once on the child",
+              killed == [fake], f"killed={killed!r}")
+        check("7c survivor: exact survived warn",
+              "[warn] epub auto-build builder survived the kill - it may "
+              "still be running" in out, f"out={out!r}")
+        check("7d survivor: the interrupted warn still prints",
+              "[warn] epub auto-build interrupted" in out, f"out={out!r}")
+        check("7e survivor: _proc cleared despite the survivor",
+              sched._proc is None and sched._reason == "",
+              f"proc={sched._proc!r} reason={sched._reason!r}")
+        check("7f survivor: no tmp sweep on the survivor path",
+              "stale epub temp" not in out, f"out={out!r}")
+
+
+def case_8_stall_tmp_sweep() -> None:
+    """The stall arm's pid-scoped tmp sweep: with a planted
+    export/<name>.epub.<childpid>.tmp (the tmp a hard kill orphans, named
+    after the build child's pid per epub.py), the confirmed-dead kill
+    removes exactly that file, prints the exact removed-warn, and leaves a
+    tmp with a DIFFERENT pid suffix alone (it belongs to another process).
+    The stall warn itself is unchanged; the kill recorder marks the fake
+    dead so the sweep path runs."""
+    with tempfile.TemporaryDirectory() as td:
+        sched = make_scheduler(td)
+        fake = FakeProc(timeouts=10 ** 9)
+        sched._proc = fake
+        sched._reason = "translate Chapter_0006.md"
+        export = Path(td) / "export"
+        export.mkdir()
+        own = export / f"atomic.epub.{fake.pid}.tmp"
+        other = export / "atomic.epub.987654.tmp"
+        own.write_bytes(b"x")
+        other.write_bytes(b"x")
+        killed: list[object] = []
+
+        def fake_tree_kill(proc):
+            killed.append(proc)
+            proc.killed = True  # the tree kill "worked": the child reports dead
+
+        orig_kill = autobuild._kill_tree
+        autobuild._kill_tree = fake_tree_kill
+        orig_timeout, orig_poll = autobuild._REAP_TIMEOUT, autobuild._FINALIZE_POLL_S
+        autobuild._REAP_TIMEOUT = 0.3
+        autobuild._FINALIZE_POLL_S = 0.1
+        try:
+            _r, out, exc = capture(sched.finalize)
+        finally:
+            autobuild._kill_tree = orig_kill
+            autobuild._REAP_TIMEOUT = orig_timeout
+            autobuild._FINALIZE_POLL_S = orig_poll
+        check("8a stall-sweep: finalize returns without raising", exc is None,
+              f"exc={exc!r}")
+        check("8b stall-sweep: the killed child's own-pid tmp was removed",
+              not own.exists(), f"own exists={own.exists()}")
+        check("8c stall-sweep: a different-pid tmp is never touched",
+              other.exists(), f"other exists={other.exists()}")
+        check("8d stall-sweep: exact output (removed-warn then stall warn)",
+              out == "[warn] removed 1 stale epub temp file(s) left by the "
+                     "killed build\n"
+                     "[warn] epub auto-build stalled, killed after 0.3s "
+                     "(after translate Chapter_0006.md) - see "
+                     "logs/epub-build.log\n", f"out={out!r}")
+        check("8e stall-sweep: scheduler idle again",
+              sched._proc is None and sched._reason == "",
+              f"proc={sched._proc!r} reason={sched._reason!r}")
+
+
+def case_9_survivor_keeps_tmp() -> None:
+    """The wait-times-out path must NOT sweep: with the same planted
+    own-pid tmp as case 8 but a builder that survives the kill, the tmp
+    stays (the builder may still be writing through it) and no removed-warn
+    prints; the survived and stall warns still do. Same fakes as case 8,
+    minus the kill recorder marking the child dead."""
+    with tempfile.TemporaryDirectory() as td:
+        sched = make_scheduler(td)
+        fake = FakeProc(timeouts=10 ** 9)  # never exits, even after a kill
+        sched._proc = fake
+        sched._reason = "translate Chapter_0007.md"
+        export = Path(td) / "export"
+        export.mkdir()
+        own = export / f"atomic.epub.{fake.pid}.tmp"
+        own.write_bytes(b"x")
+        killed: list[object] = []
+        orig_kill = autobuild._kill_tree
+        autobuild._kill_tree = killed.append
+        orig_timeout, orig_poll = autobuild._REAP_TIMEOUT, autobuild._FINALIZE_POLL_S
+        autobuild._REAP_TIMEOUT = 0.3
+        autobuild._FINALIZE_POLL_S = 0.1
+        try:
+            _r, out, exc = capture(sched.finalize)
+        finally:
+            autobuild._kill_tree = orig_kill
+            autobuild._REAP_TIMEOUT = orig_timeout
+            autobuild._FINALIZE_POLL_S = orig_poll
+        check("9a no-sweep: finalize returns without raising", exc is None,
+              f"exc={exc!r}")
+        check("9b no-sweep: the planted own-pid tmp survives",
+              own.exists(), f"own exists={own.exists()}")
+        check("9c no-sweep: no removed-warn on the survivor path",
+              "stale epub temp" not in out, f"out={out!r}")
+        check("9d no-sweep: exact output (survived warn then stall warn)",
+              out == "[warn] epub auto-build builder survived the kill - "
+                     "it may still be running\n"
+                     "[warn] epub auto-build stalled, killed after 0.3s "
+                     "(after translate Chapter_0007.md) - see "
+                     "logs/epub-build.log\n", f"out={out!r}")
+        check("9e no-sweep: scheduler idle again",
+              sched._proc is None and sched._reason == "",
+              f"proc={sched._proc!r} reason={sched._reason!r}")
+
+
+def case_10_kill_tool_kwargs() -> None:
+    """The kill-tool invocation is pinned (round-2 subprocess hardening the
+    fakes used to substitute silently): the win32 taskkill runs with
+    capture_output=True, stdin=DEVNULL and timeout=60; the POSIX tree kill
+    is SIGKILL to the child's own process group. The module's subprocess/os
+    bindings are swapped for recorders, per the file's attribute-swap
+    convention."""
+    fake = FakeProc(timeouts=0)
+    if sys.platform == "win32":
+        calls: list[tuple] = []
+
+        def record_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        orig_binding = autobuild.subprocess
+        autobuild.subprocess = SimpleNamespace(
+            run=record_run,
+            DEVNULL=orig_binding.DEVNULL,
+            TimeoutExpired=orig_binding.TimeoutExpired,
+        )
+        try:
+            _r, _out, exc = capture(autobuild._kill_tree, fake)
+        finally:
+            autobuild.subprocess = orig_binding
+        kwargs = calls[0][1] if calls else {}
+        check("10a kill-kwargs: _kill_tree returns without raising",
+              exc is None, f"exc={exc!r}")
+        check("10b kill-kwargs: taskkill called once on the child's pid",
+              len(calls) == 1
+              and calls[0][0] == ["taskkill", "/PID", str(fake.pid), "/T", "/F"],
+              f"calls={calls!r}")
+        check("10c kill-kwargs: capture_output=True",
+              kwargs.get("capture_output") is True, f"kwargs={kwargs!r}")
+        check("10d kill-kwargs: stdin=DEVNULL",
+              kwargs.get("stdin") is subprocess.DEVNULL, f"kwargs={kwargs!r}")
+        check("10e kill-kwargs: timeout=60",
+              kwargs.get("timeout") == 60, f"kwargs={kwargs!r}")
+    else:
+        sigs: list[tuple[int, object]] = []
+
+        def record_killpg(pgid, sig):
+            sigs.append((pgid, sig))
+
+        orig_os = autobuild.os
+        autobuild.os = SimpleNamespace(
+            getpgid=lambda pid: pid + 1000,  # the child leads its own group
+            killpg=record_killpg,
+        )
+        try:
+            _r, _out, exc = capture(autobuild._kill_tree, fake)
+        finally:
+            autobuild.os = orig_os
+        check("10a kill-kwargs: _kill_tree returns without raising",
+              exc is None, f"exc={exc!r}")
+        check("10b kill-kwargs: killpg SIGKILLs the child's own group",
+              sigs == [(fake.pid + 1000, signal.SIGKILL)], f"sigs={sigs!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -316,6 +591,11 @@ def main() -> int:
     case_3_reap_branches()
     case_4_finalize_warn()
     case_5_finalize_stall_kill()
+    case_6_kill_tool_failure()
+    case_7_survivor_abort()
+    case_8_stall_tmp_sweep()
+    case_9_survivor_keeps_tmp()
+    case_10_kill_tool_kwargs()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

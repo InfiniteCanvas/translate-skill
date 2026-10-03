@@ -323,11 +323,14 @@ def _docker_infra_failure(returncode: int, output: str) -> bool:
     because the epub is invalid -- a good epub must read as 'could not run',
     never as a validation failure.
 
-    Exit 125 is docker's own infrastructure code. The needles cover the paths
-    that exit 1 instead: an unreachable daemon, a missing local image, and the
-    registry refusals docker reports as pull errors. epubcheck's own findings
-    (ERROR/FATAL lines about the epub) match none of them, so a real
-    validation failure still reads as one."""
+    Exit 125 is docker's own infrastructure code. The needles cover the COMMON
+    exit-1 infrastructure paths: an unreachable daemon (including daemon-socket
+    permission denials), a missing local image, platform manifest mismatches,
+    credential-helper failures, and the registry refusals/rate limits docker
+    reports as pull errors. epubcheck's own findings (ERROR/FATAL lines about
+    the epub) match none of them, so a real validation failure still reads as
+    one -- but the list is best-effort, not exhaustive: an unrecognized docker
+    failure can still read as a validation failure."""
     if returncode == 125:
         return True
     lowered = output.lower()
@@ -341,6 +344,10 @@ def _docker_infra_failure(returncode: int, output: str) -> bool:
             "could not select a version",
             "no such host",
             "not found: manifest unknown",
+            "permission denied while trying to connect to the docker daemon",
+            "no matching manifest for",
+            "error getting credentials",
+            "toomanyrequests",
         )
     )
 
@@ -348,9 +355,10 @@ def _docker_infra_failure(returncode: int, output: str) -> bool:
 def run_epubcheck(epub_path: Path) -> tuple[bool | None, str]:
     """Validate with the epubcheck docker image. Returns (ok, output); ok is
     None when epubcheck could not be run at all -- the docker binary missing,
-    the run timing out, or a docker infrastructure failure (exit 125, daemon
-    down, image missing), none of which says anything about the epub. Never
-    raises."""
+    the run timing out, or a recognized docker infrastructure failure (exit
+    125 or one of _docker_infra_failure's known exit-1 error patterns), none
+    of which says anything about the epub. An unrecognized docker failure can
+    still read as a validation failure (ok False). Never raises."""
     epub_path = Path(epub_path)
     cmd = [
         "docker",

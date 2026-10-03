@@ -286,6 +286,51 @@ def invalid_translation_reason(argv: list[str], g: dict) -> str | None:
     return None
 
 
+def _invalid_category_reason(argv: list[str]) -> str | None:
+    """Why this `glossary set` argv would exit 2 on an off-vocabulary
+    --category, else None.
+
+    parse_report's explicit mode only checks the verb allowlist, so a
+    hand-edited Command bullet can carry any category string -- the child
+    would reject it (glossary.py's CATEGORIES check), count as failed, and
+    under --exit-on-error abort every later finding. The model-driven path
+    (command_for_finding) already refuses off-vocabulary categories, so
+    only the hand-edit vector needs guarding. Mirrors glossary.py's
+    validation: case-sensitive membership, value stripped first. None for
+    other verbs (only `set` accepts --category), a missing flag, or a
+    blank value -- the subprocess reports those itself."""
+    if argv[:2] != ["glossary", "set"]:
+        return None
+    value = (_argv_value(argv, "--category") or "").strip()
+    if value and value not in glossary.CATEGORIES:
+        return (
+            f"unknown category '{value}' "
+            f"(must be one of: {', '.join(glossary.CATEGORIES)})"
+        )
+    return None
+
+
+def static_skip_reason(argv: list[str], g: dict | None) -> str | None:
+    """Static per-spec skip reason applied before any subprocess runs:
+    invalid_translation_reason (needs a readable glossary) plus the
+    --category vocabulary check (glossary-independent, so it also fires
+    when glossary.json is unreadable)."""
+    if g is not None:
+        reason = invalid_translation_reason(argv, g)
+        if reason is not None:
+            return reason
+    return _invalid_category_reason(argv)
+
+
+def conflict_keys(argv: list[str], g: dict | None) -> set[tuple]:
+    """Public view of _conflict_keys for dry-run listings: the resolved
+    key set of one command, or empty when the glossary is unreadable
+    (None) or the command writes nothing the conflict guard tracks."""
+    if g is None:
+        return set()
+    return _conflict_keys(argv, g)
+
+
 def _resolve_source(g: dict, value: str | None) -> str | None:
     """Canonical source for a user-supplied lookup value: the matched
     entry's source when glossary.find() resolves it (source or variants),
@@ -301,62 +346,63 @@ def _resolve_source(g: dict, value: str | None) -> str | None:
     return value
 
 
-# `glossary set` flags whose field edits the conflict guard tracks, in the
-# order the key picks the first present one. Variant/alt edits name their
-# own string and stay untracked.
+# `glossary set` flags whose field edits the conflict guard tracks -- every
+# present flag contributes its own key. Variant/alt edits name their own
+# string and stay untracked.
 _SET_FIELD_FLAGS = ("--definition", "--category", "--translation")
 
 
-def _conflict_key(argv: list[str], g: dict) -> tuple[str, str] | None:
-    """(edited field, resolved source) identity of one Command spec, or None
-    when the command has no glossary target the conflict guard tracks.
+def _conflict_keys(argv: list[str], g: dict) -> set[tuple]:
+    """(edited field, resolved source) identities of one Command spec -- the
+    SET of fields it writes, empty when the command has no glossary target
+    the conflict guard tracks.
 
-    The key names the FIELD a command writes, not the verb spelling it:
-    `replace` edits the translation, so it shares `set --translation`'s key and
-    the two collide -- two commands writing one field of one entry is the
-    exact pair that double-applies (the second rewriting every chapter back).
-    `set` picks the first of --definition/--category/--translation present, so
-    edits to different fields of one entry both run; variant/alt edits name
-    their own string and stay untracked. merge keys the resolved
+    Keys name the FIELDS a command writes, not the verb spelling it:
+    `replace` edits the translation, so it shares `set --translation`'s key
+    and the two collide -- two commands writing one field of one entry is
+    the exact pair that double-applies (the second rewriting every chapter
+    back). A multi-field `set` occupies EVERY field key it writes -- keying
+    only the first present flag let `set --translation B --definition D`
+    slip past a queued translation edit and rewrite the field back, so a
+    spec conflicts when ANY of its keys is already queued. Variant/alt
+    edits name their own string and stay untracked. merge keys the resolved
     (--keep, --remove) pair -- one report legitimately emits two merges into
     one keeper. retire keys the resolved source. Sources resolve through
     glossary.find() so a command naming a variant and one naming the canonical
     source collide, mirroring the in-review path's skip on (entry, field)."""
     if len(argv) < 2 or argv[0] != "glossary":
-        return None
+        return set()
     verb = argv[1]
     if verb == "replace":
         source = _resolve_source(g, _argv_value(argv, "--source"))
         if source is None:
-            return None
-        return ("set:translation", source)
+            return set()
+        return {("set:translation", source)}
     if verb == "retire":
         source = _resolve_source(g, _argv_value(argv, "--source"))
         if source is None:
-            return None
-        return ("retire", source)
+            return set()
+        return {("retire", source)}
     if verb == "set":
-        field = next(
-            (flag for flag in _SET_FIELD_FLAGS
-             if _argv_value(argv, flag) is not None),
-            None,
-        )
-        if field is None:
-            return None
         source = _resolve_source(g, _argv_value(argv, "--source"))
         if source is None:
-            return None
-        return (f"set:{field[2:]}", source)
+            return set()
+        # All fields the command writes, not the first present one.
+        return {
+            (f"set:{flag[2:]}", source)
+            for flag in _SET_FIELD_FLAGS
+            if _argv_value(argv, flag) is not None
+        }
     if verb == "merge":
         keep = _resolve_source(g, _argv_value(argv, "--keep"))
         remove = _resolve_source(g, _argv_value(argv, "--remove"))
         if keep is None or remove is None:
-            return None
+            return set()
         # Keyed on the PAIR: one report legitimately emits
         # `merge --keep M --remove A` and `merge --keep M --remove B` when two
         # entries are duplicates of the same keeper, and both must run.
-        return ("merge", keep, remove)
-    return None
+        return {("merge", keep, remove)}
+    return set()
 
 
 def run_commands(
@@ -371,12 +417,12 @@ def run_commands(
     Appends --no-build to every `glossary replace` argv when absent so the
     executor can run a single batch-wide epub build at the end. Captures
     stdout/stderr per call, returns counts. Every spec is first checked
-    against a freshly loaded glossary so wrong-language suggestions are
-    skipped in-process (see invalid_translation_reason), and its resolved
-    (verb-target, source) key against the keys already queued in THIS call
-    so a second command for the same target is skipped as a conflict --
-    the in-review path (review.apply_fixes) refuses same-(entry, field)
-    duplicates the same way (see _conflict_key).
+    against a freshly loaded glossary so wrong-language suggestions and
+    off-vocabulary categories are skipped in-process (see
+    static_skip_reason), and its per-written-field key set against the keys
+    already queued in THIS call so a second command for the same target is
+    skipped as a conflict -- the in-review path (review.apply_fixes) refuses
+    same-(entry, field) duplicates the same way (see _conflict_keys).
     """
     specs = list(specs)
     applied = 0
@@ -385,7 +431,7 @@ def run_commands(
     specs_run = 0  # subprocesses actually started (skipped guards excluded)
     skipped_invalid = 0
     skipped_conflict = 0
-    seen_keys: set[tuple[str, str]] = set()
+    seen_keys: set[tuple] = set()
     changed_chapters = False
 
     for i, spec in enumerate(specs, 1):
@@ -410,9 +456,7 @@ def run_commands(
             g = glossary.load(project_dir)
         except ValueError:
             g = None
-        reason = (
-            invalid_translation_reason(spec.argv, g) if g is not None else None
-        )
+        reason = static_skip_reason(spec.argv, g)
         if reason is not None:
             skipped_invalid += 1
             print(
@@ -420,22 +464,23 @@ def run_commands(
                 f" ({' '.join(shlex.quote(t) for t in spec.argv)})"
             )
             continue
-        # Conflict guard: a second command for the same resolved target --
-        # an identical re-run or a contradicting suggestion -- never runs;
-        # the first command wins. The key is queued regardless of the first
-        # command's exit, so a failed first attempt still blocks its
+        # Conflict guard: a second command writing any field a queued
+        # command already claimed for the same resolved target -- an
+        # identical re-run or a contradicting suggestion -- never runs;
+        # the first command wins. The keys are queued regardless of the
+        # first command's exit, so a failed first attempt still blocks its
         # duplicates (a contradicting retry of a broken command is not
         # safer than the original).
-        key = _conflict_key(spec.argv, g) if g is not None else None
-        if key is not None and key in seen_keys:
+        keys = conflict_keys(spec.argv, g)
+        if keys and not keys.isdisjoint(seen_keys):
             skipped_conflict += 1
+            # All keys of one spec share the resolved source, so any works.
             print(
                 f"[review fix] skipped [{i}]: conflicting command for "
-                f"'{key[1]}' (already queued)"
+                f"'{sorted(keys)[0][1]}' (already queued)"
             )
             continue
-        if key is not None:
-            seen_keys.add(key)
+        seen_keys |= keys
         argv = _prepare_argv(spec.argv)
         # The executor always prepends --project at the top level (the
         # GLOBAL flag, dest="project_global"). Writer-generated Command

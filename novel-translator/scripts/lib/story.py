@@ -17,7 +17,7 @@ just-assembled chapter by ONE recap-provider call over recap.md.
 - record_recap writes the chapter's OWN entry after ASSEMBLE succeeds,
   unconditionally overwriting it (retranslation refreshes the recap).
 - load_state prunes entries whose file stem is no longer in the manifest
-  (a re-ingestion that renumbered or reused stems), so a stale stem can
+  (a re-ingestion that renumbered stems), so a stale stem can
   never surface another chapter's recap as [Background Information].
 
 Everything here is advisory context, never a gate: any failure prints one
@@ -55,7 +55,7 @@ def load_state(project_dir: Path) -> dict:
     file is discarded -- recaps start fresh, never a crash -- with one
     [warn] line so the reset is never silent; tn.load_history's
     convention). Entries whose stem is absent from the current manifest
-    (re-ingestion renumbered or reused a stem) are dropped on load so a
+    (re-ingestion renumbered a stem) are dropped on load so a
     stale stem can never inject another chapter's recap; pruning is silent
     housekeeping -- the pruned state reaches disk at the next save_state --
     and is skipped when the manifest is missing, empty, or unreadable (never

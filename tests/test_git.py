@@ -17,7 +17,9 @@ line -- the module-level dedup set makes the second call on the same
 directory fully silent -- and `git add -A` never runs: the dirty file
 stays untracked and no commit lands; run after every earlier case so the
 per-process warn dedup starts empty; a different-content .gitignore with no
-marker is still foreign, a byte-equal .gitignore with no marker commits as
+marker is still foreign, a strict subset of the skill rules DROPPING core
+entries (only logs/) is still foreign, a byte-equal .gitignore with no
+marker commits as
 legacy, and the marker wins over a foreign .gitignore), the same guard under path casing
 (the dedup key is os.path.normcase()d, so the same directory passed with
 different letter casing to two commit() calls still warns exactly once --
@@ -32,11 +34,14 @@ project gets exactly two
 chapters, then the backfilled frontmatter/manifest/cover state -- plus
 "[git] initialized repository" and "[git] committed" on stdout, and raw
 config.json carries
-git_commits: true -- and a --force reinitialization keeps the history as
-one "init: reinitialize project" commit on top (the fresh novel_info.json
-rewrite drops the placeholder flag the first init recorded; the planted
-story_state.json is deleted before any commit and was never tracked, so
-its removal is invisible to git)), v003.migrate called
+git_commits: true -- and a --force reinitialization keeps the history,
+committing on top as "init: reinitialize project" (the fresh
+novel_info.json rewrite drops the placeholder flag the first init
+recorded; the planted story_state.json is deleted before any commit and
+was never tracked, so its removal is invisible to git; nothing else
+tracked changes after that commit, so the trailing reseed is a silent
+no-op -- re-scrape a chapter bare and it lands under the distinct
+"init: reseed after reinitialize" subject)), v003.migrate called
 directly (materializes the git_commits default and git-inits the project
 without committing or stamping the version -- cmd_migrate owns the
 post-stamp commit, proven here by a direct commit succeeding on the fresh
@@ -214,10 +219,13 @@ def case_3_cmd_init() -> None:
     rebuilt manifest, cover) -- with the repo + commit reported on stdout and
     git_commits
     defaulted into the raw config.json; --force reinitializes in place,
-    keeping the history as one 'init: reinitialize project' commit on top
-    (the fresh novel_info.json rewrite drops the placeholder flag the first
-    init recorded; the planted story_state.json is deleted before any
-    commit and was never tracked, so its removal is invisible to git)."""
+    keeping the history with 'init: reinitialize project' on top (the fresh
+    novel_info.json rewrite drops the placeholder flag the first init
+    recorded; the planted story_state.json is deleted before any commit and
+    was never tracked, so its removal is invisible to git -- nothing else
+    tracked changes after that commit, so the trailing reseed stays a
+    silent no-op), and a re-scraped bare chapter makes that trailing commit
+    land under the distinct 'init: reseed after reinitialize' subject."""
     if not vcs.available():
         print("note: git not found on PATH; skipping the cmd_init git checks")
         return
@@ -278,6 +286,29 @@ def case_3_cmd_init() -> None:
               f"code={code2} rc={rc2} subjects={subjects2!r}")
         check("3h init: --force deletes story_state.json",
               not (proj / "story_state.json").exists(), "")
+
+        # The re-init above landed only ONE new commit: after the reinit
+        # commit nothing tracked changes (the chapters are already
+        # backfilled and re-seeding restores the same glossary bytes), so
+        # the trailing reseed commit is a silent no-op. Make the trailing
+        # diff REAL by re-scraping a chapter bare -- its backfill lands
+        # under the distinct 'init: reseed after reinitialize' subject,
+        # keeping the two re-init commits from sharing one subject.
+        (proj / "source" / "Chapter_001.md").write_text(
+            "第一章 灵根\n正文第一行\n", encoding="utf-8", newline="\n")
+        ns_force2 = translate._build_parser().parse_args(init_argv(proj, "--force"))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code3 = translate.cmd_init(ns_force2, proj)
+        rc3, subjects3 = git_log_subjects(proj)
+        check("3i init: a landing reseed commit carries its own subject",
+              code3 == 0 and rc3 == 0
+              and subjects3 == ["init: reseed after reinitialize",
+                                "init: reinitialize project",
+                                "init: reinitialize project",
+                                "init: backfill and seed",
+                                "init: scaffold project"],
+              f"code={code3} rc={rc3} subjects={subjects3!r}")
 
 
 def case_4_v003_direct() -> None:
@@ -419,8 +450,10 @@ def case_7_foreign_repo() -> None:
     runs: the user's pending file stays untracked and no commit lands. A
     different-content .gitignore without a marker is foreign by the same
     token (existence is not identity); a .gitignore byte-equal GITIGNORE
-    without a marker is a legacy skill repo and commits; a marker wins over
-    a foreign .gitignore."""
+    without a marker is a legacy skill repo and commits; a strict subset of
+    the skill rules DROPPING core entries (only logs/) is foreign too -- the
+    legacy test requires the whole core, not mere containment in ours; and
+    a marker wins over a foreign .gitignore."""
     if not vcs.available():
         print("note: git not found on PATH; skipping the foreign-repo checks")
         return
@@ -570,6 +603,40 @@ def case_7_foreign_repo() -> None:
         check("7p legacy-historical: .gitignore left untouched",
               (older / ".gitignore").read_text(encoding="utf-8") == historical,
               "")
+
+    # Strict SUBSET of the skill rules DROPPING core entries (only logs/):
+    # the legacy test requires the whole core -- containment in ours alone
+    # must not read a stranger's minimal .gitignore as skill-managed, or
+    # `git add -A` would sweep their repository into a skill commit.
+    with tempfile.TemporaryDirectory() as td:
+        subset = Path(td)
+        if not init_plain(subset):
+            return
+        (subset / ".gitignore").write_text("logs/\n", encoding="utf-8",
+                                           newline="\n")
+        (subset / "pending.txt").write_text(
+            "the user's uncommitted work\n", encoding="utf-8", newline="\n")
+        check("7q subset: logs/-only .gitignore, no marker -> not managed",
+              not vcs._managed(subset),
+              f"managed={vcs._managed(subset)}")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(subset, "test: foreign subset")
+        out = buf.getvalue()
+        check("7r subset: commit() -> None with exactly one foreign-repo warn",
+              sha is None
+              and out.count("[warn] git: skipping commits") == 1
+              and "foreign repository" in out and out.count("\n") == 1,
+              f"sha={sha!r} out={out!r}")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(subset, "test: foreign subset again")
+        check("7s subset: second call silent (warn deduped)",
+              sha is None and buf.getvalue() == "",
+              f"sha={sha!r} out={buf.getvalue()!r}")
+        _rc, subjects = git_log_subjects(subset)
+        check("7t subset: nothing ever committed", subjects == [],
+              f"subjects={subjects!r}")
 
     # Marker wins: a repo ensure_repo() created carries the marker even when
     # the user later replaced .gitignore with their own content.

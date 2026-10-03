@@ -11,7 +11,10 @@ field) plus its already-set skip: a suggestion equal to the entry's
 current value (compared after strip) counts under skipped with reason
 "already set" -- nothing applied, the entry not mutated, glossary.json
 byte-unchanged -- while a genuinely different suggestion on the same
-entry still applies. The model-tier "mundane" kind gets its own case: it
+entry still applies. Assigning guide-only 'unit' to an entry that carries
+a translation prints the shared [warn] advisory at the point of
+application while the fix still applies (nothing extra when the
+translation is empty). The model-tier "mundane" kind gets its own case: it
 survives normalization, maps to `glossary retire`, never auto-fixes, and
 always stays outstanding. The category-command case pins
 command_for_finding's vocabulary gate: an off-vocabulary category
@@ -31,6 +34,8 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31", "pyyaml>=6.0"]
 # ///
+import contextlib
+import io
 import json
 import shlex
 import sys
@@ -815,6 +820,63 @@ def case_13_category_command_validation() -> None:
               "action line wrong")
 
 
+def case_14_apply_fixes_unit_warn() -> None:
+    """apply_fixes prints the same guide-only advisory the new-term/merge
+    paths print when a fix assigns category 'unit' to an entry that
+    carries a translation -- once, at the point the value is applied (the
+    fix itself still applies). An entry with an empty translation is a
+    coherent 'unit' assignment: no extra output, the fix still applies."""
+    with tempfile.TemporaryDirectory() as td:
+        project_dir = Path(td)
+        write_glossary(project_dir, [
+            {"source": "灵根", "variants": [], "translation": "spirit root",
+             "category": "skill"},
+            {"source": "灵石", "variants": [], "translation": "",
+             "category": "item"},
+        ])
+
+        # A: 'unit' onto an entry WITH a translation -> warn + applied
+        finding = {"source": "灵根", "kind": "category", "severity": "warn",
+                   "reason": "miscategorized", "suggestion": "unit",
+                   "origin": "model"}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            fixes = review.apply_fixes(project_dir, [finding])
+        out = buf.getvalue()
+        check("14a unit-warn: exact advisory line, nothing else printed",
+              out == "[warn] glossary: '灵根' has a translation but "
+                     "category 'unit' (guide-only: balance checks skip it)\n",
+              f"out={out!r}")
+        ap, sk = fixes["applied"], fixes["skipped"]
+        check("14b unit-warn: the fix still applied",
+              len(ap) == 1 and not sk
+              and ap[0]["source"] == "灵根" and ap[0]["field"] == "category"
+              and ap[0]["old"] == "skill" and ap[0]["new"] == "unit",
+              f"applied={ap} skipped={sk}")
+        g = glossary.load(project_dir)
+        entry = next(t for t in g["terms"] if t["source"] == "灵根")
+        check("14c unit-warn: 'unit' stored on disk, translation kept",
+              entry["category"] == "unit"
+              and entry["translation"] == "spirit root", f"entry={entry}")
+
+        # B: 'unit' onto an entry with an EMPTY translation -> silent
+        finding = {"source": "灵石", "kind": "category", "severity": "warn",
+                   "reason": "miscategorized", "suggestion": "unit",
+                   "origin": "model"}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            fixes = review.apply_fixes(project_dir, [finding])
+        check("14d unit-warn: empty translation prints nothing extra, "
+              "still applied",
+              buf.getvalue() == "" and len(fixes["applied"]) == 1
+              and not fixes["skipped"],
+              f"out={buf.getvalue()!r} fixes={fixes}")
+        g = glossary.load(project_dir)
+        entry = next(t for t in g["terms"] if t["source"] == "灵石")
+        check("14e unit-warn: empty-translation entry now 'unit'",
+              entry["category"] == "unit", f"entry={entry}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -833,6 +895,7 @@ def main() -> int:
     case_11_mundane()
     case_12_apply_fixes_already_set()
     case_13_category_command_validation()
+    case_14_apply_fixes_unit_warn()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
