@@ -11,17 +11,19 @@ CliErrors; a --chapters spec that matches nothing raises
 pipeline.PipelineError through parse_range.
 
 The occurrence gate (pipeline._apply_glossary_proposal) applies one
-GLOSSARY_EXPAND proposal: retired sources are skipped first, then
-proposals matching an existing entry (by source or, via the nickname
-absorption loop, contained in / containing a known source with the same
-translation) merge in without ever being counted. Only the brand-new-term
-path is gated: when min_occurrences > 0 the term must occur at least that
-many times in `corpus` or it is skipped with an exact-count line;
-min_occurrences == 0 disables the gate (also the fail-open value the
-GLOSSARY_EXPAND stage uses when the source corpus is unreadable). Both
+GLOSSARY_EXPAND proposal: retired sources are skipped first, then proposals
+matching an existing entry by source merge in without ever being counted.
+Every other source -- nickname absorption included -- is gated: when
+min_occurrences > 0 the term must occur at least that many times in
+`corpus` or it is skipped with an exact-count line BEFORE the nickname
+loop, so a one-occurrence string can never become a permanently matchable
+variant; a nickname that meets the threshold is still absorbed as a
+variant; min_occurrences == 0 disables the gate (also the fail-open value
+the GLOSSARY_EXPAND stage uses when the source corpus is unreadable). Both
 model-sourced category flows are coerced: a proposal category outside
-glossary.CATEGORIES lands as "other" with the warn line (known values,
-"unit" included, pass verbatim; an absent category keeps the field
+glossary.CATEGORIES lands as "other" with the warn line (known values pass
+verbatim; "unit" additionally warns that balance checks skip the category
+while its translation is non-empty; an absent category keeps the field
 ValueError and is never coerced), and the same check covers a category
 the merge model ECHOES for an existing entry -- a merge omitting the key
 never warns and never touches the entry's own category.
@@ -50,13 +52,19 @@ the [warn] line; zero hits (0/3 chapters, no per-chapter lines); empty
 TERM / negative --min -> CliError and an unknown chapter spec ->
 PipelineError; the threshold read from project config.json
 (min_term_occurrences: 1 lets a single-occurrence term pass, the same term
-without the key stays below DEFAULTS 3); and the gate paths above called
+without the key stays below DEFAULTS 3); the gate paths above called
 directly on an in-memory glossary dict -- including the category coercion
-sub-cases (known "person"/"unit" verbatim with no warn, unknown "faction"
-coerced to "other" with the warn line before the add line, absent category
--> ValueError) and, through a faked pipeline._chat merge reply, the
-merge-path coercion (unknown echoed category coerced + warned, omitted
-category preserving the entry's own).
+sub-cases (known "person" verbatim with no warn, "unit" verbatim with the
+guide-only warn, unknown "faction" coerced to "other" with the warn line
+before the add line, absent category -> ValueError) and, through a faked
+pipeline._chat merge reply, the merge-path coercion (unknown echoed
+category coerced + warned, omitted category preserving the entry's own);
+and balance.count_in_target's target handling (case-variant duplicate
+targets deduped to one count; per-target script split -- a CJK target
+counted exactly while a Latin sibling target keeps word-boundary
+matching); and the CLI-half of the guide-only advisory (`glossary set
+--category unit` on an entry with a translation prints the exact warn, a
+'place' set and an empty-translation unit set never do).
 
 Mechanics mirror the sibling suites: cmd handlers are called with plain
 Namespaces under captured stdout (test_command_defaults run_cli style),
@@ -92,7 +100,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config, glossary, pipeline, project  # noqa: E402
+from lib import balance, config, glossary, pipeline, project  # noqa: E402
 import translate  # noqa: E402
 from translate import CliError  # noqa: E402
 
@@ -375,12 +383,15 @@ def proposal(src: str, tr: str = "Spirit Term", **extra) -> dict:
 
 
 def case_9_gate() -> None:
-    """pipeline._apply_glossary_proposal: only the brand-new-term path is
-    gated. Skips below the threshold with the exact line; adds at >= the
-    threshold (origin model); min_occurrences 0 (the default and the
+    """pipeline._apply_glossary_proposal: every proposal whose source is not
+    an existing entry is gated -- nickname absorption included. Skips below
+    the threshold with the exact line (a below-threshold nickname is dropped
+    BEFORE it can become a variant); adds at >= the threshold (origin
+    model); a nickname that meets the threshold in the corpus is still
+    absorbed as a variant; min_occurrences 0 (the default and the
     corpus-unreadable fail-open value) adds despite zero occurrences;
-    same-source and nickname-absorption merges are never gated; retired
-    sources are skipped before the gate is even consulted."""
+    same-source re-proposals are never gated; retired sources are skipped
+    before the gate is even consulted."""
     with tempfile.TemporaryDirectory() as td:
         proj = Path(td)  # project_dir is only touched by the merge path
 
@@ -439,8 +450,9 @@ def case_9_gate() -> None:
               and len(g4["terms"]) == 1 and g4["terms"][0] == existing,
               f"exc={exc4!r} out={out4!r} terms={g4['terms']}")
 
-        # Nickname absorption: proposed source contained in a known source
-        # with the same translation -> variant union, never gated.
+        # Nickname absorption runs only AFTER the significance gate: a
+        # below-threshold proposal is dropped before it can become a
+        # permanently matchable variant.
         known = {"source": "裴小丫", "translation": "Pei Xiaoya",
                  "definition": "A girl.", "category": "person",
                  "origin": "seeded", "variants": [], "alt_translations": [],
@@ -448,13 +460,27 @@ def case_9_gate() -> None:
         g5: dict = {"terms": [dict(known)]}
         _r, out5, exc5 = capture(
             pipeline._apply_glossary_proposal, g5, proposal("小丫", "Pei Xiaoya"),
-            2, {}, "", "[t]", proj, corpus="", min_occurrences=3)
-        check("9f gate: nickname absorbed as a variant, not gated",
+            2, {}, "", "[t]", proj, corpus="小丫笑了。", min_occurrences=3)
+        check("9f gate: below-threshold nickname dropped before absorption",
               exc5 is None and len(g5["terms"]) == 1
-              and g5["terms"][0].get("variants") == ["小丫"]
-              and "skip" not in out5
-              and "[t] [ok] glossary ~ '裴小丫' +variant(s) 小丫" in out5,
+              and g5["terms"][0].get("variants") == []
+              and out5 == "[t] [glossary] skip '小丫' - 1 occurrence(s) "
+                         "across the novel (min 3)\n",
               f"exc={exc5!r} out={out5!r} terms={g5['terms']}")
+
+        # A nickname that meets min_occurrences in the corpus IS still
+        # absorbed as a variant (never added as its own term).
+        g5b: dict = {"terms": [dict(known)]}
+        _r, out5b, exc5b = capture(
+            pipeline._apply_glossary_proposal, g5b,
+            proposal("小丫", "Pei Xiaoya"), 2, {}, "", "[t]", proj,
+            corpus="小丫。小丫和小丫。", min_occurrences=3)
+        check("9f2 gate: nickname at the threshold absorbed as a variant",
+              exc5b is None and len(g5b["terms"]) == 1
+              and g5b["terms"][0].get("variants") == ["小丫"]
+              and "[t] [ok] glossary ~ '裴小丫' +variant(s) 小丫" in out5b
+              and "skip" not in out5b,
+              f"exc={exc5b!r} out={out5b!r} terms={g5b['terms']}")
 
         # Retired sources: skipped before the gate is consulted.
         g6: dict = {"terms": [], "retired": ["废丹"]}
@@ -468,7 +494,7 @@ def case_9_gate() -> None:
               f"exc={exc6!r} out={out6!r} terms={g6.get('terms')}")
 
         # Category coercion (new-term path, only once the term lands):
-        # KNOWN categories -- "unit" included -- pass verbatim with no warn.
+        # KNOWN categories -- "person" here -- pass verbatim with no warn.
         g7: dict = {"terms": []}
         _r, out7, exc7 = capture(
             pipeline._apply_glossary_proposal, g7,
@@ -484,10 +510,13 @@ def case_9_gate() -> None:
             pipeline._apply_glossary_proposal, g8,
             proposal("古塔", category="unit"), 2, {}, "", "[t]", proj,
             corpus="", min_occurrences=0)
-        check("9h2 gate: 'unit' is known too - stored verbatim, no warn",
+        check("9h2 gate: 'unit' stored verbatim with the guide-only warn",
               exc8 is None and len(g8["terms"]) == 1
               and g8["terms"][0].get("category") == "unit"
-              and out8 == "[t] [ok] glossary + '古塔' -> 'Spirit Term'\n",
+              and out8 == "[t] [warn] glossary: '古塔' has a translation but "
+                          "category 'unit' (guide-only: balance checks skip "
+                          "it)\n"
+                         "[t] [ok] glossary + '古塔' -> 'Spirit Term'\n",
               f"exc={exc8!r} out={out8!r} terms={g8.get('terms')}")
 
         # UNKNOWN category: coerced to other, warn line BEFORE the add line.
@@ -817,6 +846,98 @@ def case_12_merge_category_coercion() -> None:
             pipeline._chat = orig
 
 
+# --------------------------------------------- balance target counting
+
+
+def case_13_balance_targets() -> None:
+    """balance.count_in_target target handling: dedup is case-insensitive
+    (matching is case-insensitive, so case variants are one target, first
+    form kept) and the CJK exact-substring counting is per target, so a
+    Latin sibling target in the same entry keeps word-boundary matching."""
+    # Case-variant duplicates: "Spirit Stone" + "spirit stone" are one
+    # target; the old case-sensitive dedup counted every match twice.
+    entry = {"source": "灵石", "translation": "Spirit Stone",
+             "alt_translations": ["spirit stone"]}
+    count = balance.count_in_target(
+        entry, ["He found a spirit stone.", "The Spirit Stone glowed."])
+    check("13a balance: case-variant duplicate target counted once",
+          count == 2, f"count={count}")
+
+    # Mixed scripts in one entry: 灵石 counts as an exact substring (2x)
+    # while "spirit stone" keeps word boundaries -- the hyphenated
+    # "spirit-stone" matches via the phrase joiner (the exact-substring
+    # path the old all-or-nothing CJK branch used finds 0 there).
+    entry2 = {"source": "灵石", "translation": "灵石",
+              "alt_translations": ["spirit stone"]}
+    lines2 = ["灵石发光了。", "a spirit-stone here", "灵石碎了。"]
+    count2 = balance.count_in_target(entry2, lines2)
+    check("13b balance: CJK target exact, Latin target word-bounded",
+          count2 == 3, f"count2={count2}")
+
+
+# --------------------------------------------- glossary set guide-only warn
+
+
+def case_14_set_unit_guide_only_warn() -> None:
+    """`glossary set --category unit` on an entry WITH a translation prints
+    the exact guide-only advisory (the CLI counterpart of the pipeline's
+    9h2 proposal warn: a 'unit' entry is a rendering guide only, balance
+    checks skip it); a non-guide-only category and a unit set on an entry
+    with an EMPTY translation stay warning-free."""
+    warn = ("[warn] glossary: '灵根' has a translation but category 'unit' "
+            "(guide-only: balance checks skip it)")
+
+    # A: unit on an entry with a translation -> the exact warn
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        glossary.save(proj, {"terms": [
+            {"source": "灵根", "variants": [], "translation": "spirit root",
+             "category": "item"},
+        ]})
+        ns = parse(["glossary", "set", "--source", "灵根",
+                    "--category", "unit"])
+        check("14a set: the parser hands cmd_glossary the set shape",
+              ns is not None and ns.action == "set" and ns.source == "灵根"
+              and ns.category == "unit", f"ns={ns}")
+        code, out, exc = run_cli(translate.cmd_glossary, ns, proj)
+        check("14b set unit: exit 0, no error",
+              exc is None and code == 0, f"code={code} exc={exc!r}")
+        check("14c set unit: the change line then the exact guide-only warn",
+              out == "[glossary] set '灵根': category 'item' -> 'unit'\n"
+                     + warn + "\n",
+              f"out={out!r}")
+        check("14d set unit: the category landed on disk",
+              glossary.load(proj)["terms"][0].get("category") == "unit", "")
+
+    # B: control -- a non-guide-only category never warns
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        glossary.save(proj, {"terms": [
+            {"source": "灵根", "variants": [], "translation": "spirit root",
+             "category": "item"},
+        ]})
+        ns = parse(["glossary", "set", "--source", "灵根",
+                    "--category", "place"])
+        code, out, exc = run_cli(translate.cmd_glossary, ns, proj)
+        check("14e set place: exit 0, no warn",
+              exc is None and code == 0 and "[warn]" not in out,
+              f"code={code} exc={exc!r} out={out!r}")
+
+    # C: unit on an entry with an EMPTY translation -> no warn
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        glossary.save(proj, {"terms": [
+            {"source": "空词", "variants": [], "translation": "",
+             "category": "item"},
+        ]})
+        ns = parse(["glossary", "set", "--source", "空词",
+                    "--category", "unit"])
+        code, out, exc = run_cli(translate.cmd_glossary, ns, proj)
+        check("14f set unit empty translation: exit 0, no warn",
+              exc is None and code == 0 and "[warn]" not in out,
+              f"code={code} exc={exc!r} out={out!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -834,6 +955,8 @@ def main() -> int:
     case_10_gate_corpus_cache()
     case_11_gate_corpus_run_chapter()
     case_12_merge_category_coercion()
+    case_13_balance_targets()
+    case_14_set_unit_guide_only_warn()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

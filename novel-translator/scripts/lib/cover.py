@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import html as _html
 import io
+import json
+import os
 import re
+import time
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -21,6 +24,8 @@ from lib import project
 COVER_SIZE = (1600, 2560)
 JPEG_QUALITY = 88
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+SCRAPE_DEADLINE_S = 30  # wall-clock budget for the whole scrape, all stages
+_CHUNK_SIZE = 64 * 1024
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (novel-translator)"}
 
@@ -68,6 +73,53 @@ def _ascii(text: str) -> str:
     return str(text).encode("ascii", "replace").decode("ascii")
 
 
+def _save_jpeg(image: Image.Image, path: Path) -> None:
+    """Write a JPEG atomically: encode into a pid-suffixed tmp sibling, then
+    os.replace() it into place (project's Windows retry/backoff). A partial
+    direct write must never survive -- an existing cover.jpg short-circuits
+    every later run (ensure_cover's fast path, epub.build's set_cover), so a
+    truncated image would ship forever."""
+    path = Path(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        # Format passed explicitly: the .tmp suffix hides it from PIL's
+        # extension sniffing.
+        image.save(tmp, "JPEG", quality=JPEG_QUALITY)
+        project._replace_with_retry(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _record_placeholder(project_dir: Path, placeholder: bool) -> None:
+    """Record the cover outcome in novel_info.json's "cover_placeholder" key:
+    True after a placeholder was generated (a failed scrape must stay visible
+    in the project instead of silently shipping a gradient cover forever),
+    removed again once a real scrape succeeds. Written only on change, in
+    init's JSON style (2-space indent, ensure_ascii=False, trailing newline)
+    through the atomic write. A missing novel_info.json is left alone --
+    creating it here would change how later commands read the project. Best
+    effort: bookkeeping must never break the cover."""
+    path = project.paths(project_dir)["novel_info"]
+    if not path.is_file():
+        return
+    try:
+        info = project.load_novel_info(project_dir)
+        if placeholder:
+            if info.get("cover_placeholder") is True:
+                return
+            info["cover_placeholder"] = True
+        else:
+            if "cover_placeholder" not in info:
+                return
+            del info["cover_placeholder"]
+        project.atomic_write_text(
+            path, json.dumps(info, ensure_ascii=False, indent=2) + "\n",
+            newline="\n",
+        )
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a run
+        print(_ascii(f"[warn] cover: recording placeholder state failed: {exc}"))
+
+
 def ensure_cover(
     project_dir: Path, novel_info: dict, cover_url: str | None = None
 ) -> Path:
@@ -90,8 +142,11 @@ def ensure_cover(
                     im = ImageOps.fit(
                         im.convert("RGB"), COVER_SIZE, Image.Resampling.LANCZOS
                     )
-                    im.save(cover_path, "JPEG", quality=JPEG_QUALITY)
+                    _save_jpeg(im, cover_path)
                 print(_ascii(f"[cover] scraped from {url}"))
+                # An earlier placeholder run's flag must not outlive a real
+                # cover (removed only on change; absent key -> no write).
+                _record_placeholder(project_dir, placeholder=False)
                 return cover_path
             except Exception as exc:
                 print(_ascii(f"[warn] cover image processing failed: {exc}"))
@@ -102,44 +157,82 @@ def ensure_cover(
     author = novel_info.get("author") or "Unknown"
     generate_cover(title, author, cover_path)
     print("[cover] no image found; generated placeholder")
+    _record_placeholder(project_dir, placeholder=True)
     return cover_path
+
+
+def _read_capped(resp: requests.Response, deadline: float) -> bytes | None:
+    """Drain a streamed response in 64 KB chunks, enforcing MAX_IMAGE_BYTES
+    and the wall-clock deadline between chunks; closes the connection and
+    returns None on any breach or read error. requests' timeout=15 only
+    bounds connect/idle reads -- without the cap a huge or trickle-feeding
+    body could stall a run indefinitely."""
+    buf = bytearray()
+    try:
+        for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
+            if time.monotonic() > deadline:
+                return None
+            buf.extend(chunk)
+            if len(buf) > MAX_IMAGE_BYTES:
+                return None
+    except Exception:
+        return None
+    finally:
+        resp.close()
+    return bytes(buf)
 
 
 def scrape_image(url: str) -> bytes | None:
     """Fetch image bytes from a direct image URL, or scrape og:image /
-    twitter:image from an HTML page. Returns None on any failure; never raises."""
+    twitter:image from an HTML page. Returns None on any failure; never
+    raises. Bodies are streamed and capped at MAX_IMAGE_BYTES under a
+    SCRAPE_DEADLINE_S wall-clock deadline checked between stages and chunks."""
+    deadline = time.monotonic() + SCRAPE_DEADLINE_S
     try:
-        resp = requests.get(url, timeout=15, headers=_HEADERS)
+        resp = requests.get(url, timeout=15, headers=_HEADERS, stream=True)
         if resp.status_code >= 400:
+            resp.close()
+            return None
+        if time.monotonic() > deadline:
+            resp.close()
             return None
         ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
         if ctype.startswith("image/"):
-            if len(resp.content) > MAX_IMAGE_BYTES:
-                return None
-            return resp.content
+            return _read_capped(resp, deadline)
         if ctype and "html" not in ctype:
+            resp.close()
             return None
 
-        # HTML: try og:image / twitter:image candidates in priority order.
+        # HTML: drain the page body (capped), then try og:image /
+        # twitter:image candidates in priority order.
+        page = _read_capped(resp, deadline)
+        if page is None:
+            return None
+        text = page.decode(resp.encoding or "utf-8", "replace")
         tried = set()
         for pattern in _META_PATTERNS:
-            match = pattern.search(resp.text)
+            match = pattern.search(text)
             if not match:
                 continue
             src = _html.unescape(match.group(1)).strip()
             if not src:
                 continue
             image_url = urljoin(url, src)
-            if image_url in tried:
+            if image_url in tried or time.monotonic() > deadline:
                 continue
             tried.add(image_url)
-            resp2 = requests.get(image_url, timeout=15, headers=_HEADERS)
+            resp2 = requests.get(image_url, timeout=15, headers=_HEADERS, stream=True)
             if resp2.status_code >= 400:
+                resp2.close()
                 continue
             ctype2 = (resp2.headers.get("content-type") or "").split(";")[0]
             ctype2 = ctype2.strip().lower()
-            if ctype2.startswith("image/") and len(resp2.content) <= MAX_IMAGE_BYTES:
-                return resp2.content
+            if not ctype2.startswith("image/"):
+                resp2.close()
+                continue
+            data = _read_capped(resp2, deadline)
+            if data is not None:
+                return data
         return None
     except Exception:
         return None
@@ -242,4 +335,4 @@ def generate_cover(title: str, author: str, out_path: Path) -> None:
             _draw_centered(draw, author, author_font, height - 340, width)
     # No truetype font -> gradient only (default bitmap font can't render CJK).
 
-    image.save(out_path, "JPEG", quality=JPEG_QUALITY)
+    _save_jpeg(image, out_path)

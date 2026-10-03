@@ -7,13 +7,19 @@ action's project_action (after the action verb). Separate dests are the
 point: since Python 3.7 argparse copies each subparser's fresh namespace
 over the main one unconditionally, a shared dest would let a nested
 default None clobber a --project already consumed by the outer parser.
-main() resolves nested > action-level > global > ".".
+resolve_project_dir() (called by main()) resolves nested > action-level >
+global > ".".
 
 Every nested glossary action (replace/set/merge/retire/search) must parse
 and resolve the directory in all three positions; top-level commands
 (status) work both ways; the review/util paths still parse; migrate (the
 per-version upgrade command) parses in both --project positions with its
 --force/--dry-run flags round-tripping.
+
+The abbreviation case pins allow_abbrev=False on every parser layer: an
+abbreviated --proj token is rejected everywhere --project is registered,
+so a hand-edited review-report command cannot smuggle a project override
+past fix.run_commands' exact --project guard (exact spellings only).
 
 Parsing only -- no project directories are created or touched. translate.py
 imports the whole lib package (requests, ebooklib, pillow, pyyaml).
@@ -68,14 +74,10 @@ def parse(argv: list[str]) -> argparse.Namespace | None:
 
 
 def resolve_dir(ns: argparse.Namespace) -> Path:
-    """main()'s exact resolution expression, mirrored: nested glossary
-    action level > subcommand level > before the subcommand > "."."""
-    return Path(
-        getattr(ns, "project_action", None)  # nested glossary action level
-        or getattr(ns, "project", None)      # subcommand level
-        or ns.project_global                 # before the subcommand
-        or "."
-    ).resolve()
+    """The real resolution: translate.resolve_project_dir (main() calls
+    this) -- nested glossary action level > subcommand level > before the
+    subcommand > "."."""
+    return translate.resolve_project_dir(ns)
 
 
 # Per-action required/representative arguments (mirrors _build_parser):
@@ -213,6 +215,25 @@ def case_10_migrate() -> None:
           and ns.func is translate.cmd_migrate, f"ns={ns}")
 
 
+def case_11_no_abbrev() -> None:
+    """allow_abbrev=False on every parser layer: an abbreviated --proj is
+    rejected at each --project registration point (top-level, subcommand
+    parent, glossary verb parent, nested action), in both space and '='
+    forms -- run_commands' exact --project guard cannot be bypassed by a
+    hand-edited abbreviation."""
+    argvs = {
+        "a top level": ["--proj", DIR, "status"],
+        "b top level = form": ["--proj=" + DIR, "status"],
+        "c subcommand level": ["status", "--proj", DIR],
+        "d glossary verb level": ["glossary", "--proj", DIR, "search", "灵根"],
+        "e nested action level": ["glossary", "search", "--proj", DIR, "灵根"],
+        "f nested action = form": ["glossary", "search", "--proj=" + DIR, "灵根"],
+    }
+    for name, argv in argvs.items():
+        check(f"11{name}: abbreviated --proj rejected", parse(argv) is None,
+              f"argv={argv}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -228,6 +249,7 @@ def main() -> int:
     case_8_top_level()
     case_9_review_util()
     case_10_migrate()
+    case_11_no_abbrev()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

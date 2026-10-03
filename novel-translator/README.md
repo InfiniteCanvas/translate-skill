@@ -56,6 +56,10 @@ through uv automatically):
    `--force` reinitializes, resetting `glossary.json` and
    `tn_history.json` to empty and deleting `story_state.json` (the
    per-chapter `notes/` sidecars survive with their translated chapters).
+   Only `--force` resets those three files: re-running `init` without it
+   on a directory whose `config.json` was deleted preserves them and
+   prints `[init] preserving existing glossary.json, tn_history.json, and
+   story_state.json (pass --force to reset)`.
    Init also turns the project directory
    into a git repository (with a project-local git identity -- nothing
    global is touched), and every following action is committed with a
@@ -266,7 +270,8 @@ no suggestion -- `--fix` never retires them; their `- Command:` bullet
 does. Exit 0 clean or info-only, 1 warns remain, 2 usage error (review
 flags are per subject: `review glossary` accepts `--fix` and
 `--batch-size`, `review notes` accepts `--chapters` and `--batch-size`,
-`review fix` accepts `--glossary` / `--dry-run` / `--exit-on-error`;
+`review fix` accepts `--glossary` / `--dry-run` / `--stale-ok` /
+`--exit-on-error`;
 anything else exits 2 with
 `[FAIL] --<flag> does not apply to 'review <subject>'`; `--fix` on
 `review fix`/`review notes` keeps its own message,
@@ -277,7 +282,7 @@ Every run also writes `<project>/review-report.md` (filename from the
 `review_report_path` config key; overwritten each run,
 clean runs included; console: `[glossary] report: <path>`): a YAML
 frontmatter block with the run's counts (entries reviewed, batch errors,
-outstanding warn/info, machine-applicable vs manual-review tallies, and
+glossary digest, outstanding warn/info, machine-applicable vs manual-review tallies, and
 the `[N]` indices of the manual-review findings), then the numbered
 outstanding findings in two sections -- `## Machine-applicable` (apply
 with `review fix`) first, then `## Needs manual review` (decide yourself
@@ -301,18 +306,23 @@ delegating fixes by index:
 
 For the offline machine-actionable path, run
 `uv run scripts/translate.py review fix --glossary review-report.md
-[--dry-run] [--exit-on-error]`: it runs every `- Command:` bullet in the
+[--dry-run] [--stale-ok] [--exit-on-error]`: it runs every `- Command:` bullet in the
 `Machine-applicable` section as a subprocess (`glossary replace | set |
 merge | retire`), in order, and exits 0 on full success or full no-op, 1
 if any command failed (continues past failures by default;
 `--exit-on-error` to stop at the first), 2 on a missing/unreadable report
 or a report with no machine-applicable commands. `review fix` accepts
 exactly `--glossary` (the report path, not a glossary selector --
-`review glossary --glossary X` is a usage error), `--dry-run`, and
+`review glossary --glossary X` is a usage error), `--dry-run`,
+`--stale-ok`, and
 `--exit-on-error`; any other review flag exits 2 with
 `[FAIL] --<flag> does not apply to 'review <subject>'` (`--fix` keeps
 its own message: `[FAIL] --fix applies to 'review glossary' only; not
-'review <subject>'`). Legacy reports (the
+'review <subject>'`). A stale report -- one whose `glossary_digest`
+frontmatter no longer matches the live glossary.json -- is refused with
+exit 1: `[review fix] report is stale (glossary changed since
+generation) - regenerate with review glossary`; `--stale-ok` skips the
+check. Legacy reports (the
 pre-split format: no frontmatter, severity-grouped findings, no
 `- Command:` bullets, old `- Command:` header that records the generating
 command) are synthesized on the fly from the structured parts alone -- no
@@ -373,7 +383,11 @@ survives). Discarded candidates — low-threshold, cap overflow, invalid —
 are recorded in `notes/<stem>.dropped.json` next to the sidecar (a
 review artifact; the epub builder does not read it); the pipeline prints
 the same record as `[Chapter_NNNN] [ok] notes: K kept (cats); D dropped
-(reasons) -> notes/<stem>.dropped.json`. Chapter prose is never rewritten,
+(reasons) -> notes/<stem>.dropped.json`. An annotator response of zero
+notes for a chapter that has notes is treated as a failed evaluation:
+the sidecar and translated markdown are left untouched
+(`[tn] <file>: annotator returned 0 notes for a chapter with N note(s) -
+keeping existing sidecar`). Chapter prose is never rewritten,
 with
 one exception: chapters from before the sidecar migration (notes baked into
 the markdown as `[^N]` markers + a Translator's Notes section) are cleaned
@@ -417,7 +431,10 @@ the `tn` re-check command later regenerates that chapter's notes. Console:
 (restates X, overexplains Y, wrong Z, misanchored W) -> <report path>`,
 plus a `[warn]` hint when N > 0 that fixes are hand edits to
 `notes/<stem>.json`; a project with no sidecars prints `[ok] no chapter
-notes found - nothing to review`. Commits `review: notes audit`.
+notes found - nothing to review` (genuinely no sidecars -- when chapters
+existed but all were skipped, `[warn] no chapter notes reviewed: N
+chapter(s) skipped (see failures above)` prints instead). Commits
+`review: notes audit`.
 
 ## Bulk review fixes
 
@@ -429,7 +446,7 @@ terms to retire). Applying them one at a time by hand or by an agent is
 tedious and prone to drift. For the offline path:
 
     uv run scripts/translate.py review fix --glossary review-report.md \
-        [--dry-run] [--exit-on-error]
+        [--dry-run] [--stale-ok] [--exit-on-error]
 
 `review fix` parses every `- Command:` bullet in the report's
 `Machine-applicable` section and runs each as a subprocess (`glossary
@@ -444,9 +461,14 @@ the same guard `review glossary --fix` enforces. So is a Command bullet
 carrying `--project` in either form (`[review fix] skipped [N]: command
 overrides --project`) -- the executor always prepends its own `--project`,
 and one smuggled into a hand-edited report would silently retarget the
-command. Exit codes: 0 on full
+command. Two commands targeting the same glossary entry with the same
+verb+target conflict (a `glossary set` verb is its edited field) -- the
+first queued wins, later ones are skipped
+(`[review fix] skipped [N]: conflicting command for '<source>' (already
+queued)`). Exit codes: 0 on full
 success or full no-op, 1 if any command failed (continues past failures
-by default; `--exit-on-error` to stop at the first), 2 on a
+by default; `--exit-on-error` to stop at the first) or the report was
+refused as stale (`--stale-ok` overrides), 2 on a
 missing/unreadable report or a report with no machine-applicable
 commands. `--dry-run` prints each command with its
 finding index — annotating `SKIP` on commands that would be rejected as
@@ -487,25 +509,34 @@ The batch-flow subcommands:
 `--category`, `--add-variant` / `--remove-variant`,
 `--alt-translations` / `--add-alt` / `--remove-alt` atomically -- one save,
 all-or-nothing -- and is idempotent (exit 0 when nothing actually
-changed); `--category` is whitelisted against the same list `apply_fixes`
+changed; the changeless run prints `[glossary] noop: <detail>`);
+`--category` is whitelisted against the same list `apply_fixes`
 uses, `--translation` is CJK-checked against the source like `apply_fixes`
 (definitions may legitimately quote CJK terms and are stored as-is).
+Assigning `--category unit` to an entry with a non-empty translation
+warns `[warn] glossary: '<source>' has a translation but category 'unit'
+(guide-only: balance checks skip it)`.
 `--alt-translations "A,B"` REPLACES the existing list;
 `--add-alt` / `--remove-alt` edit it in place.
 
 `glossary merge --keep K --remove R` transfers `variants` /
 `alt_translations` / `definition` from R to K (definition only fills K
-when K's is empty), appends R to the top-level `retired` list, and
-removes R from `terms` -- idem-potent (already-retired R is a no-op
-exit 0). The kept entry's `translation` / `category` / `origin` /
+when K's is empty; a definition arriving for a K that already has one is
+discarded with `[warn] glossary: definition from '<removed>' discarded
+('<kept>' already has one)`), appends R to the top-level `retired` list, and
+removes R from `terms` -- idem-potent (re-running with an already-retired
+R, canonical source or variant spelling, is a clean no-op exit 0; the
+supplied spelling is recorded in `retired` alongside the canonical
+source). The kept entry's `translation` / `category` / `origin` /
 `first_seen_chapter` are preserved.
 
 `glossary retire --source X` is a thin wrapper over `glossary.retire()`
 for a single source; X matches by source or variants, and the entry's
 canonical source is what gets recorded in `retired`. Re-running with
-the entry's canonical source prints `[glossary] already retired: X` and
-exits 0; re-running with a variant spelling of an already-retired entry
-behaves like an unknown term (no match, exit 2).
+the entry's canonical source prints `[glossary] noop: already retired: X`
+and exits 0; re-running with a variant spelling of an already-retired entry
+is also a clean no-op (exit 0) -- the supplied spelling is recorded in
+`retired` alongside the canonical source.
 
 `glossary replace` accepts `--no-build` to skip the post-success epub
 build for batch callers (the replace behavior itself is unchanged).
@@ -541,8 +572,15 @@ chapter (serialized; triggers arriving mid-build coalesce) and a final
 build at batch end guarantees the finished epub includes every chapter --
 `export/` always holds a current epub (epubcheck-validated when Docker is
 available), so the manual command is
-only needed for one-off builds. Auto-build failures are warnings only, and
-a stalled build is killed after 360s; details land in
+only needed for one-off builds. Auto-build failures are warnings only --
+a stalled build is killed after 360s, a failed child prints
+`[warn] epub auto-build failed, exit <code> (after <reason>) - see
+logs/epub-build.log`, a Ctrl-C interrupt prints
+`[warn] epub auto-build interrupted`, and with epubcheck unavailable the
+rebuild is skipped with `[warn] epub auto-build could not run (epubcheck
+unavailable) - skipping validation`, and a finalize that waits out its
+budget prints `[warn] epub auto-build finalize waited <n>s for the builder
+to exit`; details land in
 `logs/epub-build.log`.
 
 ## Tuning (config.json)
@@ -619,7 +657,7 @@ is documented in `references/file-formats.md`.
 ## Debugging
 
 Every LLM call logs an `llm_request` line and an `llm_response` line in the
-run log — `logs/llm-<timestamp>-<command>-<pid>.jsonl`, one file per CLI
+run log — `logs/llm-<timestamp>-<command>-<pid>.jsonl`, one file per project per CLI
 invocation: the request (params + full prompt, written before the call) and
 the response (raw response, finish_reason, usage, timing), paired by
 `call_id`; a call that hits the 400 fallback (retry without
@@ -631,8 +669,9 @@ signals alongside under-use warnings and over-count info),
 batch_errors, findings, applied, skipped), `notes_review` events
 (chapters, units, batches, batch_errors, skipped, findings -- one per
 `review notes` run), and `review_fix` events
-(specs_run, applied, noop, failed, skipped_invalid, changed_chapters,
-needs_decision -- one per `review fix` run) are interleaved in the same
+(specs_run, applied, noop, failed, skipped_invalid, skipped_conflict,
+changed_chapters, needs_decision -- one per `review fix` run) are
+interleaved in the same
 stream. The console is a
 summary, the log is truth.
 Each run prunes older logs to the newest `log_llm_keep_runs` (default 5);

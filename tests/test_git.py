@@ -7,21 +7,36 @@ byte-identical), vcs.commit (a dirty tree returns a truthy short sha and
 prints "[git] committed <sha> <subject>", with the subject landing in
 `git log --format=%s`; a clean tree, a raw config.json {"git_commits":
 false}, and a non-repository directory are all silent None no-ops), the
-foreign-repository guard (a git repo WITHOUT the skill .gitignore at the
-project dir is the user's own repository: commit() returns None printing
+foreign-repository guard (a git repo that is NOT skill-managed is the
+user's own repository: managed iff the .git/novel-translator-managed marker
+exists -- written by ensure_repo when it CREATES the repo -- or the
+.gitignore equals GITIGNORE, the fingerprint of legacy skill repos; a repo
+without either is foreign: commit() returns None printing
 exactly one "[warn] git: skipping commits - ... foreign repository ..."
 line -- the module-level dedup set makes the second call on the same
 directory fully silent -- and `git add -A` never runs: the dirty file
 stays untracked and no commit lands; run after every earlier case so the
-per-process warn dedup starts empty), the same guard under path casing
+per-process warn dedup starts empty; a different-content .gitignore with no
+marker is still foreign, a byte-equal .gitignore with no marker commits as
+legacy, and the marker wins over a foreign .gitignore), the same guard under path casing
 (the dedup key is os.path.normcase()d, so the same directory passed with
 different letter casing to two commit() calls still warns exactly once --
-skipped with a note on case-sensitive filesystems), cmd_init end to end (a scaffolded
-project gets exactly one
-"init: scaffold project" commit plus "[git] initialized repository" and
-"[git] committed" on stdout, and raw config.json carries
+skipped with a note on case-sensitive filesystems), _run's timeout contract
+(with subprocess on the vcs module swapped for a scripted fake raising
+TimeoutExpired, _run returns the synthetic failed result -- returncode 124,
+empty stdout, stderr naming the timeout and the exact argv -- after passing
+timeout=300 and a DEVNULL stdin, and commit() on a managed repo surfaces it
+as the usual one-line add-failure warn), cmd_init end to end (a scaffolded
+project gets exactly two
+"init: scaffold project" commits -- the birth record of the bare source
+chapters, then the backfilled frontmatter/manifest/cover state -- plus
+"[git] initialized repository" and "[git] committed" on stdout, and raw
+config.json carries
 git_commits: true -- and a --force reinitialization keeps the history as
-a second "init: reinitialize project" commit), v003.migrate called
+one "init: reinitialize project" commit on top (the fresh novel_info.json
+rewrite drops the placeholder flag the first init recorded; the planted
+story_state.json is deleted before any commit and was never tracked, so
+its removal is invisible to git)), v003.migrate called
 directly (materializes the git_commits default and git-inits the project
 without committing or stamping the version -- cmd_migrate owns the
 post-stamp commit, proven here by a direct commit succeeding on the fresh
@@ -65,6 +80,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 # scripts/ (and therefore lib/ and migrations/) lives at
 # novel-translator/scripts relative to this file (CWD-independent);
@@ -106,8 +122,9 @@ def git_log_subjects(proj: Path) -> tuple[int, list[str]]:
 
 def case_1_ensure_repo() -> None:
     """An empty directory becomes a repository exactly once: first call
-    reports the init line and writes .git + .gitignore; a second call is a
-    quiet [] that leaves .gitignore byte-identical."""
+    reports the init line and writes .git + .gitignore + the skill-managed
+    marker; a second call is a quiet [] that leaves .gitignore
+    byte-identical."""
     if not vcs.available():
         print("note: git not found on PATH; skipping the ensure_repo checks")
         return
@@ -121,11 +138,17 @@ def case_1_ensure_repo() -> None:
         check("1c ensure_repo: .gitignore text equals vcs.GITIGNORE",
               gitignore.is_file() and gitignore.read_text(encoding="utf-8") == vcs.GITIGNORE,
               f"exists={gitignore.is_file()}")
+        check("1d ensure_repo: skill-managed marker written into .git",
+              (proj / ".git" / vcs.MARKER_NAME).is_file(),
+              f"marker={(proj / '.git' / vcs.MARKER_NAME).is_file()}")
+        check("1e ensure_repo: .gitignore ignores covers/",
+              "covers/" in gitignore.read_text(encoding="utf-8"),
+              f"text={gitignore.read_text(encoding='utf-8')!r}")
         before = gitignore.read_bytes()
         lines2 = vcs.ensure_repo(proj)
-        check("1d ensure_repo: second call is idempotent ([])",
+        check("1f ensure_repo: second call is idempotent ([])",
               lines2 == [], f"lines={lines2!r}")
-        check("1e ensure_repo: .gitignore byte-identical after the second call",
+        check("1g ensure_repo: .gitignore byte-identical after the second call",
               gitignore.read_bytes() == before)
 
 
@@ -184,10 +207,17 @@ def case_2_commit() -> None:
 
 
 def case_3_cmd_init() -> None:
-    """cmd_init end to end: the finished scaffold lands in exactly one
-    'init: scaffold project' commit with the repo + commit reported on
-    stdout and git_commits defaulted into the raw config.json; --force
-    reinitializes in place, keeping the history as a second commit."""
+    """cmd_init end to end: the scaffold lands in two commits -- the birth
+    record 'init: scaffold project' capturing the BARE source chapters (fired
+    right after ensure_repo, before any chapter rewrite), then
+    'init: backfill and seed' for the finished state (backfilled frontmatter,
+    rebuilt manifest, cover) -- with the repo + commit reported on stdout and
+    git_commits
+    defaulted into the raw config.json; --force reinitializes in place,
+    keeping the history as one 'init: reinitialize project' commit on top
+    (the fresh novel_info.json rewrite drops the placeholder flag the first
+    init recorded; the planted story_state.json is deleted before any
+    commit and was never tracked, so its removal is invisible to git)."""
     if not vcs.available():
         print("note: git not found on PATH; skipping the cmd_init git checks")
         return
@@ -216,8 +246,9 @@ def case_3_cmd_init() -> None:
         check("3a init: cmd_init exits 0", code == 0, f"code={code} out={out}")
         check("3b init: .git exists", vcs.is_repo(proj))
         rc, subjects = git_log_subjects(proj)
-        check("3c init: exactly one commit, 'init: scaffold project'",
-              rc == 0 and subjects == ["init: scaffold project"],
+        check("3c init: two staged commits, scaffold then backfill/seed",
+              rc == 0 and subjects == ["init: backfill and seed",
+                                       "init: scaffold project"],
               f"rc={rc} subjects={subjects!r}")
         check("3d init: stdout reports the repo and the commit",
               "[git] initialized repository" in out and "[git] committed" in out,
@@ -239,9 +270,11 @@ def case_3_cmd_init() -> None:
         with contextlib.redirect_stdout(buf):
             code2 = translate.cmd_init(ns_force, proj)
         rc2, subjects2 = git_log_subjects(proj)
-        check("3g init: --force keeps history (two commits, reinit labeled)",
+        check("3g init: --force keeps history (reinit commits on top)",
               code2 == 0 and rc2 == 0
-              and subjects2 == ["init: reinitialize project", "init: scaffold project"],
+              and subjects2 == ["init: reinitialize project",
+                                "init: backfill and seed",
+                                "init: scaffold project"],
               f"code={code2} rc={rc2} subjects={subjects2!r}")
         check("3h init: --force deletes story_state.json",
               not (proj / "story_state.json").exists(), "")
@@ -377,26 +410,45 @@ def case_6_never_raises() -> None:
 
 
 def case_7_foreign_repo() -> None:
-    """A repository without the skill .gitignore is FOREIGN (the user's own
-    repo): commit() is a None no-op printing exactly one warn naming it --
-    the module-level dedup set makes a second call on the same directory
-    fully silent (it persists for the process, so this case runs after every
+    """The foreign-repo guard is an identity check. A repo with neither the
+    managed marker nor the skill .gitignore is FOREIGN (the user's own repo):
+    commit() is a None no-op printing exactly one warn naming it -- the
+    module-level dedup set makes a second call on the same directory fully
+    silent (it persists for the process, so this case runs after every
     earlier one used skill-managed repos only) -- and `git add -A` never
-    runs: the user's pending file stays untracked and no commit lands."""
+    runs: the user's pending file stays untracked and no commit lands. A
+    different-content .gitignore without a marker is foreign by the same
+    token (existence is not identity); a .gitignore byte-equal GITIGNORE
+    without a marker is a legacy skill repo and commits; a marker wins over
+    a foreign .gitignore."""
     if not vcs.available():
         print("note: git not found on PATH; skipping the foreign-repo checks")
         return
-    with tempfile.TemporaryDirectory() as td:
-        foreign = Path(td)
-        # git init DIRECTLY: ensure_repo() would write the skill .gitignore
-        # and turn the directory into a skill-managed repo.
+
+    def init_plain(proj: Path) -> bool:
+        """git init DIRECTLY: ensure_repo() would write the skill .gitignore
+        and the marker, turning the directory into a skill-managed repo."""
         init = subprocess.run(
-            ["git", "init"], cwd=str(foreign), capture_output=True,
+            ["git", "init"], cwd=str(proj), capture_output=True,
             encoding="utf-8", errors="replace", check=False,
         )
         if init.returncode != 0:
             check("7 setup: git init succeeded", False,
                   f"rc={init.returncode} err={init.stderr!r}")
+            return False
+        return True
+
+    def set_local_identity(proj: Path) -> None:
+        """Local-only identity so the legacy/marked repos can commit without
+        a global git config (ensure_repo would normally do this)."""
+        for argv in (["config", "user.name", "legacy"],
+                     ["config", "user.email", "legacy@localhost"]):
+            subprocess.run(["git", *argv], cwd=str(proj), capture_output=True,
+                           check=False)
+
+    with tempfile.TemporaryDirectory() as td:
+        foreign = Path(td)
+        if not init_plain(foreign):
             return
         (foreign / "pending.txt").write_text(
             "the user's uncommitted work\n", encoding="utf-8", newline="\n")
@@ -434,6 +486,113 @@ def case_7_foreign_repo() -> None:
         check("7e foreign: the user's pending file was never staged away",
               status.returncode == 0 and "?? pending.txt" in status.stdout,
               f"rc={status.returncode} out={status.stdout!r}")
+
+    # A .gitignore with DIFFERENT content and no marker is still foreign:
+    # the guard compares content, it does not settle for any .gitignore.
+    with tempfile.TemporaryDirectory() as td:
+        mixed = Path(td)
+        if not init_plain(mixed):
+            return
+        (mixed / ".gitignore").write_text("node_modules/\n*.log\n",
+                                          encoding="utf-8", newline="\n")
+        (mixed / "pending.txt").write_text(
+            "the user's uncommitted work\n", encoding="utf-8", newline="\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(mixed, "test: foreign by gitignore content")
+        out = buf.getvalue()
+        check("7f mixed: different .gitignore, no marker -> None",
+              sha is None, f"sha={sha!r}")
+        check("7g mixed: exactly one foreign-repo warn",
+              out.count("[warn] git: skipping commits") == 1
+              and "foreign repository" in out and out.count("\n") == 1,
+              f"out={out!r}")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(mixed, "test: foreign, other casing")
+        check("7h mixed: second call silent (warn deduped)",
+              sha is None and buf.getvalue() == "",
+              f"sha={sha!r} out={buf.getvalue()!r}")
+        _rc, subjects = git_log_subjects(mixed)
+        check("7i mixed: nothing ever committed", subjects == [],
+              f"subjects={subjects!r}")
+
+    # Legacy skill repo: .gitignore byte-equal GITIGNORE, no marker (repos
+    # created before the marker existed) -> managed, commits land.
+    with tempfile.TemporaryDirectory() as td:
+        legacy = Path(td)
+        if not init_plain(legacy):
+            return
+        (legacy / ".gitignore").write_text(vcs.GITIGNORE, encoding="utf-8",
+                                           newline="\n")
+        set_local_identity(legacy)
+        (legacy / "pending.txt").write_text(
+            "legacy project state\n", encoding="utf-8", newline="\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(legacy, "test: legacy managed repo")
+        out = buf.getvalue()
+        check("7j legacy: byte-equal .gitignore, no marker -> commits",
+              bool(sha) and "[git] committed" in out, f"sha={sha!r} out={out!r}")
+        _rc, subjects = git_log_subjects(legacy)
+        check("7k legacy: subject listed in git log",
+              _rc == 0 and "test: legacy managed repo" in subjects,
+              f"rc={_rc} subjects={subjects!r}")
+        check("7l legacy: the user's .gitignore was not rewritten",
+              (legacy / ".gitignore").read_text(encoding="utf-8") == vcs.GITIGNORE,
+              "")
+
+    # A repo created by an OLDER version carries the .gitignore that version
+    # wrote: every rule it had, but not the ones added since (covers/). The
+    # legacy test is a SUBSET check for exactly this shape -- an equality
+    # test would read every pre-marker project as a stranger's repository
+    # and silently end its history.
+    with tempfile.TemporaryDirectory() as td:
+        older = Path(td)
+        if not init_plain(older):
+            return
+        historical = "".join(
+            line + "\n" for line in vcs.GITIGNORE.strip().split("\n")
+            if not line.strip().startswith("#") and line.strip() != "covers/"
+        )
+        (older / ".gitignore").write_text(historical, encoding="utf-8", newline="\n")
+        set_local_identity(older)
+        (older / "pending.txt").write_text(
+            "pre-marker project state\n", encoding="utf-8", newline="\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(older, "test: pre-marker repo")
+        out = buf.getvalue()
+        check("7o legacy-historical: .gitignore missing later rules still managed",
+              bool(sha) and "[git] committed" in out
+              and "foreign repository" not in out,
+              f"sha={sha!r} out={out!r}")
+        check("7p legacy-historical: .gitignore left untouched",
+              (older / ".gitignore").read_text(encoding="utf-8") == historical,
+              "")
+
+    # Marker wins: a repo ensure_repo() created carries the marker even when
+    # the user later replaced .gitignore with their own content.
+    with tempfile.TemporaryDirectory() as td:
+        marked = Path(td)
+        if not init_plain(marked):
+            return
+        (marked / ".gitignore").write_text("node_modules/\n", encoding="utf-8",
+                                           newline="\n")
+        (marked / ".git" / vcs.MARKER_NAME).write_text(
+            "managed by novel-translator\n", encoding="utf-8", newline="\n")
+        set_local_identity(marked)
+        (marked / "pending.txt").write_text(
+            "project state\n", encoding="utf-8", newline="\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sha = vcs.commit(marked, "test: marker wins")
+        out = buf.getvalue()
+        check("7m marked: marker present despite foreign .gitignore -> commits",
+              bool(sha) and "[git] committed" in out, f"sha={sha!r} out={out!r}")
+        check("7n marked: the user's .gitignore content is preserved",
+              (marked / ".gitignore").read_text(encoding="utf-8") == "node_modules/\n",
+              "")
 
 
 def case_8_foreign_warn_casing() -> None:
@@ -498,6 +657,70 @@ def case_8_foreign_warn_casing() -> None:
               subjects == [], f"subjects={subjects!r}")
 
 
+def case_9_run_timeout() -> None:
+    """_run's timeout contract: with subprocess on the vcs module swapped
+    for a fake raising TimeoutExpired (the file's attribute-swap convention),
+    _run returns the synthetic failed result -- returncode 124, empty
+    stdout, stderr 'git command timed out after 300s: git <argv>' -- and the
+    real invocation passes timeout=300 and a DEVNULL stdin (a credential
+    prompt must never hang the run). commit() on a managed repo surfaces the
+    timeout as its usual one-line add-failure warn, not a hang or a raise;
+    that half needs a real repo, the pure _run half does not."""
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+    def swap() -> None:
+        vcs.subprocess = SimpleNamespace(
+            run=fake_run,
+            TimeoutExpired=subprocess.TimeoutExpired,
+            CompletedProcess=subprocess.CompletedProcess,
+            DEVNULL=subprocess.DEVNULL,
+        )
+
+    orig_subprocess = vcs.subprocess
+    swap()
+    try:
+        result = vcs._run(Path("nowhere"), ["status", "--porcelain"])
+    finally:
+        vcs.subprocess = orig_subprocess
+    argv, kwargs = calls[-1]
+    check("9a _run: invoked as git status --porcelain",
+          argv == ["git", "status", "--porcelain"], f"argv={argv!r}")
+    check("9b _run: bounded at 300s with DEVNULL stdin",
+          kwargs.get("timeout") == 300 and kwargs.get("stdin") is subprocess.DEVNULL,
+          f"kwargs={kwargs!r}")
+    check("9c _run: timeout -> synthetic returncode 124, empty stdout",
+          result.returncode == 124 and result.stdout == "",
+          f"result={result!r}")
+    check("9d _run: stderr names the timeout and the exact argv",
+          result.stderr == "git command timed out after 300s: git status --porcelain",
+          f"stderr={result.stderr!r}")
+
+    if not vcs.available():
+        print("note: git not found on PATH; skipping the commit-level timeout check")
+        return
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        vcs.ensure_repo(proj)  # before the swap: creates repo, marker, config
+        (proj / "hello.txt").write_text("alpha\n", encoding="utf-8", newline="\n")
+        swap()
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                sha = vcs.commit(proj, "test: timed out")
+            out = buf.getvalue()
+        finally:
+            vcs.subprocess = orig_subprocess
+        check("9e commit: timed-out add -> None, no exception",
+              sha is None, f"sha={sha!r}")
+        check("9f commit: exactly the add-failed warn naming the timeout",
+              out == "[warn] git add failed: git command timed out after "
+                     "300s: git add -A\n", f"out={out!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -511,6 +734,7 @@ def main() -> int:
     case_6_never_raises()
     case_7_foreign_repo()
     case_8_foreign_warn_casing()
+    case_9_run_timeout()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

@@ -13,7 +13,10 @@ current value (compared after strip) counts under skipped with reason
 byte-unchanged -- while a genuinely different suggestion on the same
 entry still applies. The model-tier "mundane" kind gets its own case: it
 survives normalization, maps to `glossary retire`, never auto-fixes, and
-always stays outstanding.
+always stays outstanding. The category-command case pins
+command_for_finding's vocabulary gate: an off-vocabulary category
+suggestion yields NO machine command (the finding lands in the manual
+section; a CLI run would exit 2 on it), while a valid one still maps.
 
 Model-tier cases stub lib.client.chat via review.client (the call site is
 a module-attribute lookup, so the swap takes effect); no network, no
@@ -741,6 +744,77 @@ def case_12_apply_fixes_already_set() -> None:
               f"fixes={fixes}")
 
 
+def case_13_category_command_validation() -> None:
+    """command_for_finding refuses a category suggestion outside
+    glossary.CATEGORIES: apply_fixes() skips invalid categories and the
+    CLI's `glossary set` would exit 2 on one (aborting every later command
+    under review fix --exit-on-error) -- so the finding gets no - Command:
+    bullet and lands in the manual-review section; a valid category still
+    emits the command."""
+    check("13a category: off-vocabulary suggestion -> no command spec",
+          review.command_for_finding(
+              {"source": "灵石", "kind": "category", "severity": "warn",
+               "reason": "miscategorized", "suggestion": "creature",
+               "origin": "model"}) is None, "")
+    check("13b category: padded off-vocabulary suggestion stripped first",
+          review.command_for_finding(
+              {"source": "灵石", "kind": "category", "severity": "warn",
+               "reason": "miscategorized", "suggestion": "  creature  ",
+               "origin": "model"}) is None, "")
+    check("13c category: valid suggestion still maps to glossary set",
+          review.command_for_finding(
+              {"source": "灵根", "kind": "category", "severity": "warn",
+               "reason": "miscategorized", "suggestion": "skill",
+               "origin": "model"})
+          == {"name": "glossary set",
+              "args": {"source": "灵根", "category": "skill"}}, "")
+
+    with tempfile.TemporaryDirectory() as td:
+        project_dir = Path(td)
+        terms = [
+            {"source": "灵根", "translation": "spirit root",
+             "category": "level"},
+            {"source": "灵石", "translation": "spirit stone",
+             "category": "blah"},
+        ]
+        write_glossary(project_dir, terms)
+        findings = [
+            {"source": "灵根", "kind": "category", "severity": "warn",
+             "reason": "miscategorized", "suggestion": "skill",
+             "origin": "model"},
+            {"source": "灵石", "kind": "category", "severity": "warn",
+             "reason": "model picked an off-vocabulary category",
+             "suggestion": "creature", "origin": "model"},
+        ]
+        path = review.write_report(
+            project_dir, findings=findings, terms=terms, applied=[],
+            skipped=[], ran_fix=False, batches=1, batch_errors=[],
+            cfg={"source_lang": "zh", "target_lang": "en"},
+        )
+        text = path.read_text(encoding="utf-8")
+        check("13d category: only the valid finding carries a Command bullet",
+              text.count("\n- Command: glossary ") == 1
+              and "\n- Command: glossary set --source '灵根' "
+                  "--category skill\n" in text,
+              "command bullets wrong")
+        check("13e category: the invalid finding sits in the manual section",
+              "## Needs manual review (decide yourself or hand to an agent)" in text
+              and "### [2] warn / category / 灵石" in text
+              and text.index("## Machine-applicable")
+              < text.index("### [1] warn / category / 灵根")
+              < text.index("## Needs manual review")
+              < text.index("### [2] warn / category / 灵石"),
+              "section placement wrong")
+        check("13f category: frontmatter split reflects the routing",
+              "\nmachine_applicable: 1\n" in text
+              and "\nmanual_review: 1\n" in text
+              and "\nmanual_review_indices: [2]\n" in text,
+              "frontmatter wrong")
+        check("13g category: manual finding keeps its Action guidance",
+              '- Action: Set `category` to "creature".' in text,
+              "action line wrong")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -758,6 +832,7 @@ def main() -> int:
     case_10_report()
     case_11_mundane()
     case_12_apply_fixes_already_set()
+    case_13_category_command_validation()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

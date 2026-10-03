@@ -122,8 +122,14 @@ def audit_notes(project_dir: Path, cfg: dict, chapters: str | None = None,
     it to exit 2); per-chapter problems (missing/unreadable translated or
     source file) warn and skip, never abort the run."""
     if batch_size is None:
-        batch_size = int(cfg.get("review_batch_size",
-                                 config.DEFAULTS["review_batch_size"]))
+        # get_number maps a null/garbage review_batch_size to a clean
+        # ValueError; a cfg without the key (test fixtures) keeps the
+        # DEFAULTS fallback.
+        batch_size = int(
+            config.get_number(cfg, "review_batch_size")
+            if "review_batch_size" in cfg
+            else config.DEFAULTS["review_batch_size"]
+        )
     if batch_size < 1:
         batch_size = int(config.DEFAULTS["review_batch_size"])
 
@@ -404,13 +410,20 @@ def review_notes(project_dir: Path, cfg: dict, chapters: str | None = None,
 
     Returns the finding count (the CLI exits 0 regardless -- this tier is
     advisory, there is no fix path). A run with no reviewable notes prints
-    one [ok] line and writes nothing, mirroring how `review glossary`
-    treats an empty glossary."""
+    one [ok] line (a [warn] instead when every selected chapter was
+    skipped) and writes nothing, mirroring how `review glossary` treats an
+    empty glossary."""
     result = audit_notes(project_dir, cfg, chapters=chapters, batch_size=batch_size)
     findings = result["findings"]
     logger.log_event(project_dir, {"event": "notes_review", **result})
     if not result["chapters"]:
-        print("[ok] no chapter notes found - nothing to review")
+        if result["skipped"]:
+            # Sidecars existed but every selected chapter failed to load:
+            # "[ok] nothing to review" would be wrong.
+            print(f"[warn] no chapter notes reviewed: {len(result['skipped'])} "
+                  "chapter(s) skipped (see failures above)")
+        else:
+            print("[ok] no chapter notes found - nothing to review")
         return 0
     report_path = write_report(project_dir, result=result, cfg=cfg)
     kinds = _kind_counts(findings)

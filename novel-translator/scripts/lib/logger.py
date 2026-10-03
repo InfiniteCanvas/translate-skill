@@ -1,16 +1,18 @@
 """Per-invocation JSONL trace logs with retention: logs/llm-* runs.
 
-Each CLI process writes one file -- llm-YYYYMMDD-HHMMSS-<command>-<pid>.jsonl
--- decided once at the process's first logged event; every LLM call lands
-there with the full prompt, raw response, finish_reason, usage, sampling
-params, and elapsed time, alongside the pipeline's stage/gate events. This
-is the debugging ground truth -- the console output is a summary, the log is
-what actually happened.
+Each CLI process writes one file per project it logs for --
+llm-YYYYMMDD-HHMMSS-<command>-<pid>.jsonl, decided at that project's first
+logged event and re-pointed whenever log_event sees a different project_dir
+(two projects in one process never append into each other's logs/); every
+LLM call lands there with the full prompt, raw response, finish_reason,
+usage, sampling params, and elapsed time, alongside the pipeline's
+stage/gate events. This is the debugging ground truth -- the console output
+is a summary, the log is what actually happened.
 
-At first write the process also prunes logs/llm-*.jsonl (including files
-from the old daily scheme) to the newest config log_llm_keep_runs entries
-by modification time. Logging must never break the pipeline: all failures
-are swallowed.
+At each run file's first write the project's logs/llm-*.jsonl (including
+files from the old daily scheme) are pruned to the newest config
+log_llm_keep_runs entries by modification time. Logging must never break
+the pipeline: all failures are swallowed.
 """
 
 from __future__ import annotations
@@ -27,7 +29,12 @@ from typing import Any
 # Plain package import (no cycle: config imports nothing from lib).
 from lib import config
 
+# The current run's JSONL file and the resolved project_dir it belongs to:
+# log_event re-points both whenever it sees a different project_dir (a second
+# project logged in-process must not append into the first project's logs/).
+# Setting _run_path = None forces the next event to open a fresh run.
 _run_path: Path | None = None
+_run_project: Path | None = None
 
 
 def _command_tag() -> str:
@@ -74,16 +81,20 @@ def _prune(base: Path, keep: int) -> None:
 
 
 def log_event(project_dir: Path | str, event: dict[str, Any]) -> None:
-    """Append one event to this invocation's JSONL log (best effort)."""
-    global _run_path
+    """Append one event to this invocation's per-project JSONL log (best
+    effort): a different resolved project_dir re-points the run file, and
+    clearing `_run_path` (None) forces the next event to start a fresh run."""
+    global _run_path, _run_project
     try:
-        if _run_path is None:
-            base = Path(project_dir) / "logs"
+        proj = Path(project_dir).resolve()
+        if _run_path is None or _run_project != proj:
+            base = proj / "logs"
             base.mkdir(parents=True, exist_ok=True)
             stamp = time.strftime("%Y%m%d-%H%M%S")
             _run_path = base / f"llm-{stamp}-{_command_tag()}-{os.getpid()}.jsonl"
+            _run_project = proj
             _run_path.touch()  # occupy a retention slot before pruning
-            _prune(base, _keep_count(Path(project_dir)))
+            _prune(base, _keep_count(proj))
         entry = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **event}
         with _run_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")

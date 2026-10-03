@@ -8,6 +8,7 @@ exists solely for the CLI's opt-in --fix (in-review fix path)."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 from datetime import datetime, timezone
@@ -366,8 +367,12 @@ def command_for_finding(finding: dict) -> dict | None:
       -> ``glossary replace --source S --translation T``
     - `definition` with a non-empty `suggestion`
       -> ``glossary set --source S --definition D``
-    - `category` with a non-empty `suggestion`
-      -> ``glossary set --source S --category C``
+    - `category` with a non-empty `suggestion` that is one of
+      glossary.CATEGORIES
+      -> ``glossary set --source S --category C`` (an off-vocabulary
+      suggestion returns None -- apply_fixes() refuses it and the CLI's
+      `glossary set` would exit 2 -- so the finding stays in the
+      manual-review section)
     - heuristic `variant` carrying `variant_to_remove`
       -> ``glossary set --source S --remove-variant V``
     - heuristic `duplicate` carrying `merge_with`
@@ -406,6 +411,15 @@ def command_for_finding(finding: dict) -> dict | None:
                 "args": {"source": source, "definition": suggestion},
             }
         if kind == "category":
+            # apply_fixes() skips invalid categories ("invalid category")
+            # and the CLI's `glossary set` exits 2 on one -- which, under
+            # review fix --exit-on-error, would abort every later command.
+            # A suggestion outside glossary.CATEGORIES therefore gets no
+            # machine command: returning None routes the finding to the
+            # manual-review section (write_report) or to "needs a decision"
+            # (lib/fix.py legacy synthesis).
+            if suggestion not in glossary.CATEGORIES:
+                return None
             return {
                 "name": "glossary set",
                 "args": {"source": source, "category": suggestion},
@@ -478,10 +492,13 @@ def write_report(
     The report opens with a hand-built YAML frontmatter block (stdlib only,
     no yaml dependency) summarizing the run at a glance: report type,
     generation timestamp and generating command, languages, entry and
-    batch-error counts, the outstanding warn/info tally, and the
-    machine-applicable / needs-manual-review split with the `[N]` indices
-    of the manual findings -- so an agent pointed at the file sees what
-    needs hands-on work before reading the body.
+    batch-error counts, a glossary_digest staleness anchor (sha256 of
+    glossary.json's bytes at write time, first 12 hex chars; null when the
+    file is missing -- fix.report_is_stale compares it against the current
+    file before `review fix` applies anything), the outstanding warn/info
+    tally, and the machine-applicable / needs-manual-review split with the
+    `[N]` indices of the manual findings -- so an agent pointed at the file
+    sees what needs hands-on work before reading the body.
 
     Outstanding findings (same fix-resolution rule as the CLI's warn/info
     tally, see outstanding_filter) are split by machine-applicability
@@ -543,6 +560,21 @@ def write_report(
     generated = datetime.now(timezone.utc).isoformat(timespec='seconds')
     generated_by = "review glossary --fix" if ran_fix else "review glossary"
 
+    # Staleness anchor for `review fix`: digest of the glossary as it stood
+    # at write time. fix.report_is_stale recomputes it over the current
+    # file's bytes, so a report is never replayed over glossary data that
+    # changed after generation (hand edits, a later --fix). null when
+    # glossary.json is missing -- the checker hashes b"" in that case, so
+    # any real digest disagrees with a deleted file deliberately.
+    glossary_path = Path(project_dir) / "glossary.json"
+    if glossary_path.is_file():
+        glossary_digest = hashlib.sha256(
+            glossary_path.read_bytes()
+        ).hexdigest()[:12]
+    else:
+        glossary_digest = None
+    digest_text = glossary_digest if glossary_digest is not None else "null"
+
     lines: list[str] = [
         "---",
         "report_type: glossary-review",
@@ -552,6 +584,7 @@ def write_report(
         f"target_lang: {cfg.get('target_lang', '')}",
         f"entries_reviewed: {len(terms)}",
         f"batch_errors: {len(batch_errors)}",
+        f"glossary_digest: {digest_text}",
         "outcome:",
         f"  warn: {n_warn}",
         f"  info: {n_info}",

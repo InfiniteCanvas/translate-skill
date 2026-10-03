@@ -16,6 +16,9 @@ just-assembled chapter by ONE recap-provider call over recap.md.
   backwards -- never a recursive chain.
 - record_recap writes the chapter's OWN entry after ASSEMBLE succeeds,
   unconditionally overwriting it (retranslation refreshes the recap).
+- load_state prunes entries whose file stem is no longer in the manifest
+  (a re-ingestion that renumbered or reused stems), so a stale stem can
+  never surface another chapter's recap as [Background Information].
 
 Everything here is advisory context, never a gate: any failure prints one
 [warn] line and degrades to "no recap" -- a chapter must never fail because
@@ -51,7 +54,12 @@ def load_state(project_dir: Path) -> dict:
     """Load story_state.json ({"chapters": {}} when missing; a malformed
     file is discarded -- recaps start fresh, never a crash -- with one
     [warn] line so the reset is never silent; tn.load_history's
-    convention)."""
+    convention). Entries whose stem is absent from the current manifest
+    (re-ingestion renumbered or reused a stem) are dropped on load so a
+    stale stem can never inject another chapter's recap; pruning is silent
+    housekeeping -- the pruned state reaches disk at the next save_state --
+    and is skipped when the manifest is missing, empty, or unreadable (never
+    destroy on uncertain grounds)."""
     path = _state_path(project_dir)
     if not path.is_file():
         return {"chapters": {}}
@@ -70,7 +78,27 @@ def load_state(project_dir: Path) -> dict:
     if reason is not None:
         print(f"[warn] story_state.json unreadable ({reason}) - recaps start fresh")
         return {"chapters": {}}
+    _prune_absent_stems(project_dir, data)
     return data
+
+
+def _prune_absent_stems(project_dir: Path, state: dict) -> None:
+    """Drop state["chapters"] entries whose stem is not in the current
+    manifest: entries are keyed by stem and only ever added, so a renumbered
+    or reused stem would otherwise inject another chapter's stale recap as
+    [Background Information]. Skipped when the manifest is missing, empty,
+    or unreadable -- pruning must not destroy data on uncertain grounds.
+    Silent: routine housekeeping, not a failure."""
+    try:
+        manifest = project.load_manifest(project_dir)
+    except (OSError, ValueError):  # corrupt chapters.json (JSONDecodeError)
+        return
+    if not manifest:
+        return
+    stems = {Path(str(entry.get("file"))).stem
+             for entry in manifest if entry.get("file")}
+    state["chapters"] = {stem: entry for stem, entry
+                         in state["chapters"].items() if stem in stems}
 
 
 def save_state(project_dir: Path, state: dict) -> None:

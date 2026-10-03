@@ -30,7 +30,13 @@ commit; skipped gracefully when no git binary is on PATH); and the recap
 parity (the re-check's annotator prompt frames the novel background plus
 the PREDECESSOR chapter's stored recap, byte-identical to the pipeline's
 TN_GENERATE background frame — read-only: story_state.json is neither
-written nor backfilled, and no recap means no frame).
+written nor backfilled, and no recap means no frame); and the
+empty-annotation guard (a "successful" evaluation keeping ZERO notes over
+a chapter with a non-empty baseline is a failed evaluation — sidecar and
+markdown byte-unchanged in the clean AND the legacy-baked variant, dry-run
+reports the same shape with the [dry-run] prefix, zero baseline + zero
+kept stays benign, a healthy re-annotation still works, and cmd_tn maps
+the failed chapter to exit 1).
 
 Every case builds a full sandbox project (source/, translated/,
 chapters.json, optional tn_history.json) inside tempfile.TemporaryDirectory()
@@ -48,6 +54,8 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
 # ///
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -700,6 +708,209 @@ def case_13_recap_parity() -> None:
               "")
 
 
+def case_14_empty_annotation_guard() -> None:
+    """A 'successful' evaluation that keeps ZERO notes over a chapter with
+    a non-empty baseline must not destroy it: tn.save_notes unlinks an
+    empty sidecar, and in the legacy-migration branch the markdown rewrite
+    would strip the only baked copy BEFORE that unlink. The recheck treats
+    it as a failed evaluation -- before ANY mutation: sidecar and markdown
+    byte-unchanged, nothing counted changed/migrated, no tn_history write,
+    the file in `failed` (cmd_tn exits 1), the exact warn line -- while
+    zero baseline + zero kept stays a benign no-op and a healthy
+    re-annotation still works."""
+    payload = {"notes": []}
+
+    # A: clean chapter with a pre-existing sidecar -> guard fires, nothing
+    #    written anywhere
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+        ])
+        tn.save_notes(
+            root, "Chapter_0001.md", ["Line zero body.", "Line one body."],
+            [{"line": 0, "term": "旧词", "note": "Old note."}],
+        )
+        sidecar_bytes = tn.notes_path(root, "Chapter_0001.md").read_bytes()
+        chapter_bytes = (root / "translated" / "Chapter_0001.md").read_bytes()
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = run(root, manifest, ["Chapter_0001.md"],
+                         fake_chat_factory(payload))
+        out = buf.getvalue()
+
+        check("14a guard: file failed, nothing changed/migrated (the "
+              "annotator-exception result shape)",
+              result == {"scanned": 1, "changed": 0, "migrated": 0,
+                         "notes_before": 0, "notes_after": 0,
+                         "failed": ["Chapter_0001.md"], "skipped": [],
+                         "dry_run": False},
+              f"result={result}")
+        check("14b guard: sidecar byte-unchanged (not unlinked)",
+              tn.notes_path(root, "Chapter_0001.md").read_bytes()
+              == sidecar_bytes, "")
+        check("14c guard: translated markdown byte-unchanged",
+              (root / "translated" / "Chapter_0001.md").read_bytes()
+              == chapter_bytes, "")
+        check("14d guard: no tn_history.json written for the failed chapter",
+              not (root / "tn_history.json").exists(), "")
+        check("14e guard: exact warn line, nothing else printed",
+              out == "[tn] Chapter_0001.md: annotator returned 0 notes "
+                     "for a chapter with 1 note(s) - keeping existing "
+                     "sidecar\n",
+              f"out={out!r}")
+
+    # B: LEGACY chapter with baked notes -> the rewrite must not strip the
+    #    only on-disk copy either (the migration branch sits behind the
+    #    same guard)
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": LEGACY_MD},
+        ])
+        chapter_bytes = (root / "translated" / "Chapter_0001.md").read_bytes()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = run(root, manifest, ["Chapter_0001.md"],
+                         fake_chat_factory(payload))
+        out = buf.getvalue()
+
+        check("14f guard legacy: failed, nothing migrated",
+              result["failed"] == ["Chapter_0001.md"]
+              and result["migrated"] == 0 and result["changed"] == 0,
+              f"result={result}")
+        check("14g guard legacy: baked markdown byte-unchanged",
+              (root / "translated" / "Chapter_0001.md").read_bytes()
+              == chapter_bytes, "")
+        check("14h guard legacy: no sidecar created, no history written",
+              not tn.notes_path(root, "Chapter_0001.md").exists()
+              and not (root / "tn_history.json").exists(), "")
+        check("14i guard legacy: exact warn line",
+              out == "[tn] Chapter_0001.md: annotator returned 0 notes "
+                     "for a chapter with 1 note(s) - keeping existing "
+                     "sidecar\n",
+              f"out={out!r}")
+
+    # C: dry-run reports the same failure shape (with the [dry-run]
+    #    prefix) and mutates nothing
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": LEGACY_MD},
+        ])
+        chapter_bytes = (root / "translated" / "Chapter_0001.md").read_bytes()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = run(root, manifest, ["Chapter_0001.md"],
+                         fake_chat_factory(payload), dry_run=True)
+        out = buf.getvalue()
+
+        check("14j guard dry-run: failed, dry_run flagged, nothing counted",
+              result["dry_run"] is True
+              and result["failed"] == ["Chapter_0001.md"]
+              and result["changed"] == 0 and result["migrated"] == 0,
+              f"result={result}")
+        check("14k guard dry-run: legacy markdown byte-unchanged",
+              (root / "translated" / "Chapter_0001.md").read_bytes()
+              == chapter_bytes, "")
+        check("14l guard dry-run: exact warn line with the [dry-run] prefix",
+              out == "[dry-run] [tn] Chapter_0001.md: annotator returned 0 "
+                     "notes for a chapter with 1 note(s) - keeping "
+                     "existing sidecar\n",
+              f"out={out!r}")
+
+    # D: zero baseline + zero kept is a benign no-op (no warn, not failed)
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+        ])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = run(root, manifest, ["Chapter_0001.md"],
+                         fake_chat_factory(payload))
+        out = buf.getvalue()
+
+        check("14m benign: zero baseline + zero kept -> no warn, not failed",
+              result["failed"] == [] and result["changed"] == 0
+              and result["scanned"] == 1
+              and result["notes_before"] == 0 and result["notes_after"] == 0
+              and "annotator returned 0 notes" not in out,
+              f"result={result} out={out!r}")
+        check("14n benign: no sidecar created",
+              not tn.notes_path(root, "Chapter_0001.md").exists(), "")
+
+    # E: a healthy re-annotation still works (regression): the fresh notes
+    #    replace the baseline, counted changed, history updated
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+        ])
+        tn.save_notes(
+            root, "Chapter_0001.md", ["Line zero body.", "Line one body."],
+            [{"line": 0, "term": "旧词", "note": "Old note."}],
+        )
+        chat = fake_chat_factory(
+            {"notes": [{"line": 1, "term": "清明",
+                        "note": "Tomb-sweeping festival."}]})
+        result = run(root, manifest, ["Chapter_0001.md"], chat)
+        notes = tn.load_notes(root, "Chapter_0001.md")
+        check("14o regression: re-annotation replaces the baseline",
+              result["failed"] == [] and result["changed"] == 1
+              and result["notes_before"] == 1 and result["notes_after"] == 1
+              and len(notes) == 1 and notes[0]["term"] == "清明",
+              f"result={result} notes={notes}")
+        history = json.loads((root / "tn_history.json").read_text(
+            encoding="utf-8"))
+        check("14p regression: history threaded for the healthy chapter",
+              history.get("清明", {}).get("last_order") == 0
+              and history.get("清明", {}).get("times") == 1,
+              f"history={history}")
+
+    # F: the CLI contract -- cmd_tn maps the failed chapter to exit 1
+    #    (pipeline._chat stubbed: cmd_tn builds its own default annotator)
+    import argparse
+
+    import translate
+
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+        ])
+        write_lf(root / "config.json", '{"providers": {}}\n')
+        tn.save_notes(
+            root, "Chapter_0001.md", ["Line zero body.", "Line one body."],
+            [{"line": 0, "term": "旧词", "note": "Old note."}],
+        )
+        orig_chat = translate.pipeline._chat
+        translate.pipeline._chat = (
+            lambda *a, **k: json.dumps(payload, ensure_ascii=False))
+        try:
+            outbuf, errbuf = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(outbuf), \
+                    contextlib.redirect_stderr(errbuf):
+                code = translate.cmd_tn(
+                    argparse.Namespace(chapters="Chapter_0001.md",
+                                       dry_run=False, no_build=True),
+                    root,
+                )
+        finally:
+            translate.pipeline._chat = orig_chat
+
+        check("14q guard CLI: cmd_tn exits 1 on the failed chapter",
+              code == 1, f"code={code}")
+        check("14r guard CLI: the [FAIL] line names the file",
+              "tn re-check: could not re-evaluate: Chapter_0001.md"
+              in errbuf.getvalue(),
+              f"stderr={errbuf.getvalue()!r}")
+        kept = tn.load_notes(root, "Chapter_0001.md")
+        check("14s guard CLI: the sidecar survived on disk",
+              len(kept) == 1 and kept[0]["term"] == "旧词", f"kept={kept}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -718,6 +929,7 @@ def main() -> int:
     case_11_retry_wipe_sidecar()
     case_12_history_only_drift_commits()
     case_13_recap_parity()
+    case_14_empty_annotation_guard()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

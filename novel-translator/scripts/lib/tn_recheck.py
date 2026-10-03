@@ -15,8 +15,12 @@ detected up front, but the clean-markdown rewrite lands only after the
 annotator succeeded -- a failed run leaves a legacy chapter byte-unchanged
 (baked notes are the only copy on disk until the sidecar exists).
 Annotator failures keep the existing notes/sidecar/history and never abort
-the run -- the caller reports the failed files. Eligibility problems
-(not translated, missing files) skip per chapter instead of raising.
+the run -- the caller reports the failed files. A "successful" evaluation
+that keeps ZERO notes over a chapter with a non-empty baseline counts as a
+failure too: save_notes unlinks an empty sidecar (and the migration rewrite
+would strip the only baked copy first), so the existing notes must win.
+Eligibility problems (not translated, missing files) skip per chapter
+instead of raising.
 """
 
 from __future__ import annotations
@@ -82,7 +86,8 @@ def recheck_chapters(
     migration rewrite, not the sidecar, not tn_history.json. Returns
     {"scanned", "changed", "migrated", "notes_before", "notes_after",
     "failed": [files], "skipped": [files], "dry_run": bool}; note counts
-    are totals across chapters.
+    are totals across chapters (failed chapters count in neither, exactly
+    like the annotator-exception path).
     """
     paths = project.paths(project_dir)
     prefix = "[dry-run] " if dry_run else ""
@@ -232,12 +237,29 @@ def recheck_chapters(
         # The legacy migration rewrite lands only here, after the annotator
         # succeeded: a failed run must leave a legacy chapter byte-unchanged
         # (its baked notes are the only copy on disk until the sidecar write).
+        history_in = history
         kept, history, warnings, dropped = tn.process(
             raw_notes, len(body_lines), chapter_order, history, gap, keep_low,
             max_notes=max_notes,
         )
         for warning in warnings:
             print(f"[tn] {file}: [warn] {warning}")
+        # A "successful" evaluation that keeps ZERO notes over a chapter
+        # with a non-empty baseline must not destroy it -- before ANY
+        # mutation: save_notes unlinks an empty sidecar, and in the
+        # migration branch the rewrite below would strip the only baked
+        # copy first. Treat it exactly like a failed evaluation: keep
+        # sidecar and markdown, keep the threaded history untouched (no
+        # tn_history write for this chapter), report the file in `failed`
+        # (cmd_tn exits 1). Zero baseline + zero kept stays a benign no-op.
+        if not kept and baseline:
+            history = history_in
+            print(
+                f"{prefix}[tn] {file}: annotator returned 0 notes for a "
+                f"chapter with {len(baseline)} note(s) - keeping existing sidecar"
+            )
+            failed.append(file)
+            continue
         if not dry_run:
             if did_migrate:
                 # Surgical rewrite (replace.py's frontmatter rule): keep the

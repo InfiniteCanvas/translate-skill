@@ -708,6 +708,49 @@ def case_7_cli_smoke() -> None:
               f"ns={ns}")
 
 
+def case_8_all_skipped_console() -> None:
+    """A run where every selected chapter was skipped prints the [warn]
+    all-skipped line (never the [ok] nothing-to-review line) and writes
+    nothing; a project with no sidecars at all keeps the [ok] line."""
+    import io
+    from contextlib import redirect_stdout
+
+    with tempfile.TemporaryDirectory() as td:
+        root = make_project(td, [
+            # sidecar present, translated file missing -> warn + skip
+            {"file": "Chapter_0001.md", "order": 0, "source_md": SOURCE_MD},
+        ])
+        write_sidecar(root, "Chapter_0001.md", [dict(NOTE_A)])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = review_notes.review_notes(root, review_cfg())
+        text = out.getvalue()
+        check("8a all-skipped: exits 0", code == 0, f"code={code}")
+        check("8b all-skipped: warn names the skipped count",
+              "[warn] no chapter notes reviewed: 1 chapter(s) skipped"
+              " (see failures above)" in text,
+              f"out={text!r}")
+        check("8c all-skipped: no [ok] nothing-to-review line",
+              "[ok] no chapter notes found" not in text, f"out={text!r}")
+        check("8d all-skipped: no report written",
+              not (root / "review-report.md").exists())
+
+    with tempfile.TemporaryDirectory() as td:
+        root = make_project(td, [
+            {"file": "Chapter_0001.md", "order": 0,
+             "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
+        ])  # no sidecar anywhere
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = review_notes.review_notes(root, review_cfg())
+        text = out.getvalue()
+        check("8e no-sidecars: [ok] line kept",
+              code == 0 and "[ok] no chapter notes found - nothing to review" in text,
+              f"code={code} out={text!r}")
+        check("8f no-sidecars: no all-skipped warn",
+              "no chapter notes reviewed" not in text, f"out={text!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -720,6 +763,7 @@ def main() -> int:
     case_5_chapter_selection()
     case_6_report()
     case_7_cli_smoke()
+    case_8_all_skipped_console()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

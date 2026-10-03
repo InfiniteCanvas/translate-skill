@@ -15,10 +15,17 @@ through one shared mapping function (review.command_for_finding).
 Exit codes follow the CLI convention: 0 ok/no-op, 1 any command failed,
 2 usage or setup error (missing report, zero commands parseable or
 synthesizable).
+
+report_is_stale() is the staleness half of the report contract: it
+compares the writer's glossary_digest frontmatter anchor (see
+review.write_report) against the current glossary.json so a report is
+never replayed over glossary data that changed after generation.
 """
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import shlex
 import subprocess
@@ -35,16 +42,13 @@ from . import balance, glossary, review
 # is ignored with a warning, never executed.
 _SUPPORTED_VERBS = {"replace", "set", "merge", "retire"}
 
-# Substrings in a subcommand's stdout/stderr that signal "no change was made".
-# Used to bucket a successful exit into applied vs noop.
-_NOOP_SIGNALS = (
-    "already up-to-date",
-    "nothing to do",
-    "nothing to apply",
-    "no-op",
-    "already retired",  # also catches "merge: 'X' already retired" no-ops
-    "already translates as",
-)
+# Machine-detectable no-op marker: the CLI prints a line starting with this
+# prefix in every nothing-changed path (already up-to-date, already retired,
+# nothing to apply, ...). _looks_like_noop keys the applied/noop bucket on
+# that marker alone -- keying on prose substrings false-positived when a
+# model-written definition containing e.g. "nothing to do" was echoed
+# verbatim by a success line.
+_NOOP_MARKER = "[glossary] noop:"
 
 # Exact, full-line templates for heuristic reason lines. Anchored, no
 # free-form prose is matched anywhere -- the parser refuses to interpret
@@ -100,6 +104,52 @@ def parse_report(path: Path) -> tuple[list[CommandSpec], int]:
                if findings_count else "")
         )
     return specs, findings_count
+
+
+def _report_frontmatter(path: Path) -> dict[str, str]:
+    """Flat `key: value` pairs from a report's YAML frontmatter block (the
+    first line through the closing `---`), read utf-8-sig like
+    parse_report so a BOM cannot hide the opening fence.
+
+    Only top-level scalars are returned -- indented (nested) lines such as
+    the `outcome:` children are skipped. Empty dict when the file is
+    unreadable or has no frontmatter block."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return {}
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    frontmatter: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line[:1].isspace() or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        frontmatter[key.strip()] = value.strip()
+    return frontmatter
+
+
+def report_is_stale(project_dir: Path, report_path: Path) -> bool:
+    """True when the report was generated against a glossary.json that has
+    since changed: its `glossary_digest` frontmatter field (stamped by
+    review.write_report) no longer matches sha256 of the current
+    glossary.json bytes, first 12 hex chars.
+
+    cmd_review_fix uses this to refuse replaying suggestions over newer
+    data (hand edits, a later --fix). Absent or `null` digest -> False, so
+    old or hand-written reports stay runnable -- only writer-generated
+    reports carry the field. A missing glossary.json hashes b"" for
+    stability; an unreadable report -> False (nothing proves staleness).
+    """
+    digest = _report_frontmatter(report_path).get("glossary_digest", "")
+    if not digest or digest == "null":
+        return False
+    glossary_path = Path(project_dir) / "glossary.json"
+    current = glossary_path.read_bytes() if glossary_path.is_file() else b""
+    return hashlib.sha256(current).hexdigest()[:12] != digest
 
 
 def _parse_explicit(lines: list[str]) -> list[CommandSpec]:
@@ -236,6 +286,70 @@ def invalid_translation_reason(argv: list[str], g: dict) -> str | None:
     return None
 
 
+def _resolve_source(g: dict, value: str | None) -> str | None:
+    """Canonical source for a user-supplied lookup value: the matched
+    entry's source when glossary.find() resolves it (source or variants),
+    else the literal value itself (no entry yet -- the subprocess reports
+    that). None only when value is None."""
+    if value is None:
+        return None
+    entry = glossary.find(g, value)
+    if entry is not None:
+        source = entry.get("source")
+        if isinstance(source, str) and source:
+            return source
+    return value
+
+
+# `glossary set` flags whose field edits the conflict guard tracks, in the
+# order the key picks the first present one. Variant/alt edits name their
+# own string and stay untracked.
+_SET_FIELD_FLAGS = ("--definition", "--category", "--translation")
+
+
+def _conflict_key(argv: list[str], g: dict) -> tuple[str, str] | None:
+    """(verb-target, resolved source) identity of one Command spec, or None
+    when the command has no glossary target the conflict guard tracks.
+
+    Keys: replace -> ("replace", source); set -> ("set:<field>", source)
+    for the first of --definition/--category/--translation present; merge
+    -> ("merge", resolved --keep); retire -> ("retire", source). Sources
+    resolve through glossary.find() so a command naming a variant and one
+    naming the canonical source collide -- exactly the pair that would
+    double-apply one review suggestion on the same entry, mirroring the
+    in-review path's skip on (entry, field)."""
+    if len(argv) < 2 or argv[0] != "glossary":
+        return None
+    verb = argv[1]
+    if verb in ("replace", "retire"):
+        source = _resolve_source(g, _argv_value(argv, "--source"))
+        if source is None:
+            return None
+        return (verb, source)
+    if verb == "set":
+        field = next(
+            (flag for flag in _SET_FIELD_FLAGS
+             if _argv_value(argv, flag) is not None),
+            None,
+        )
+        if field is None:
+            return None
+        source = _resolve_source(g, _argv_value(argv, "--source"))
+        if source is None:
+            return None
+        return (f"set:{field[2:]}", source)
+    if verb == "merge":
+        keep = _resolve_source(g, _argv_value(argv, "--keep"))
+        remove = _resolve_source(g, _argv_value(argv, "--remove"))
+        if keep is None or remove is None:
+            return None
+        # Keyed on the PAIR: one report legitimately emits
+        # `merge --keep M --remove A` and `merge --keep M --remove B` when two
+        # entries are duplicates of the same keeper, and both must run.
+        return ("merge", keep, remove)
+    return None
+
+
 def run_commands(
     project_dir: Path,
     script_path: Path,
@@ -249,7 +363,11 @@ def run_commands(
     executor can run a single batch-wide epub build at the end. Captures
     stdout/stderr per call, returns counts. Every spec is first checked
     against a freshly loaded glossary so wrong-language suggestions are
-    skipped in-process (see invalid_translation_reason).
+    skipped in-process (see invalid_translation_reason), and its resolved
+    (verb-target, source) key against the keys already queued in THIS call
+    so a second command for the same target is skipped as a conflict --
+    the in-review path (review.apply_fixes) refuses same-(entry, field)
+    duplicates the same way (see _conflict_key).
     """
     specs = list(specs)
     applied = 0
@@ -257,6 +375,8 @@ def run_commands(
     failed = 0
     specs_run = 0  # subprocesses actually started (skipped guards excluded)
     skipped_invalid = 0
+    skipped_conflict = 0
+    seen_keys: set[tuple[str, str]] = set()
     changed_chapters = False
 
     for i, spec in enumerate(specs, 1):
@@ -278,11 +398,12 @@ def run_commands(
         # corrupt file defers to the subprocess -- the guard's verdict is
         # moot when the verb itself cannot run.
         try:
-            reason = invalid_translation_reason(
-                spec.argv, glossary.load(project_dir)
-            )
+            g = glossary.load(project_dir)
         except ValueError:
-            reason = None
+            g = None
+        reason = (
+            invalid_translation_reason(spec.argv, g) if g is not None else None
+        )
         if reason is not None:
             skipped_invalid += 1
             print(
@@ -290,6 +411,22 @@ def run_commands(
                 f" ({' '.join(shlex.quote(t) for t in spec.argv)})"
             )
             continue
+        # Conflict guard: a second command for the same resolved target --
+        # an identical re-run or a contradicting suggestion -- never runs;
+        # the first command wins. The key is queued regardless of the first
+        # command's exit, so a failed first attempt still blocks its
+        # duplicates (a contradicting retry of a broken command is not
+        # safer than the original).
+        key = _conflict_key(spec.argv, g) if g is not None else None
+        if key is not None and key in seen_keys:
+            skipped_conflict += 1
+            print(
+                f"[review fix] skipped [{i}]: conflicting command for "
+                f"'{key[1]}' (already queued)"
+            )
+            continue
+        if key is not None:
+            seen_keys.add(key)
         argv = _prepare_argv(spec.argv)
         # The executor always prepends --project at the top level (the
         # GLOBAL flag, dest="project_global"). Writer-generated Command
@@ -305,10 +442,30 @@ def run_commands(
         # The child (translate.py) reconfigures its stdout/stderr to UTF-8
         # before printing CJK terms, so decode with the same codec -- the
         # Windows locale default (cp1252) raises UnicodeDecodeError here.
-        proc = subprocess.run(
-            full_argv, capture_output=True, text=True, check=False,
-            encoding="utf-8", errors="replace",
-        )
+        # stdin=DEVNULL: a child that unexpectedly tries to read stdin must
+        # see EOF, never park the whole fix run on a prompt. The env marks
+        # GIT_TERMINAL_PROMPT=0 so a git credential prompt inside the child
+        # fails fast instead of blocking. timeout=1800 bounds a wedged
+        # child: subprocess.run kills it on expiry and raises
+        # TimeoutExpired, which counts the spec as failed -- never
+        # applied/no-op -- and honors exit_on_error like any other failure.
+        try:
+            proc = subprocess.run(
+                full_argv, capture_output=True, text=True, check=False,
+                encoding="utf-8", errors="replace", timeout=1800,
+                stdin=subprocess.DEVNULL,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+        except subprocess.TimeoutExpired:
+            specs_run += 1
+            failed += 1
+            print(
+                "[review fix] command timed out after 1800s: "
+                + " ".join(shlex.quote(t) for t in argv)
+            )
+            if exit_on_error:
+                break
+            continue
         specs_run += 1
         out = (proc.stdout or "") + (proc.stderr or "")
         if proc.returncode != 0:
@@ -335,6 +492,7 @@ def run_commands(
         "changed_chapters": changed_chapters,
         "specs_run": specs_run,
         "skipped_invalid": skipped_invalid,
+        "skipped_conflict": skipped_conflict,
     }
 
 
@@ -348,10 +506,16 @@ def _prepare_argv(argv: list[str]) -> list[str]:
 
 
 def _looks_like_noop(out: str) -> bool:
-    """Heuristic: a successful exit that prints a known no-op marker is
-    treated as a no-op (so re-runs of `review fix` report zero applied)."""
-    lower = out.lower()
-    return any(sig in lower for sig in _NOOP_SIGNALS)
+    """True when the child printed the machine no-op marker on any output
+    line -- the CLI starts a `[glossary] noop: ...` line in every
+    nothing-changed path, and a successful exit carrying it buckets as a
+    no-op (so re-runs of `review fix` report zero applied). Only the
+    marker counts: prose like "nothing to do" inside a SUCCESS line (a
+    model-written definition echoed verbatim) must classify as applied."""
+    return any(
+        line.strip().startswith(_NOOP_MARKER)
+        for line in out.splitlines()
+    )
 
 
 def _signals_chapter_change(out: str) -> bool:

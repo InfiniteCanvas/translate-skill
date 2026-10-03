@@ -12,10 +12,24 @@ with skip_check=True (no docker, no epubcheck):
   stays just as clean;
 - a write failure (ebooklib's write_epub swapped for a raiser) propagates,
   leaves no final epub and NO *.tmp sibling behind (the finally-unlink);
-- os.replace racing an open reader (Windows PermissionError) is retried:
-  two failed swaps followed by a success still produce the final epub,
-  while a replace that never succeeds re-raises after its attempts with
-  the tmp cleaned up.
+- os.replace racing an open reader (Windows PermissionError) is retried
+  with exponential backoff: two failed swaps followed by a success still
+  produce the final epub, while a replace that never succeeds re-raises
+  after six attempts (0.1s..1.6s backoff) with the tmp cleaned up;
+- docker infrastructure failures (exit 125, daemon down, image missing)
+  read as "could not run" (ok=None), never as a validation failure;
+- a covers/cover.jpg fixture is embedded into the epub (the written zip
+  carries EPUB/cover.jpg with the exact source bytes), while a project
+  without covers/ embeds no cover;
+- translate._maybe_autobuild's ok tri-state pins: epub.build returning
+  ok=None prints the exact "could not run (epubcheck unavailable)" warn
+  (the skip path, never a failure), ok=True the [epub-auto] ok line, and
+  ok=False the failed-validation warn -- and changed=False prints nothing;
+- translate.cmd_build_epub with an ok=None build exits 0 with the
+  "[warn] epubcheck skipped" line (the ok-is-None consumer half).
+
+translate.py is imported for the autobuild cases, and it pulls the whole
+lib package, so the deps below also carry requests + pillow.
 
 Self-contained PASS/FAIL script (no pytest). epub.py imports ebooklib, so
 run via uv (deps declared inline below):
@@ -25,13 +39,15 @@ run via uv (deps declared inline below):
 
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["ebooklib>=0.18", "pyyaml>=6.0"]
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
 # ///
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -44,6 +60,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import epub as E  # noqa: E402
 from lib import project as P  # noqa: E402
+import translate  # noqa: E402
 
 PASSED = 0
 FAILED: list[str] = []
@@ -121,6 +138,15 @@ def export_paths(root: Path) -> tuple[Path, Path]:
     return export, export / "atomic-test-novel.epub"
 
 
+# A minimal hand-built JPEG (SOI + JFIF APP0 + EOI): build() only stores
+# the bytes via set_cover (media_type image/jpeg) and these hermetic builds
+# skip the epubcheck docker run, so no real decoder ever sees it.
+JPEG_BYTES = (
+    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    b"\xff\xd9"
+)
+
+
 # ---------------------------------------------------------------------- cases
 
 
@@ -196,18 +222,21 @@ def case_2_write_failure_cleans_tmp() -> None:
 
 def case_3_replace_retry() -> None:
     """os.replace racing an open reader (Windows PermissionError) is
-    retried: two busy failures then a success still land the epub with no
-    tmp left; a replace that never succeeds re-raises after its attempts
-    with the tmp cleaned up and no final file. The os attribute on BOTH
-    the epub module (tmp naming) and the project module (the shared
-    _replace_with_retry resolves os.replace there) is swapped for a shim
-    (getpid delegates, replace is scripted) so the retry loop sees the
-    scripted replace while the real stdlib os module is never touched."""
+    retried with exponential backoff: two busy failures then a success
+    still land the epub with no tmp left; a replace that never succeeds
+    re-raises after six attempts (0.1s..1.6s backoff) with the tmp cleaned
+    up and no final file. The os attribute on BOTH the epub module (tmp
+    naming) and the project module (the shared _replace_with_retry resolves
+    os.replace there) is swapped for a shim (getpid delegates, replace is
+    scripted), and project time for a sleep recorder, so the retry schedule
+    is pinned without real sleeping -- the real stdlib modules are never
+    touched."""
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td)
         _export, final = export_paths(root)
-        orig_os = E.os
+        orig_os, orig_time = E.os, P.time
         attempts = {"n": 0}
+        sleeps: list[float] = []
 
         def flaky_replace(src, dst):
             attempts["n"] += 1
@@ -217,16 +246,19 @@ def case_3_replace_retry() -> None:
 
         E.os = SimpleNamespace(getpid=orig_os.getpid, replace=flaky_replace)
         P.os = SimpleNamespace(getpid=orig_os.getpid, replace=flaky_replace)
+        P.time = SimpleNamespace(sleep=sleeps.append)
         try:
             _res, _out, exc = capture(E.build, root, NOVEL_INFO, CFG,
                                       skip_check=True)
         finally:
             E.os = orig_os
             P.os = orig_os
+            P.time = orig_time
         check("3a retry: build survives two busy replaces",
               exc is None, f"exc={exc!r}")
-        check("3b retry: exactly three replace attempts were made",
-              attempts["n"] == 3, f"attempts={attempts['n']}")
+        check("3b retry: three replace attempts, backoff 0.1s then 0.2s",
+              attempts["n"] == 3 and sleeps == [0.1, 0.2],
+              f"attempts={attempts['n']} sleeps={sleeps!r}")
         check("3c retry: final epub present, no tmp sibling",
               final.is_file() and zipfile.is_zipfile(final)
               and list(final.parent.glob("*.tmp")) == [],
@@ -235,8 +267,9 @@ def case_3_replace_retry() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td)
         _export, final = export_paths(root)
-        orig_os = E.os
+        orig_os, orig_time = E.os, P.time
         attempts = {"n": 0}
+        sleeps: list[float] = []
 
         def busy_forever(src, dst):
             attempts["n"] += 1
@@ -244,20 +277,230 @@ def case_3_replace_retry() -> None:
 
         E.os = SimpleNamespace(getpid=orig_os.getpid, replace=busy_forever)
         P.os = SimpleNamespace(getpid=orig_os.getpid, replace=busy_forever)
+        P.time = SimpleNamespace(sleep=sleeps.append)
         try:
             _res, _out, exc = capture(E.build, root, NOVEL_INFO, CFG,
                                       skip_check=True)
         finally:
             E.os = orig_os
             P.os = orig_os
+            P.time = orig_time
         check("3d retry: a never-free destination re-raises PermissionError",
               isinstance(exc, PermissionError), f"exc={exc!r}")
-        check("3e retry: five attempts before giving up",
-              attempts["n"] == 5, f"attempts={attempts['n']}")
-        check("3f retry: no final epub and no tmp sibling left",
+        check("3e retry: six attempts before giving up",
+              attempts["n"] == 6, f"attempts={attempts['n']}")
+        check("3f retry: full backoff schedule 0.1s..1.6s",
+              sleeps == [0.1, 0.2, 0.4, 0.8, 1.6], f"sleeps={sleeps!r}")
+        check("3g retry: no final epub and no tmp sibling left",
               not final.exists()
               and list(final.parent.glob("*.tmp")) == [],
               f"tmp={[p.name for p in final.parent.glob('*.tmp')]}")
+
+
+def case_4_docker_infra_tri_state() -> None:
+    """Docker infrastructure trouble reads as 'could not run' (None), never
+    as a validation failure for a good epub: _docker_infra_failure flags
+    exit 125 and the daemon-down / image-missing / connection errors
+    (case-insensitively) and nothing else, and run_epubcheck -- with the
+    epub module's subprocess swapped for a scripted fake, per the file's
+    attribute-swap convention -- maps exit 125 and an 'error during connect'
+    exit 1 to (None, output) while a genuine validation failure stays
+    (False, output) and exit 0 stays (True, output)."""
+    pairs = [
+        (125, "", True),
+        (1, "docker: Cannot connect to the Docker daemon at "
+            "unix:///var/run/docker.sock. Is the docker daemon running?", True),
+        (1, "docker: Unable to find image 'epubcheck:latest' locally", True),
+        (1, "Error During Connect: The client cannot connect to the daemon",
+         True),  # needles match case-insensitively
+        (1, "There were validation errors in the EPUB", False),
+        (1, "", False),
+        (2, "some other docker failure", False),
+        (127, "command not found", False),
+    ]
+    for i, (rc, output, expected) in enumerate(pairs):
+        got = E._docker_infra_failure(rc, output)
+        check(f"4a-{i} infra: rc={rc} output classified {expected}",
+              got == expected, f"got={got!r}")
+
+    def run_with(rc: int, stdout: str, stderr: str):
+        orig_subprocess = E.subprocess
+
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(returncode=rc, stdout=stdout, stderr=stderr)
+
+        E.subprocess = SimpleNamespace(
+            run=fake_run,
+            TimeoutExpired=subprocess.TimeoutExpired,
+            FileNotFoundError=FileNotFoundError,
+        )
+        try:
+            return E.run_epubcheck(Path("nowhere") / "book.epub")
+        finally:
+            E.subprocess = orig_subprocess
+
+    ok, out = run_with(125, "docker: Error response from daemon.", "")
+    check("4b epubcheck: exit 125 -> (None, output)",
+          ok is None and out == "docker: Error response from daemon.",
+          f"ok={ok!r} out={out!r}")
+    ok, out = run_with(1, "", "error during connect: daemon down")
+    check("4c epubcheck: connect-error exit 1 -> (None, output)",
+          ok is None and out == "error during connect: daemon down",
+          f"ok={ok!r} out={out!r}")
+    ok, out = run_with(1, "ERROR ITunes: assets not present in the OPF", "")
+    check("4d epubcheck: real validation failure stays (False, output)",
+          ok is False and "ERROR ITunes" in out, f"ok={ok!r} out={out!r}")
+    ok, out = run_with(0, "No errors or warnings detected", "")
+    check("4e epubcheck: exit 0 stays (True, output)",
+          ok is True and out == "No errors or warnings detected",
+          f"ok={ok!r} out={out!r}")
+
+
+def make_autobuild_project(td: str) -> Path:
+    """Sandbox with the two files _maybe_autobuild/cmd_build_epub read
+    directly: config.json (for cmd_build_epub's strict load and the
+    auto_build_epub gate) and novel_info.json (the autobuild's guard)."""
+    root = Path(td)
+    write_lf(root / "config.json", '{"providers": {}}\n')
+    write_lf(root / "novel_info.json",
+             json.dumps(NOVEL_INFO, ensure_ascii=False, indent=2) + "\n")
+    return root
+
+
+def case_5_autobuild_tri_state() -> None:
+    """_maybe_autobuild's ok tri-state, with epub.build swapped for a
+    scripted fake (the file's attribute-swap convention): ok=None is the
+    skip path -- the exact "could not run (epubcheck unavailable)" warn,
+    never a validation failure -- while ok=True prints the [epub-auto] ok
+    line and ok=False the failed-validation warn; changed=False prints
+    nothing at all. cmd_build_epub consumes the same ok=None build as a
+    clean exit 0 with "[warn] epubcheck skipped"."""
+    fake_path = Path("R:/fake/export/book.epub")
+
+    # A: ok=None -> the skip path (warn, not failure)
+    with tempfile.TemporaryDirectory() as td:
+        root = make_autobuild_project(td)
+        orig_build = translate.epub.build
+        translate.epub.build = lambda *a, **k: (fake_path, None, "")
+        try:
+            _res, out, exc = capture(
+                translate._maybe_autobuild, root, {"target_lang": "en"},
+                "glossary replace", True)
+        finally:
+            translate.epub.build = orig_build
+        check("5a autobuild ok=None: no raise (the skip path, not failure)",
+              exc is None, f"exc={exc!r}")
+        check("5b autobuild ok=None: exact warn",
+              out == "[warn] epub auto-build could not run (epubcheck "
+                     "unavailable) - skipping validation\n",
+              f"out={out!r}")
+
+    # B: ok=True -> the [epub-auto] ok line with the reason and path
+    with tempfile.TemporaryDirectory() as td:
+        root = make_autobuild_project(td)
+        orig_build = translate.epub.build
+        translate.epub.build = lambda *a, **k: (fake_path, True, "")
+        try:
+            _res, out, exc = capture(
+                translate._maybe_autobuild, root, {"target_lang": "en"},
+                "glossary replace", True)
+        finally:
+            translate.epub.build = orig_build
+        check("5c autobuild ok=True: exact ok line",
+              exc is None
+              and out == f"[epub-auto] build ok (after glossary replace): "
+                         f"{fake_path}\n",
+              f"exc={exc!r} out={out!r}")
+
+    # C: ok=False -> the failed-validation warn
+    with tempfile.TemporaryDirectory() as td:
+        root = make_autobuild_project(td)
+        orig_build = translate.epub.build
+        translate.epub.build = lambda *a, **k: (fake_path, False, "")
+        try:
+            _res, out, exc = capture(
+                translate._maybe_autobuild, root, {"target_lang": "en"},
+                "glossary replace", True)
+        finally:
+            translate.epub.build = orig_build
+        check("5d autobuild ok=False: exact failed-validation warn",
+              exc is None
+              and out == f"[warn] epub auto-build failed validation: "
+                         f"{fake_path}\n",
+              f"exc={exc!r} out={out!r}")
+
+    # D: changed=False -> early return, nothing printed
+    with tempfile.TemporaryDirectory() as td:
+        root = make_autobuild_project(td)
+        _res, out, exc = capture(
+            translate._maybe_autobuild, root, {"target_lang": "en"},
+            "glossary replace", False)
+        check("5e autobuild changed=False: silent no-op",
+              exc is None and out == "", f"exc={exc!r} out={out!r}")
+
+    # E: cmd_build_epub with an ok=None build -> exit 0 + the skip warn
+    with tempfile.TemporaryDirectory() as td:
+        root = make_autobuild_project(td)
+        orig_build = translate.epub.build
+        translate.epub.build = lambda *a, **k: (fake_path, None, "")
+        try:
+            res, out, exc = capture(
+                translate.cmd_build_epub,
+                argparse.Namespace(skip_check=False), root)
+        finally:
+            translate.epub.build = orig_build
+        check("5f build-epub ok=None: exit 0, no raise",
+              exc is None and res == 0, f"res={res} exc={exc!r}")
+        check("5g build-epub ok=None: [ok] epub line then the exact skip "
+              "warn",
+              out == f"[ok] epub: {fake_path}\n[warn] epubcheck skipped\n",
+              f"out={out!r}")
+
+
+def case_6_cover_embed() -> None:
+    """covers/cover.jpg is embedded into the built epub: the written zip
+    carries the EPUB/cover.jpg member with the EXACT source bytes (plus
+    ebooklib's cover page), while a project without covers/ embeds no
+    cover at all (the exists() gate stays shut)."""
+    # A: with covers/cover.jpg -> embedded byte-verbatim
+    with tempfile.TemporaryDirectory() as td:
+        root = make_project(td)
+        cover = root / "covers" / "cover.jpg"
+        cover.parent.mkdir(parents=True, exist_ok=True)
+        cover.write_bytes(JPEG_BYTES)
+        _export, final = export_paths(root)
+        res, out, exc = capture(E.build, root, NOVEL_INFO, CFG,
+                                skip_check=True)
+        check("6a cover: build succeeds",
+              exc is None and res is not None, f"exc={exc!r}")
+        out_path = res[0] if res else None
+        check("6b cover: the build still lands the final epub",
+              out_path == final and final.is_file(), f"out_path={out_path!r}")
+        members: list[str] = []
+        with zipfile.ZipFile(final) as zf:
+            members = zf.namelist()
+            embedded = zf.read("EPUB/cover.jpg") if "EPUB/cover.jpg" in \
+                members else None
+        check("6c cover: the zip carries EPUB/cover.jpg (and the cover page)",
+              "EPUB/cover.jpg" in members and "EPUB/cover.xhtml" in members,
+              f"members={[m for m in members if 'cover' in m]!r}")
+        check("6d cover: embedded bytes are the exact source JPEG",
+              embedded == JPEG_BYTES,
+              f"got={None if embedded is None else len(embedded)} bytes")
+
+    # B: control -- no covers/ -> no cover member anywhere in the zip
+    with tempfile.TemporaryDirectory() as td:
+        root = make_project(td)
+        _export, final = export_paths(root)
+        res, _out, exc = capture(E.build, root, NOVEL_INFO, CFG,
+                                 skip_check=True)
+        check("6e no-cover control: build succeeds",
+              exc is None and res is not None, f"exc={exc!r}")
+        with zipfile.ZipFile(final) as zf:
+            members = zf.namelist()
+        check("6f no-cover control: no cover member in the zip",
+              not any("cover" in m for m in members),
+              f"members={[m for m in members if 'cover' in m]!r}")
 
 
 def main() -> int:
@@ -268,6 +511,9 @@ def main() -> int:
     case_1_success_atomic()
     case_2_write_failure_cleans_tmp()
     case_3_replace_retry()
+    case_4_docker_infra_tri_state()
+    case_5_autobuild_tri_state()
+    case_6_cover_embed()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

@@ -34,6 +34,13 @@ _MODEL_CACHE: dict[tuple[str, str | None], str] = {}
 _PAIRS = {"{": "}", "[": "]"}
 _FENCE_RE = re.compile(r"^```[\w+-]*[ \t]*\n?(.*?)\n?[ \t]*```$", re.DOTALL)
 _THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
+# A 400 counts as "guided JSON unsupported" only when the server's error text
+# blames the mechanism -- wording varies across OpenAI-compatible servers
+# ("response_format", "json_schema", "guided json", "x-guided"). Any other 400
+# (bad model name, oversized context, malformed request) is a real failure,
+# not a license to silently drop response_format.
+_GUIDED_UNSUPPORTED_RE = re.compile(
+    r"response_format|json_schema|guided json|x-guided", re.IGNORECASE)
 
 
 def _v1_url(base_url: str) -> str:
@@ -132,10 +139,13 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     The header is never included in trace-log metadata.
 
     Retries up to 4 attempts total (backoff 2s/4s/8s) on connection errors,
-    HTTP >= 500, and 429. A 400 while response_format is set triggers one
-    immediate retry WITHOUT response_format (the server may not support
-    guided JSON). Other 4xx raise LLMError with the status code and the
-    first 400 chars of the response text.
+    HTTP >= 500, 429, and a 400 received while response_format is set whose
+    error text does not blame guided JSON (a real failure -- bad model,
+    oversized context -- must not silently drop response_format). A 400
+    whose text names the mechanism (response_format, json_schema, "guided
+    json", x-guided) triggers one immediate retry WITHOUT response_format
+    (the server may not support guided JSON). Other 4xx raise LLMError with
+    the status code and the first 400 chars of the response text.
 
     meta_hook, when given, is invoked with call metadata for trace logs:
     once with the request (url, model, params, full prompt) BEFORE the call,
@@ -238,13 +248,22 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             time.sleep(_BACKOFF[failures - 1])
             continue
 
+        retryable_400 = False
         if resp.status_code == 400 and "response_format" in body:
-            body.pop("response_format")
-            if meta_hook:  # log the retried request; it differs from the first
-                meta_hook(_request_meta())
-            continue
+            # Only an error text blaming the mechanism means guided JSON is
+            # unsupported: disarm it (pop) and retry once immediately. Any
+            # other 400 keeps response_format and falls through to the shared
+            # retryable-failure handling below, so a bad model name or an
+            # oversized context consumes retry budget instead of silently
+            # degrading to unguided decoding.
+            if _GUIDED_UNSUPPORTED_RE.search(resp.text):
+                body.pop("response_format")
+                if meta_hook:  # log the retried request; it differs from the first
+                    meta_hook(_request_meta())
+                continue
+            retryable_400 = True
 
-        if resp.status_code == 429 or resp.status_code >= 500:
+        if retryable_400 or resp.status_code == 429 or resp.status_code >= 500:
             failures += 1
             if failures >= _MAX_ATTEMPTS:
                 err = f"HTTP {resp.status_code} from {url} after {failures} attempts: {resp.text[:400]}"

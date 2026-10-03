@@ -147,3 +147,37 @@ def save_config(project_dir: Path, cfg: dict) -> None:
 def provider(cfg: dict, job: str) -> dict:
     """Return the provider block for a job from a loaded config."""
     return cfg["providers"][job]
+
+
+def _as_number(key: str, value: object) -> int | float:
+    """Shared numeric validation behind get_number(): int/float (bool
+    excluded -- bool is an int subclass, and a JSON true/false in a numeric
+    key is always a mistake) or a string that int() then float() can parse.
+    The ValueError text is contractual (test_config_coerce.py asserts it
+    verbatim)."""
+    if isinstance(value, bool):
+        raise ValueError(f"config key '{key}' must be a number (got {value!r})")
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    raise ValueError(f"config key '{key}' must be a number (got {value!r})")
+
+
+def get_number(cfg: dict, key: str) -> int | float:
+    """cfg[key] as a number, for the config keys the pipeline does
+    arithmetic on. Accepts int/float (bool excluded) and numeric strings
+    ("3" -> 3, "2.5" -> 2.5); anything else and a missing key raise
+    ValueError naming the key, so a bad config.json maps to a clean CLI
+    failure instead of a bare TypeError from int()/float(). No DEFAULTS
+    fallback: callers reading a load_config() result always find the key."""
+    if key not in cfg:
+        raise ValueError(f"config key '{key}' is missing")
+    return _as_number(key, cfg[key])

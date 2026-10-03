@@ -35,7 +35,7 @@ drift comparison.
 ├── export/              built epubs
 ├── .git/                git repository (created by `init`, backfilled by migrate v003) — skill-managed, see Git history
 ├── .gitignore           skill-managed ignore rules for transient/rebuildable paths (see Git history)
-└── logs/                llm-*-<command>-<pid>.jsonl (one LLM trace per CLI invocation, newest log_llm_keep_runs kept); epub-build.log (background epub-build output)
+└── logs/                llm-*-<command>-<pid>.jsonl (one LLM trace per project per CLI invocation, newest log_llm_keep_runs kept); epub-build.log (background epub-build output)
 ```
 
 Chapter file names must match `Chapter_NNNN.md` (1-4 digit zero-padded
@@ -57,12 +57,18 @@ as part of scaffolding (console: `[git] initialized repository`) and makes
 the initial `init: scaffold project` commit; migration `v003` backfills
 existing projects the same way. From then on every mutating action commits
 (`lib/vcs.commit` is the single gate), so `git log` doubles as a labeled
-backup of the project. A project directory that is already a repository
-WITHOUT the skill `.gitignore` is treated as foreign: commit() refuses to
-touch it — `git add -A` would sweep the user's own pending changes into a
-skill-labeled commit (see the console lines below). `build-epub`, the
-auto-build, and `glossary search` / `glossary count` produce nothing —
-`export/` and `logs/` are gitignored, and search/count are read-only.
+backup of the project. A repository the skill did not create is treated as
+foreign: commit() refuses to touch it — `git add -A` would sweep the user's
+own pending changes into a skill-labeled commit (see the console lines
+below). The skill recognizes its own repositories by a
+`.git/novel-translator-managed` marker written at creation, or — for
+repositories created before the marker existed — by a `.gitignore` that
+carries every rule the skill writes (a subset test, so a repository whose
+ignore file predates a later rule still counts as the skill's own);
+anything else is the user's own repository.
+`build-epub`, the auto-build, and `glossary search` / `glossary count`
+produce nothing — `export/`, `logs/`, and `covers/` are gitignored, and
+search/count are read-only.
 
 `.gitignore`, written at repository creation:
 
@@ -71,6 +77,7 @@ auto-build, and `glossary search` / `glossary count` produce nothing —
 draft/
 logs/
 export/
+covers/
 *.tmp
 ```
 
@@ -79,8 +86,8 @@ actually changed:
 
 | Action | Commit subject |
 |---|---|
-| fresh `init` | `init: scaffold project` |
-| `init --force` over an existing repository (history is kept) | `init: reinitialize project` |
+| fresh `init` | `init: scaffold project`, then `init: backfill and seed` |
+| `init --force` over an existing repository (history is kept) | `init: reinitialize project` (twice: the scaffold, then the backfill/seed stage) |
 | `sync` that changed anything | `sync: rescan source` |
 | finished chapter — `translate` and `retry`; skipped chapters commit nothing | `translate: chapter NNNN (translated)` / `translate: chapter NNNN (needs-review)` |
 | `mark` | `mark: <file> -> <status>[, ...]` |
@@ -112,16 +119,19 @@ Console lines — `[git]` is part of the stable marker vocabulary:
 - `[warn] git: skipping commits - <dir> looks like a foreign repository
   (no skill .gitignore); add the skill .gitignore to let the skill manage
   it, or set git_commits: false` — the project dir is already a repository
-  without the skill `.gitignore`, i.e. the user's own; commit() refuses so
-  their pending changes are never swept into a skill-labeled commit.
-  Printed at most once per directory per process.
+  the skill does not recognize (no `.git/novel-translator-managed` marker
+  and a `.gitignore` that differs from the skill's), i.e. the user's own;
+  commit() refuses so their pending changes are never swept into a
+  skill-labeled commit. Printed at most once per directory per process.
 - `[warn] git not found; project history disabled` — init / migrate on a
   machine without git.
 - `[warn] git init failed: <reason>` / `[warn] git add failed: <reason>` /
   `[warn] git commit failed: <reason>` — best-effort, at most one line.
 - `[warn] git failed: <reason>` — any unexpected failure (binary vanishing
   between lookup and spawn, dead drive, half-deleted `.git`); `commit()` and
-  `ensure_repo()` never raise, so this is at most one line per call.
+  `ensure_repo()` never raise, so this is at most one line per call. Every
+  git subprocess is killed after 300s; a timeout surfaces here as
+  `git command timed out after 300s: git ...`.
 
 Git config is set local to the repository, never the global config, at
 repository creation: `user.name=novel-translator` /
@@ -151,7 +161,11 @@ Body text, one paragraph per line. Blank lines are preserved as line 0-indices.
 Only `order` is managed by the tool; the rest is metadata carried through to
 the translated copy. The body is split on `\n` and translated as an indexed
 JSON array — one source line in, one translated line out, always the same
-count. This is the anti-hallucination backbone of the whole pipeline.
+count. This is the anti-hallucination backbone of the whole pipeline. A
+body with no content lines (empty file, or nothing but blank lines) never
+enters the pipeline: `[Chapter_NNNN] [warn] <file>: source chapter has no
+content - marked needs-review` — the chapter is marked `needs-review`, no
+LLM call.
 
 ## config.json
 
@@ -194,7 +208,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation (--style auto only)
   "style_sample_chars": 12000,   // rough source-character budget for the sample (--style auto only)
   "log_llm": true,               // full request/response LLM trace; false disables the LLM trace lines only
-  "log_llm_keep_runs": 5,        // one llm-*.jsonl per CLI invocation; older logs pruned to the newest N (by mtime)
+  "log_llm_keep_runs": 5,        // one llm-*.jsonl per project per CLI invocation; older logs pruned to the newest N (by mtime)
   "review_batch_size": 40,       // entries per `review glossary` / `review notes` model review call; `--batch-size` overrides per run
   "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary` / `review notes`, read back by `review fix`)
   "version": 7                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
@@ -220,6 +234,17 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   guidance. Templates always see full names.
 - No API keys are stored; if the endpoint needs one, add `"api_key": "..."`
   (sent as `Authorization: Bearer`).
+- Numeric config values (the top-level thresholds and sampling knobs listed
+  above) are validated: a non-numeric value or `null` fails with
+  `[FAIL] config key '<key>' must be a number (got <value!r>)` and exit 2
+  (`<value!r>` is the Python repr of the value that was read). Provider
+  sampling knobs (`temperature`, `top_p`, `max_tokens`) are read per request
+  and are not validated the same way.
+- A provider `max_tokens` below `translate_max_output_tokens` draws a
+  once-per-run warning — `[warn] config: providers.translator.max_tokens
+  (N) is below translate_max_output_tokens (M) - retries cannot raise the
+  output cap` — the truncation-retry escalation caps at the provider's
+  `max_tokens`, so retries cannot raise the output cap past it.
 
 ## novel_info.json
 
@@ -234,6 +259,7 @@ count. This is the anti-hallucination backbone of the whole pipeline.
   "target_lang": "en",
   "created_at": "2026-08-23T12:00:00",
   "cover": "covers/cover.jpg",
+  "cover_placeholder": false,                 // optional; true when covers/cover.jpg is the generated placeholder rather than a scraped image
   "style": "transmigration",                  // name of the chosen style preset (recorded at init)
   "background": "A former MBA student wakes up in the body of a doomed sect outer disciple...",  // optional; fed to the [Background Information] frame
   "style_profile": {                          // LEGACY: only written by `--style auto` init / `profile`
@@ -251,7 +277,12 @@ the primary text on a generated cover. **Style** resolution: the project
 apply on the next translate, no re-init) → legacy
 `style_profile.style_summary` → a generic default descriptor. **Background**
 resolution: `novel_info.background` → legacy `style_profile.background` →
-empty.
+empty. `cover_placeholder` is true when the local cover image is a
+generated placeholder rather than a scraped one — delete
+`covers/cover.jpg` to force a re-scrape. Recording that flag is
+best-effort: a failure to write it warns once
+(`[warn] cover: recording placeholder state failed: <reason>`) and never
+fails the build.
 
 ## chapters.json (manifest)
 
@@ -267,6 +298,13 @@ empty.
 Statuses: `pending` → `in-progress` → `translated` | `needs-review`.
 `needs-review` chapters are skipped by `translate --next` on purpose — they
 need a human/agent decision (see SKILL.md), then `retry` or `mark`.
+`mark --status` accepts exactly `translated`, `pending`, or `needs-review`;
+`in-progress` is a real status but only the pipeline writes it — `mark`
+refuses to. Status updates after ASSEMBLE are best-effort: the write
+retries through Windows file-lock contention with exponential backoff
+(~3.1s in total) and on exhaustion prints
+`[warn] manifest update failed for <file>: <reason> - chapter file is
+written; status stays in-progress`, leaving the status `in-progress`.
 
 ## glossary.json
 
@@ -284,7 +322,7 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
       "first_seen_chapter": 12           // order index where a model-proposed term first appeared
     }
   ],
-  "retired": ["灵气"]                    // optional; sources removed from the glossary (balance auto-cleanup, glossary merge/retire) — always the entry's CANONICAL source, even when the term was matched via a variant; seed and glossary expansion skip them, delete a source here to allow re-adding
+  "retired": ["灵气"]                    // optional; sources removed from the glossary (balance auto-cleanup, glossary merge/retire) — the entry's CANONICAL source, plus any variant spelling the user supplied; seed and glossary expansion skip them, delete a source here to allow re-adding
 }
 ```
 
@@ -298,7 +336,11 @@ need a human/agent decision (see SKILL.md), then `retry` or `mark`.
   translation prompt as rendering guides (contextual glossary), but their
   short polysemous source strings (里 in 这里/里面, 寸 in idioms) make
   counting pure noise, and emitting no signals also puts them beyond
-  auto-cleanup retirement. An entry with no `translation` yet (a minimal
+  auto-cleanup retirement. Assigning `unit` to an entry with a non-empty
+  translation warns (`[warn] glossary: '<source>' has a translation but
+  category 'unit' (guide-only: balance checks skip it)`) — from model
+  proposals and `glossary set` alike. An entry with no `translation` yet
+  (a minimal
   hand-added stub) is skipped too — without a canonical rendering there is
   nothing to count. The check is FULLY
   ADVISORY: no condition fails a chapter. Falling below the usage floor
@@ -381,6 +423,7 @@ source_lang: zh
 target_lang: en
 entries_reviewed: 120
 batch_errors: 0
+glossary_digest: 3f9a2c1e77b4
 outcome:
   warn: 2
   info: 1
@@ -431,6 +474,11 @@ manual_review_indices: [3]
 ## Next steps
 ````
 
+The body bullets take conditional suffixes: `- Entries reviewed:` grows
+`, N batch error(s) -- findings from failed batches are missing` when
+model batches failed, and `- Outcome:` grows `, N fixed automatically`
+when `--fix` applied fixes that run — both omitted when zero.
+
 Frontmatter fields (all always present; `0` / `[]` when empty):
 
 | Field | Meaning |
@@ -445,6 +493,7 @@ Frontmatter fields (all always present; `0` / `[]` when empty):
 | `machine_applicable` | count of machine-applicable findings |
 | `manual_review` | count of manual-review findings |
 | `manual_review_indices` | the `[N]` indices of the manual-review findings, e.g. `[3]` — `[]` when there are none; an agent can read just the frontmatter to know whether/which manual items exist |
+| `glossary_digest` | first 12 hex chars of the SHA-256 of glossary.json's bytes at generation time; `null` when the project has no glossary.json — `review fix` compares it against the live glossary and refuses a stale report (below) |
 
 `## Next steps` footer bullets (verbatim):
 
@@ -502,11 +551,11 @@ determined by the finding's structured fields** (see
 | `mistranslation` / `wrong_language` with suggestion  | `glossary replace --source S --translation T` |
 | `collision` with suggestion                          | `glossary replace --source S --translation T` |
 | `definition` with suggestion                         | `glossary set --source S --definition D` |
-| `category` with suggestion                           | `glossary set --source S --category C` |
+| `category` with a suggestion that is a glossary category | `glossary set --source S --category C` |
 | heuristic `variant` (has `variant_to_remove`)        | `glossary set --source S --remove-variant V` |
 | heuristic `duplicate` (has `merge_with`)             | `glossary merge --keep M --remove S` |
 | `mundane`                                            | `glossary retire --source S` |
-| model-tier `duplicate` / `variant`, suggestion-less field kinds, `other` | _(no Command bullet — decision item)_ |
+| model-tier `duplicate` / `variant`, suggestion-less field kinds, `other`, a `category` suggestion outside the glossary categories | _(no Command bullet — decision item)_ |
 
 `review fix` pre-validates each command before running it: a `glossary
 replace` / `set --translation` whose suggested value still contains
@@ -517,7 +566,23 @@ and counted as needing a decision — the same guard `review glossary
 `--project` (as `--project X` or `--project=X`) is likewise never run:
 the executor prepends its own `--project`, and a hand-added one would
 silently retarget the command (console: `[review fix] skipped [N]:
-command overrides --project`), counted the same way.
+command overrides --project`), counted the same way. Two commands
+targeting the same glossary entry with the same verb+target conflict
+(where a `glossary set` verb is its edited field, so two `set` commands
+editing different fields of one entry both run) —
+the first one queued wins, later ones are skipped (console:
+`[review fix] skipped [N]: conflicting command for '<source>' (already
+queued)`). Before running anything, `review fix` compares the report's
+`glossary_digest` frontmatter against the live glossary.json; a mismatch
+(the glossary changed since generation) is refused with exit 1 —
+`[review fix] report is stale (glossary changed since generation) -
+regenerate with review glossary` — unless `--stale-ok` is passed. A
+report without the field (or with `null`) is never treated as stale, so
+old or hand-written reports stay runnable. Each
+spawned command runs as a subprocess killed at a 1800s timeout
+(`[review fix] command timed out after 1800s: <command>`); a command
+that changes nothing prints `[glossary] noop: <detail>` and counts as a
+no-op.
 
 Legacy reports (the pre-split format: no YAML frontmatter, findings
 grouped by severity under `## Warnings (fix before translating further)` /
@@ -583,7 +648,10 @@ and, when N > 0,
 `[warn] review notes: fixes are hand edits to notes/<stem>.json (delete, reword, or re-attach the flagged note)`.
 A run with no sidecars anywhere prints
 `[ok] no chapter notes found - nothing to review`, writes no report, and
-exits 0 (mirroring `review glossary` on an empty glossary). The run
+exits 0 (mirroring `review glossary` on an empty glossary) — that `[ok]`
+line means genuinely no sidecars: when chapters were selected but every
+one was skipped, `[warn] no chapter notes reviewed: N chapter(s) skipped
+(see failures above)` prints instead. The run
 commits `review: notes audit` and logs a `notes_review` trace event.
 
 Report shape (same file the glossary tier writes, same per-run overwrite
@@ -637,6 +705,9 @@ Frontmatter fields (all always present; `0` when empty): `report_type`
 codes), `chapters_reviewed` (chapters that contributed notes),
 `notes_reviewed` (units sent through the model tier), `batch_errors`,
 `outcome.warn` / `outcome.info`, and `kinds.<kind>` per-kind counts.
+The `- Chapters reviewed:` bullet takes the same conditional batch-error
+suffix as the glossary report — `, N batch error(s) -- findings from
+failed batches are missing` — omitted when zero.
 Findings are `### [N] severity / kind / chapter / term` headings, warns
 before infos then reading order, with `- Note:`, `- Line:` (the resolved
 index; absent on unresolvable notes), `- Reason:`, `- Suggestion:` (only
@@ -790,7 +861,11 @@ chapter translates without a recap and the next run retries the backfill.
 `updated_at` is managed by the tool. Reads are BOM-tolerant; a malformed
 file is discarded — recaps start fresh, never a crash — with one
 `[warn] story_state.json unreadable (<reason>) - recaps start fresh` line.
-Staleness semantics: retranslating chapter N refreshes only N's own entry;
+Entries whose chapter stem no longer exists in `chapters.json` are pruned
+at load time, so a reused or renumbered stem cannot inherit a removed
+chapter's recap; a missing, empty, or unreadable manifest disables pruning
+(recaps are never destroyed on uncertain grounds). Staleness semantics:
+retranslating chapter N refreshes only N's own entry;
 entries after N stay as built until those chapters are themselves
 retranslated — the recap is advisory context, never a gate. Everything the
 pipeline writes here lands inside the chapter's own
@@ -817,7 +892,12 @@ renders as footnotes — the chapter markdown itself stays clean. Written by
 the pipeline's ASSEMBLE stage and by the `tn` command; read per chapter by
 `build-epub`, which falls back to parsing legacy baked-in `[^N]` markers
 when the sidecar is absent (chapters translated before the sidecar
-existed), and audited (read-only) by `review notes`. Each note is exactly `{line, term, note, category, anchor}`:
+existed), and audited (read-only) by `review notes`. The `tn` re-check
+treats an annotator response of zero notes for a chapter whose sidecar
+holds notes as a failed evaluation, not an empty result: the sidecar and
+the translated markdown are left untouched (`[tn] <file>: annotator
+returned 0 notes for a chapter with N note(s) - keeping existing
+sidecar`). Each note is exactly `{line, term, note, category, anchor}`:
 `line` is a
 0-based index into the translated body lines as normalized by
 `read_chapter` (leading/trailing blank lines stripped), and `anchor`
@@ -1174,3 +1254,16 @@ unit's first chapter occurrence), and ignored by the balance checker.
 rarely-occurring units rarely auto-seed. The
 locative 里 (这里/里面) is a different word, so that entry deliberately
 carries no 裡/裏 variants — those are the locative's traditional forms.
+
+## Exit codes
+
+Every command exits 0 on success. The non-zero exits:
+
+| Exit | Meaning |
+|---|---|
+| 1 | `translate` / `retry` — at least one chapter ended `needs-review`; `build-epub` — epubcheck reported errors (the epub failed validation); `review glossary` — warns remain after the run; `review fix` — at least one command failed, or the report was refused as stale; `glossary search` — nothing found; `glossary count` — below the significance threshold; `tn` — failed chapters (annotator call or unreadable chapter) or no eligible chapters in range; `profile` — generation failed |
+| 2 | usage or setup error — bad arguments, missing files, corrupt project JSON (one `[FAIL]` line, never a traceback); `build-epub` — the builder subprocess crashed; `ping` — one or more providers unreachable |
+
+`build-epub` splits its failures: epubcheck failing validation exits 1,
+the builder itself crashing exits 2. `ping` exits 2 whenever one or more
+providers are unreachable.

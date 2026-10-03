@@ -7,7 +7,11 @@ empty, malformed JSON / non-object document / non-object "chapters" ->
 (<reason>) - recaps start fresh' line, BOM-prefixed file parses silently);
 save/load round-trip (entries preserved, trailing newline, CJK readable in
 the raw bytes); story_part() (empty -> "", non-empty -> the exact labeled
-prefix line + text); ensure_recap (existing entry returned with ZERO LLM
+prefix line + text); load_state stale-stem pruning (manifest-absent stems
+dropped silently and not resurrected by a save; missing/empty/corrupt
+manifest skips pruning; the backfill anchor stays on valid stems and a
+stale stem is neither anchor nor saved back); ensure_recap (existing entry
+returned with ZERO LLM
 calls, first chapter -> "" with zero calls, missing predecessor backfilled
 with exactly ONE call whose {{previous_recap}} is the nearest EARLIER
 existing entry, the no-chain rule -- a book whose only entry sits on a
@@ -390,6 +394,93 @@ def case_10_schema() -> None:
           f"schema={schema}")
 
 
+def case_11_stale_stem_pruned() -> None:
+    """load_state drops entries whose stem is no longer in the manifest
+    (silently, valid entries verbatim); saving the loaded state does not
+    resurrect the stale stems."""
+    with tempfile.TemporaryDirectory() as td:
+        root, _manifest = make_project(td, ["Chapter_0001.md", "Chapter_0002.md"])
+        seeded = {"chapters": {"Chapter_0001": entry("Keep one."),
+                               "Chapter_0002": entry("Keep two."),
+                               "Chapter_0042": entry("Stale from an old numbering."),
+                               "Chapter_0002a": entry("Stale suffix stem.")}}
+        write_lf(root / "story_state.json",
+                 json.dumps(seeded, ensure_ascii=False, indent=2) + "\n")
+        loaded, out = capture(story.load_state, root)
+        check("11a prune: manifest-absent stems dropped, valid stems verbatim",
+              loaded == {"chapters": {"Chapter_0001": entry("Keep one."),
+                                      "Chapter_0002": entry("Keep two.")}},
+              f"loaded={loaded}")
+        check("11b prune: silent housekeeping (no console output)",
+              out == "", f"out={out!r}")
+
+        capture(story.save_state, root, loaded)
+        reloaded, out2 = capture(story.load_state, root)
+        check("11c prune: saving the loaded state does not resurrect stale stems",
+              reloaded == loaded and out2 == "",
+              f"reloaded={reloaded} out={out2!r}")
+        raw = (root / "story_state.json").read_text(encoding="utf-8")
+        check("11d prune: the stale stems are gone from the file bytes",
+              "Chapter_0042" not in raw and "Chapter_0002a" not in raw, "")
+
+
+def case_12_prune_guard_and_anchor() -> None:
+    """Pruning is skipped on uncertain grounds (missing / empty / corrupt
+    manifest) and never disturbs the recap anchoring for valid stems: a
+    stale stem is neither the backfill anchor nor saved back."""
+    files = ["Chapter_0001.md", "Chapter_0002.md", "Chapter_0003.md"]
+    seeded = {"chapters": {"Chapter_0001": entry("Real earlier plot."),
+                           "Chapter_0000": entry("Stale plot.")}}
+
+    # missing manifest -> untouched
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        write_lf(root / "story_state.json", json.dumps(seeded, ensure_ascii=False) + "\n")
+        loaded, _out = capture(story.load_state, root)
+        check("12a guard: missing manifest -> entries untouched",
+              loaded == seeded, f"loaded={loaded}")
+
+    # empty manifest -> untouched
+    with tempfile.TemporaryDirectory() as td:
+        root, _manifest = make_project(td, [])
+        write_lf(root / "story_state.json", json.dumps(seeded, ensure_ascii=False) + "\n")
+        loaded, _out = capture(story.load_state, root)
+        check("12b guard: empty manifest -> entries untouched",
+              loaded == seeded, f"loaded={loaded}")
+
+    # corrupt manifest -> untouched
+    with tempfile.TemporaryDirectory() as td:
+        root, _manifest = make_project(td, files)
+        write_lf(root / "chapters.json", "{oops")
+        write_lf(root / "story_state.json", json.dumps(seeded, ensure_ascii=False) + "\n")
+        loaded, _out = capture(story.load_state, root)
+        check("12c guard: corrupt manifest -> entries untouched",
+              loaded == seeded, f"loaded={loaded}")
+
+    # anchoring for valid stems unchanged; the stale stem is never the anchor
+    with tempfile.TemporaryDirectory() as td:
+        root, manifest = make_project(td, files, translated=["Chapter_0002.md"])
+        write_lf(root / "story_state.json", json.dumps(seeded, ensure_ascii=False) + "\n")
+        prompts: list[str] = []
+        recap, out = capture(
+            story.ensure_recap, root, CFG, manifest, "Chapter_0003.md",
+            "[Chapter_0003]", chat=fake_recap_chat("Ch2 recap.", sink=prompts))
+        check("12d anchor: backfill anchors on the valid earlier entry (ch1)",
+              recap == "Ch2 recap." and len(prompts) == 1
+              and "Real earlier plot." in prompts[0]
+              and "Stale plot." not in prompts[0],
+              f"prompt={prompts[0][:200]!r}")
+        check("12e anchor: console line still names the backfilled chapter",
+              out == "[Chapter_0003] [init] recap (backfill Chapter_0002.md)\n",
+              f"out={out!r}")
+        state = story.load_state(root)
+        check("12f anchor: saved state has ch2's entry and no stale stem",
+              state["chapters"].get("Chapter_0002", {}).get("recap") == "Ch2 recap."
+              and "Chapter_0000" not in state["chapters"]
+              and state["chapters"]["Chapter_0001"]["recap"] == "Real earlier plot.",
+              f"state={state}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -405,6 +496,8 @@ def main() -> int:
     case_8_ensure_recap_failure()
     case_9_record_recap()
     case_10_schema()
+    case_11_stale_stem_pruned()
+    case_12_prune_guard_and_anchor()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

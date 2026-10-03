@@ -57,28 +57,37 @@ def levenshtein(a: str, b: str, band: int | None = None) -> int:
 def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
     """Count an entry's translation(s) in translated lines.
 
-    Targets are the deduped translation + alt_translations. If any target
-    contains CJK characters, count exact substrings. Otherwise: multi-word
-    targets count as case-insensitive phrases whose words may be joined by
-    whitespace OR a hyphen (glossary phrases are supposed to be rendered
-    verbatim, but English hyphenates attributive compounds: "outer sect"
-    also matches "outer-sect disciple"); single-word targets count as
-    tokens equal to the (lowercased) target or within levenshtein distance
-    fuzzy_max of a target of length >= 5.
+    Targets are the translation + alt_translations deduped
+    case-insensitively (matching is case-insensitive, so case variants are
+    one target; the first-seen form is kept). Per target: CJK targets count
+    as exact substrings (there are no word boundaries to match against);
+    multi-word Latin targets count as case-insensitive phrases whose words
+    may be joined by whitespace OR a hyphen (glossary phrases are supposed
+    to be rendered verbatim, but English hyphenates attributive compounds:
+    "outer sect" also matches "outer-sect disciple"); single-word targets
+    count as tokens equal to the (lowercased) target or within levenshtein
+    distance fuzzy_max of a target of length >= 5.
     """
     targets: list[str] = []
+    seen: set[str] = set()
     for target in [entry.get("translation", "")] + list(entry.get("alt_translations") or []):
-        if target and target not in targets:
+        key = target.strip().casefold()
+        if target and key not in seen:
+            seen.add(key)
             targets.append(target)
     if not targets:
         return 0
     text = "\n".join(lines)
-    if any(CJK_RE.search(target) for target in targets):
-        return sum(text.count(target) for target in targets)
+    # Per-target script split: a CJK rendering counts as an exact substring
+    # while a Latin rendering in the SAME entry keeps the word-boundary/
+    # stem/fuzzy path below.
+    total = sum(text.count(target) for target in targets if CJK_RE.search(target))
+    wordy = [target for target in targets if not CJK_RE.search(target)]
+    if not wordy:
+        return total
     low = text.lower()
     tokens = _TOKEN_RE.findall(low)
-    total = 0
-    for target in targets:
+    for target in wordy:
         # Hyphens are normalization-level: split them into words so a
         # hyphenated target ("outer-sect") also matches spaced text and,
         # via the [\s-]+ joiner below, a spaced target matches hyphenated

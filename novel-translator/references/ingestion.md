@@ -22,7 +22,7 @@ Before `init` runs, the project directory must contain a `source/`
 subdirectory holding at least one UTF-8 markdown file whose name matches:
 
 ```text
-^Chapter_(\d{1,4})([a-z]?)\.md$     (case-insensitive)
+^Chapter_([0-9]{1,4})([a-z]?)\.md$     (case-insensitive; ASCII digits only)
 ```
 
 `init` fails fast when `source/` is missing or holds zero matching files.
@@ -40,7 +40,8 @@ subdirectory holding at least one UTF-8 markdown file whose name matches:
   its status, title, and translation.
 - Near-miss names are SILENTLY ignored by discovery - no error, no manifest
   entry: `Chapter_0007.zh.md`, `chapter 7.md`, `0007.md` (no `Chapter_`
-  prefix), or a number typed with full-width digits. Catch them by
+  prefix), or a number typed with non-ASCII digits (full-width or
+  Arabic-Indic). Catch them by
   comparing the manifest count against the TOC (see Verifying below).
 
 ## Converting scraped pages to chapter files
@@ -144,7 +145,8 @@ created by `init`, or backfilled on existing projects by migration v003).
   becomes its own translated line.
 - Decorative blank lines become translated blank lines.
 - Non-UTF-8 encodings (GBK/GB18030) produce mojibake - convert first.
-- Full-width digits never match.
+- Non-ASCII digits never match (full-width and Arabic-Indic numerals are
+  silently ignored; the chapter number must be ASCII `[0-9]`).
 - Renaming files after init orphans their statuses, titles, and
   translations.
 - Inserting files in the middle renumbers `order` of all later chapters.

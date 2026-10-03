@@ -351,11 +351,26 @@ def save_state(draft_dir: Path, file: str, state: dict) -> None:
 
 
 def _cfg_value(cfg: dict, key: str) -> Any:
+    """Resolve key from cfg with the skill defaults as fallback (a missing
+    key raises PipelineError) and require a number-compatible value: the
+    numeric keys are int()/float()-coerced at the call sites, which would
+    turn a JSON null or a free-text value into a bare TypeError, so those
+    map to a clean PipelineError instead. Bool-only keys
+    (glossary_auto_cleanup, tn_keep_low_confidence, auto_build_epub) read
+    through here too -- including from tn_recheck -- so unlike
+    config.get_number a bool passes."""
     if key in cfg:
-        return cfg[key]
-    if key in config.DEFAULTS:
-        return config.DEFAULTS[key]
-    raise PipelineError(f"missing config key: {key}")
+        value: object = cfg[key]
+    elif key in config.DEFAULTS:
+        value = config.DEFAULTS[key]
+    else:
+        raise PipelineError(f"missing config key: {key}")
+    if isinstance(value, bool):
+        return value
+    try:
+        return config._as_number(key, value)
+    except ValueError as exc:
+        raise PipelineError(str(exc)) from exc
 
 
 def _feedback_section(feedback: list[str], rejected_lines: list[str] | None,
@@ -450,12 +465,14 @@ def _apply_glossary_proposal(
     tag: str, project_dir: Path,
     corpus: str = "", min_occurrences: int = 0,
 ) -> None:
-    """Apply one glossary proposal: add, merge, or silently skip.
+    """Apply one glossary proposal: add, merge, absorb, or silently skip.
 
-    A proposal for a brand-new term is gated on novel-wide significance: when
-    min_occurrences > 0 it is added only if the term occurs at least that
-    many times in `corpus` (updates/merges of existing entries are never
-    gated). Raises on malformed proposals or merge failures; callers treat
+    Every proposal whose source does not match an existing entry -- nickname
+    absorption included -- is gated on novel-wide significance: when
+    min_occurrences > 0 it is added (or absorbed as a variant) only if the
+    term occurs at least that many times in `corpus`. Re-proposals of an
+    exact existing source and real merges of a matched entry are never
+    gated. Raises on malformed proposals or merge failures; callers treat
     those as non-fatal and skip the proposal.
     """
     if not isinstance(proposal, dict):
@@ -489,27 +506,41 @@ def _apply_glossary_proposal(
 
     existing = glossary.find(g, src)
     if existing is None:
+        # Significance gate FIRST, for every source that is not an existing
+        # entry: a below-threshold proposal is dropped before the nickname
+        # loop, so a one-occurrence string can never become a permanently
+        # matchable variant.
+        if min_occurrences > 0:
+            seen = glossary.count_in_text({"source": src, "variants": variants}, corpus)
+            if seen < min_occurrences:
+                print(f"{tag} [glossary] skip '{src}' - {seen} occurrence(s) across the novel (min {min_occurrences})")
+                return
         # A proposal whose source is contained in (or contains) a known term's
         # source, with the same translation, is a nickname/short form: absorb
-        # it as a variant instead of creating a double-counting entry.
+        # it as a variant instead of creating a double-counting entry. Only
+        # gate-passing proposals get here, so an absorbed variant is
+        # novel-wide significant too.
         for term in g.get("terms", []):
             esrc = str(term.get("source", ""))
             etr = str(term.get("translation", "")).strip().lower()
             if etr == tr.strip().lower() and esrc and (src in esrc or esrc in src):
                 union_variants(term, [src] + variants)
                 return
-        if min_occurrences > 0:
-            seen = glossary.count_in_text({"source": src, "variants": variants}, corpus)
-            if seen < min_occurrences:
-                print(f"{tag} [glossary] skip '{src}' - {seen} occurrence(s) across the novel (min {min_occurrences})")
-                return
         # Category coercion, proposal-side only (upsert stores verbatim):
         # a model-sourced category outside glossary.CATEGORIES lands as
         # "other" with a warn -- only when the term actually lands, i.e.
-        # after the retired/nickname/significance returns above.
+        # after the significance/nickname returns above.
         if cat not in glossary.CATEGORIES:
             print(f"{tag} [glossary] warn unknown category '{cat}' for '{src}' - coerced to 'other'")
             cat = "other"
+        if cat == "unit" and tr.strip():
+            # A 'unit' entry is a rendering guide only: balance.check skips
+            # the category entirely, so a stored translation would never be
+            # counted or enforced -- say so instead of storing it silently.
+            print(
+                f"{tag} [warn] glossary: '{src}' has a translation but "
+                "category 'unit' (guide-only: balance checks skip it)"
+            )
         glossary.upsert(
             g,
             {
@@ -686,6 +717,31 @@ def _line_output_cost(line: str) -> int:
     """
     cjk = len(balance.CJK_RE.findall(line))
     return int(cjk * 1.0 + (len(line) - cjk) / 4) + 10
+
+
+# One-shot config-warn state for _warn_token_cap: a multi-chapter run shares
+# one config, so the below-provider-cap warning prints once per process.
+_TOKEN_CAP_WARNED = False
+
+
+def _escalated_cap(max_out: int, provider_max: int) -> int:
+    """Escalated cap for a truncating chunk's corrective retry: ~1.5x the
+    normal cap, never above the provider's own max_tokens -- and never BELOW
+    the normal cap, which a provider max_tokens under
+    translate_max_output_tokens would otherwise produce (retrying a
+    truncated chunk at a smaller cap guarantees the same truncation)."""
+    return max(max_out, min(int(round(max_out * 1.5)), provider_max))
+
+
+def _warn_token_cap(provider_max: int, max_out: int) -> None:
+    """Print the below-provider-cap config warning exactly once per run."""
+    global _TOKEN_CAP_WARNED
+    if _TOKEN_CAP_WARNED or provider_max >= max_out:
+        return
+    _TOKEN_CAP_WARNED = True
+    print(f"[warn] config: providers.translator.max_tokens ({provider_max}) is "
+          f"below translate_max_output_tokens ({max_out}) - retries cannot "
+          "raise the output cap")
 
 
 def _pack_chunks(source_lines: list[str], max_out: int,
@@ -896,6 +952,14 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     source_lines, dropped_title = project.drop_leading_chapter_title(source_lines, fm)
     if dropped_title:
         print(f"{tag} [init] leading chapter-title line handled via the title field")
+    # A content-free source would flow through chunking (no chunks), skip
+    # every LLM call, and assemble a structurally valid but empty
+    # translation: mark it needs-review instead of translating nothing.
+    if not any(line.strip() for line in source_lines):
+        print(f"{tag} [warn] {file}: source chapter has no content - marked needs-review")
+        project.set_status(manifest, file, "needs-review")
+        project.save_manifest(project_dir, manifest)
+        return "needs-review"
     body_for_counts = "\n".join(source_lines)
     chapter_order = int(entry.get("order", 0))
 
@@ -991,13 +1055,12 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 # protocol and the corrective retry keep the line contract
                 # either way).
                 max_out = int(_cfg_value(cfg, "translate_max_output_tokens"))
-                # Escalated cap for truncating chunks: ~1.5x the normal cap,
-                # never above the provider's own max_tokens.
                 provider_max = int(
                     config.provider(cfg, "translator").get("max_tokens")
                     or config.DEFAULT_MAX_TOKENS
                 )
-                escalated = min(int(round(max_out * 1.5)), provider_max)
+                _warn_token_cap(provider_max, max_out)
+                escalated = _escalated_cap(max_out, provider_max)
                 plan = _pack_chunks(source_lines, max_out, escalated)
                 n_chunks = len(plan)
                 src_total = len(source_lines)
@@ -1134,8 +1197,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                         )
                         if chunk_attempt == 1:
                             if truncated:
-                                # The response looks cut off: retry once at a
-                                # bumped cap (still under the provider max).
+                                # The response looks cut off: retry once at
+                                # the escalated cap (>= the first attempt's).
                                 call_max_tokens = escalated
                             retry_ctx = dict(chunk_ctx)
                             retry_ctx["feedback_section"] = (
@@ -1389,7 +1452,15 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             tn.save_notes(project_dir, file, list(lines), list(state["notes"] or []))
             (paths["draft"] / f"{stem}.state.json").unlink(missing_ok=True)
             project.set_status(manifest, file, "translated")
-            project.save_manifest(project_dir, manifest)
+            try:
+                project.save_manifest(project_dir, manifest)
+            except OSError as exc:
+                # The chapter file is already written; losing the manifest
+                # flip must not demote a finished translation (run_range's
+                # catch-all would re-mark it needs-review). The in-memory
+                # manifest keeps "translated" for the rest of the run.
+                print(f"[warn] manifest update failed for {file}: {exc} - "
+                      "chapter file is written; status stays in-progress")
             print(
                 f"{tag} [ok] translated -> {out_path.name} "
                 f"(title: {state['title']}, notes: {len(state['notes'] or [])})"

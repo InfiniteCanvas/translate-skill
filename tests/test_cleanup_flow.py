@@ -27,6 +27,18 @@ contains exactly one glossary_cleanup event with chapter
 "Chapter_0001.md", removed == [{"source": "灵石", "reason": "mundane mock
 term"}], kept == []; and the manifest marks the chapter translated.
 
+Three further run_chapter cases share the harness: the truncating-chunk
+escalation (a provider max_tokens far below translate_max_output_tokens --
+the corrective retry after a cut mid-JSON response goes out at max_out,
+never at the smaller provider cap, and the below-provider-cap config warn
+prints exactly once across a multi-chapter run; pipeline._escalated_cap is
+additionally checked directly); the zero-line source guard (a source
+chapter with no body content is marked needs-review with the warn line and
+NO LLM interaction, instead of assembling a content-free translation); and
+the post-assemble manifest save guard (a PermissionError on that save
+prints the warn, the outcome stays "translated", and the on-disk manifest
+keeps the in-progress status written at chapter start).
+
 The fake _chat's branch order is load-bearing (mock_server.py prompt
 sniffing): the bare word "notes" appears in translation.md and recap.md,
 so the notes check must use the QUOTED forms; "Flagged Terms" is the
@@ -34,6 +46,14 @@ glossary_cleanup.md marker; the numbered translate mirror (echo the
 "### Source Data" array, test_chunking.py's convention) must not fire for
 the recap prompt (recap.md has no Source Data section), and the recap
 answer must be non-blank because story.py rejects a blank recap.
+
+A final unit case pins pipeline._notes_report_line's richer shapes (the
+flow case above only shows the zero-kept line): the category
+parenthetical in NOTE_CATEGORIES order (an unknown category counts under
+"other"), the fixed low_threshold -> overflow -> invalid drop order with
+its low-confidence / overflow / invalid labels, and the
+notes/<stem>.dropped.json pointer -- whose target tn.save_dropped really
+writes, with the same drop reasons.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
@@ -59,7 +79,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config, glossary, logger, pipeline, project  # noqa: E402
+from lib import config, glossary, logger, pipeline, project, tn  # noqa: E402
 
 PASSED = 0
 FAILED: list[str] = []
@@ -256,12 +276,284 @@ def case_cleanup_flow() -> None:
               (proj / "translated" / "Chapter_0001.md").is_file())
 
 
+def make_cap_project(root: Path, name: str) -> Path:
+    """Two one-line source chapters, NO glossary.json (empty glossary, so
+    no drift/cleanup noise), an accurate chapters.json manifest, config.json
+    {"providers": {}}, and the draft/ + translated/ + notes/ dirs
+    run_chapter persists state and output into (make_project's shape)."""
+    proj = root / name
+    proj.mkdir()
+    for d in ("source", "translated", "draft", "notes"):
+        (proj / d).mkdir()
+    for i in (1, 2):
+        # No trailing newline: read_chapter returns the text verbatim, so
+        # the body is exactly one line (make_project's convention).
+        (proj / "source" / f"Chapter_000{i}.md").write_text(
+            f"第{i}行正文。", encoding="utf-8", newline="\n")
+    (proj / "chapters.json").write_text(
+        json.dumps([{"file": f"Chapter_000{i}.md", "number": i, "suffix": "",
+                     "order": i - 1, "status": "pending"}
+                    for i in (1, 2)],
+                   ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (proj / "config.json").write_text(
+        json.dumps({"providers": {}}, indent=2) + "\n", encoding="utf-8")
+    return proj
+
+
+def case_truncated_retry_cap() -> None:
+    """The corrective retry for a TRUNCATED chunk never re-sends at a
+    smaller cap than the first attempt, and the below-provider-cap config
+    warn prints exactly once across a multi-chapter run. The provider
+    max_tokens (100) sits far below translate_max_output_tokens (8192): the
+    first TRANSLATE response is cut mid-JSON, the retry must go out at
+    max_out (escalated >= max_out), and chapter 2's run must not repeat the
+    warn. _escalated_cap is additionally checked directly."""
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_cap_project(Path(td), "proj")
+        cfg = config.load_config(proj)
+        cfg["providers"]["translator"]["max_tokens"] = 100
+        # _run_path is process-global and pins the FIRST project that logs;
+        # reset it so this sandbox's logs/ owns the run's trace.
+        logger._run_path = None
+        pipeline._TOKEN_CAP_WARNED = False
+        calls: list[int | None] = []
+        orig = pipeline._chat
+
+        def fake(project_dir, cfg, job, prompt, json_schema=None,
+                 max_tokens=None):
+            if job == "translator":
+                calls.append(max_tokens)
+                if len(calls) == 1:
+                    return '{"title": "Mock Tit'  # cut mid-JSON -> truncated
+                return json.dumps(
+                    {"title": "Mock Chapter Title",
+                     "lines": [{"i": 1, "t": "Translated line 1."}]},
+                    ensure_ascii=False)
+            if "verdict" in prompt:
+                return json.dumps({"verdict": "SUCCESS", "reasons": []},
+                                  ensure_ascii=False)
+            if '"notes"' in prompt or '"note"' in prompt:
+                return json.dumps({"notes": []})
+            if '"terms"' in prompt:
+                return json.dumps({"terms": []})
+            if '"recap"' in prompt:
+                return json.dumps({"recap": "Mock recap of the story so far."})
+            raise AssertionError(f"unroutable prompt (job={job}): {prompt[:120]!r}")
+
+        pipeline._chat = fake
+        try:
+            outcome1, out1, exc1 = capture(
+                pipeline.run_chapter, proj, "Chapter_0001.md", cfg)
+            outcome2, out2, exc2 = capture(
+                pipeline.run_chapter, proj, "Chapter_0002.md", cfg)
+        finally:
+            pipeline._chat = orig
+
+        warn = ("[warn] config: providers.translator.max_tokens (100) is "
+                "below translate_max_output_tokens (8192) - retries cannot "
+                "raise the output cap")
+        check("5a cap: both chapters translate",
+              exc1 is None and outcome1 == "translated"
+              and exc2 is None and outcome2 == "translated",
+              f"outcomes={outcome1}/{outcome2} exc={exc1!r}/{exc2!r}")
+        check("5b cap: truncated first response retried at max_out, not the "
+              "smaller provider cap",
+              calls == [8192, 8192, 8192], f"calls={calls}")
+        check("5c cap: warn prints once across the two-chapter run",
+              out1.count(warn) == 1 and warn not in out2, f"out1={out1!r}")
+        check("5d cap: helper keeps escalated >= max_out",
+              pipeline._escalated_cap(8192, 100) == 8192
+              and pipeline._escalated_cap(8192, 16384) == 12288
+              and pipeline._escalated_cap(1000, 1200) == 1200
+              and pipeline._escalated_cap(1000, 500) == 1000,
+              f"caps={pipeline._escalated_cap(8192, 100)},"
+              f"{pipeline._escalated_cap(8192, 16384)},"
+              f"{pipeline._escalated_cap(1000, 1200)},"
+              f"{pipeline._escalated_cap(1000, 500)}")
+
+
+def make_empty_source_project(root: Path, name: str) -> Path:
+    """One chapter whose source file has NO body content (empty file) --
+    make_cap_project's shape with a single chapter and an empty body."""
+    proj = root / name
+    proj.mkdir()
+    for d in ("source", "translated", "draft", "notes"):
+        (proj / d).mkdir()
+    (proj / "source" / "Chapter_0001.md").write_text(
+        "", encoding="utf-8", newline="\n")
+    (proj / "chapters.json").write_text(
+        json.dumps([{"file": "Chapter_0001.md", "number": 1, "suffix": "",
+                     "order": 0, "status": "pending"}],
+                   ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (proj / "config.json").write_text(
+        json.dumps({"providers": {}}, indent=2) + "\n", encoding="utf-8")
+    return proj
+
+
+def case_zero_line_source() -> None:
+    """A source chapter with zero body content is marked needs-review with
+    the warn line and NO LLM interaction -- it never reaches chunking and
+    never writes a content-free translation."""
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_empty_source_project(Path(td), "proj")
+        cfg = config.load_config(proj)
+        logger._run_path = None
+        llm_calls: list[str] = []
+        orig = pipeline._chat
+
+        def fake(project_dir, cfg, job, prompt, json_schema=None,
+                 max_tokens=None):
+            llm_calls.append(job)
+            raise AssertionError("LLM called for an empty source chapter")
+
+        pipeline._chat = fake
+        try:
+            outcome, out, exc = capture(
+                pipeline.run_chapter, proj, "Chapter_0001.md", cfg)
+        finally:
+            pipeline._chat = orig
+
+        check("6a empty source: outcome needs-review, no error",
+              exc is None and outcome == "needs-review",
+              f"outcome={outcome} exc={exc!r}")
+        check("6b empty source: warn line names the chapter",
+              "[Chapter_0001] [warn] Chapter_0001.md: source chapter has no "
+              "content - marked needs-review" in out, f"out={out!r}")
+        check("6c empty source: the LLM is never called",
+              llm_calls == [], f"llm_calls={llm_calls}")
+        check("6d empty source: no translated file, manifest needs-review",
+              not (proj / "translated" / "Chapter_0001.md").exists()
+              and (project.find_entry(project.load_manifest(proj),
+                                      "Chapter_0001.md") or {}).get("status")
+              == "needs-review",
+              f"manifest={project.load_manifest(proj)!r}")
+
+
+def case_manifest_save_failure() -> None:
+    """A PermissionError on the post-assemble manifest save must not demote
+    the finished chapter: the warn prints, the outcome stays "translated",
+    and the on-disk manifest keeps the in-progress status written at chapter
+    start. project.save_manifest is swapped for a wrapper that fails only
+    once the manifest carries a "translated" status (the chapter-start
+    in-progress save still goes through) -- the suite's monkeypatch style."""
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(Path(td), "proj")
+        cfg = config.load_config(proj)
+        logger._run_path = None
+        orig_save = project.save_manifest
+        saves: list[str] = []
+
+        def failing_save(project_dir, manifest):
+            if any(e.get("status") == "translated" for e in manifest):
+                saves.append("translated")
+                raise PermissionError(13, "mocked denied")
+            saves.append("in-progress")
+            return orig_save(project_dir, manifest)
+
+        project.save_manifest = failing_save
+        orig = pipeline._chat
+        pipeline._chat = fake_chat
+        try:
+            outcome, out, exc = capture(
+                pipeline.run_chapter, proj, "Chapter_0001.md", cfg)
+        finally:
+            pipeline._chat = orig
+            project.save_manifest = orig_save
+
+        check("7a manifest save failure: outcome stays 'translated'",
+              exc is None and outcome == "translated",
+              f"outcome={outcome} exc={exc!r}")
+        check("7b manifest save failure: warn names the chapter and the "
+              "written file",
+              "[warn] manifest update failed for Chapter_0001.md: [Errno 13] "
+              "mocked denied - chapter file is written; status stays "
+              "in-progress" in out, f"out={out!r}")
+        check("7c manifest save failure: in-progress save went through, "
+              "translated save failed",
+              saves == ["in-progress", "translated"], f"saves={saves}")
+        check("7d manifest save failure: disk keeps in-progress, file exists",
+              (project.find_entry(project.load_manifest(proj),
+                                  "Chapter_0001.md") or {}).get("status")
+              == "in-progress"
+              and (proj / "translated" / "Chapter_0001.md").is_file(),
+              f"manifest={project.load_manifest(proj)!r}")
+
+
+def case_notes_report_line() -> None:
+    """pipeline._notes_report_line's richer shapes (the flow case above only
+    pins the zero-kept one): kept notes render the category parenthetical in
+    NOTE_CATEGORIES order, drops render the fixed low_threshold -> overflow
+    -> invalid order with their labels (low-confidence / overflow / invalid)
+    and the notes/<stem>.dropped.json pointer -- and the pointer's target is
+    the file tn.save_dropped really writes."""
+    tag, stem = "[Chapter_0009]", "Chapter_0009"
+    kept = [
+        {"line": 3, "term": "灵根", "note": "Cultivation aptitude.",
+         "category": "cultural"},
+        {"line": 4, "term": "灵气", "note": "Spiritual energy.",
+         "category": "idiom"},
+        {"line": 5, "term": "灵泉", "note": "Spirit spring.",
+         "category": "idiom"},
+    ]
+    dropped = [
+        {"line": 0, "term": "灵石", "note": "Low confidence.",
+         "category": "other", "threshold": "low",
+         "reason": "low_threshold"},
+        {"line": 1, "term": "道基", "note": "Also low.",
+         "category": "other", "threshold": "low",
+         "reason": "low_threshold"},
+        {"line": 2, "term": "荒塔", "note": "Overflowed the cap.",
+         "category": "other", "threshold": None, "reason": "overflow"},
+    ]
+    line = pipeline._notes_report_line(tag, stem, kept, dropped)
+    check("8a report line: full rendered line verbatim (parenthetical, "
+          "reason labels, dropped pointer)",
+          line == "[Chapter_0009] [ok] notes: 3 kept (cultural 1, idiom 2)"
+                  "; 3 dropped (2 low-confidence, 1 overflow) "
+                  "-> notes/Chapter_0009.dropped.json",
+          f"line={line!r}")
+
+    # All three reasons render in the fixed DROP_REASONS order, and a kept
+    # category outside NOTE_CATEGORIES counts under "other".
+    dropped3 = dropped + [
+        {"line": 6, "term": "坏项", "note": None, "category": None,
+         "threshold": None, "reason": "invalid"},
+    ]
+    kept_other = [
+        {"line": 7, "term": "灵兽", "note": "Beast.", "category": "monster"},
+    ]
+    line3 = pipeline._notes_report_line(tag, stem, kept_other, dropped3)
+    check("8b report line: three reasons in the fixed order, unknown "
+          "category lands in 'other'",
+          line3 == "[Chapter_0009] [ok] notes: 1 kept (other 1)"
+                   "; 4 dropped (2 low-confidence, 1 overflow, 1 invalid) "
+                   "-> notes/Chapter_0009.dropped.json",
+          f"line3={line3!r}")
+
+    # The pointer's target is the artifact save_dropped really writes.
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        tn.save_dropped(proj, "Chapter_0009.md", dropped)
+        pointer = "notes/Chapter_0009.dropped.json"
+        check("8c report line: the dropped-file pointer target exists",
+              (proj / pointer).is_file(), f"pointer={pointer}")
+        document = json.loads((proj / pointer).read_text(encoding="utf-8"))
+        check("8d report line: the artifact records the same drop reasons",
+              [d["reason"] for d in document["dropped"]]
+              == ["low_threshold", "low_threshold", "overflow"],
+              f"dropped={document['dropped']!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     case_cleanup_flow()
+    case_truncated_retry_cap()
+    case_zero_line_source()
+    case_manifest_save_failure()
+    case_notes_report_line()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

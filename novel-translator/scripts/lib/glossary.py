@@ -155,12 +155,23 @@ def retired_sources(g: dict) -> set[str]:
     return set(g.get("retired") or [])
 
 
-def retire(project_dir: Path, sources: list[str]) -> list[str]:
+def retire(
+    project_dir: Path, sources: list[str],
+    *, source_literal: str | None = None,
+) -> list[str]:
     """Remove the entries matching sources from glossary.json and record each
     removed entry's canonical source in its "retired" list (deduped,
     order-preserving) -- even when the match came via a variant, so
     seed()/GLOSSARY_EXPAND can never re-add the term under its canonical
     spelling.
+
+    source_literal is the raw --source value the user typed (translate.py
+    passes args.source for its single-source CLI command): when it is the
+    lookup key that matched a removed entry and differs from that entry's
+    canonical source, it is recorded in "retired" too, so the CLI's
+    literal-comparing idempotency gate recognizes a re-run via a variant
+    spelling (e.g. a second `retire --source 靈根`) as an already-retired
+    no-op. None (default) keeps the canonical-only recording.
 
     Matching uses find() (source OR variants). Returns only the sources that
     actually removed an entry, echoing the caller-supplied key (not the
@@ -188,6 +199,16 @@ def retire(project_dir: Path, sources: list[str]) -> list[str]:
         canonical = entry.get("source")
         if isinstance(canonical, str) and canonical and canonical not in retired:
             retired.append(canonical)
+        # Same contract as merge_entries(remove_literal=...): the CLI gate
+        # compares the user literal, so the raw spelling that resolved to
+        # THIS removed entry is recorded too (a canonical-equal or
+        # already-present literal is skipped by the checks below).
+        if (
+            isinstance(source_literal, str) and source_literal
+            and source_literal == source
+            and source_literal not in retired
+        ):
+            retired.append(source_literal)
         removed.append(source)
     if removed:
         g["retired"] = retired
@@ -303,16 +324,26 @@ def set_fields(
 
 def merge_entries(
     g: dict, keep_source: str, remove_source: str,
+    *, remove_literal: str | None = None,
 ) -> tuple[dict, str, int, int, bool]:
     """Merge the `remove_source` entry into the `keep_source` entry in place.
 
     Union `remove`'s `variants` and `alt_translations` into the kept entry
     (keep-first, deduped -- set semantics). Fill the kept entry's
-    `definition` only when it is empty AND the removed entry has one. Append
-    `remove_source` to the top-level `retired` list (set semantics -- no
-    duplicates). Drop the removed entry from `terms`. The kept entry's
-    `translation`, `category`, `origin`, and `first_seen_chapter` are
-    preserved verbatim.
+    `definition` only when it is empty AND the removed entry has one; when
+    both have one, the removed entry's is discarded with a `[warn]` console
+    line (the kept entry's wording wins). Append the removed entry's
+    canonical source -- plus remove_literal, when given and different -- to
+    the top-level `retired` list (set semantics -- no duplicates). Drop the
+    removed entry from `terms`. The kept entry's `translation`, `category`,
+    `origin`, and `first_seen_chapter` are preserved verbatim.
+
+    remove_literal is the raw --remove value the user typed (translate.py
+    passes args.remove): when it differs from the removed entry's canonical
+    source it is recorded in "retired" too, so the CLI's literal-comparing
+    idempotency gate recognizes a re-run that names a variant spelling as
+    an already-retired no-op. None (default) keeps the canonical-only
+    recording.
 
     Returns (kept_entry, remove_source_key, variants_added, alt_added,
     definition_filled). Raises ValueError when either entry is missing or
@@ -339,6 +370,10 @@ def merge_entries(
             f"--keep and --remove must be distinct ('{keep_source}')"
         )
 
+    # Canonical source of the entry being folded away -- the warn line, the
+    # "retired" recording and the return value all key on it.
+    remove_key = remove.get("source")
+
     keep_variants = list(keep.get("variants") or [])
     variants_added = 0
     for v in (remove.get("variants") or []):
@@ -359,6 +394,15 @@ def merge_entries(
     if not keep_def and remove_def:
         keep["definition"] = remove.get("definition")
         def_filled = True
+    elif keep_def and remove_def:
+        # The kept entry's wording wins; say so, or the discarded definition
+        # silently vanishes. Pure console note -- nothing added to the
+        # return value or the glossary.
+        print(
+            f"[warn] glossary: definition from "
+            f"'{remove_key if isinstance(remove_key, str) else remove_source}' "
+            f"discarded ('{keep.get('source')}' already has one)"
+        )
 
     keep["variants"] = keep_variants
     keep["alt_translations"] = keep_alts
@@ -370,13 +414,24 @@ def merge_entries(
             break
 
     retired = [s for s in (g.get("retired") or []) if isinstance(s, str)]
-    remove_key = remove.get("source")
     if isinstance(remove_key, str) and remove_key not in retired:
         retired.append(remove_key)
+    # The CLI idempotency gate compares the user-supplied literal, so a
+    # re-run of `glossary merge --keep K --remove V` (V a variant spelling
+    # of the removed entry) must find V itself in "retired" -- record the
+    # raw spelling alongside the canonical source whenever it is a
+    # different, not-yet-recorded string.
+    if (
+        isinstance(remove_literal, str) and remove_literal
+        and remove_literal != remove_key and remove_literal not in retired
+    ):
+        retired.append(remove_literal)
     g["retired"] = retired
 
-    return keep, (remove_key if isinstance(remove_key, str) else remove_source), \
-        variants_added, alt_added, def_filled
+    removed_canonical = (
+        remove_key if isinstance(remove_key, str) else remove_source
+    )
+    return keep, removed_canonical, variants_added, alt_added, def_filled
 
 
 def upsert(g: dict, entry: dict) -> bool:

@@ -11,8 +11,11 @@ import yaml
 
 # 1-4 digit chapter numbers (real projects use both 3-digit "Chapter_001.md"
 # and 4-digit "Chapter_0001.md" conventions); sorting is by the parsed number,
-# so projects stay correctly ordered either way.
-CHAPTER_RE = re.compile(r"^Chapter_(\d{1,4})([a-z]?)\.md$", re.IGNORECASE)
+# so projects stay correctly ordered either way. Digits are spelled [0-9],
+# never \d: \d also matches full-width/Arabic-Indic decimal digits, so
+# "Chapter_０００７.md" would be discovered and int()-collapse onto the real
+# Chapter_0007.
+CHAPTER_RE = re.compile(r"^Chapter_([0-9]{1,4})([a-z]?)\.md$", re.IGNORECASE)
 STATUSES = ("pending", "in-progress", "needs-review", "translated")
 
 
@@ -63,25 +66,28 @@ def discover(project_dir: Path) -> list[Chapter]:
 
 
 def _replace_with_retry(src: Path, dst: Path) -> None:
-    """os.replace() with a brief retry, silently succeeding or re-raising.
+    """os.replace() with a brief exponential-backoff retry, silently
+    succeeding or re-raising.
 
     On Windows the replace can raise PermissionError while another process
     holds the destination open (e.g. a parallel epub-build child reading
-    chapters.json, or a reader holding the exported epub); five attempts
-    0.1s apart, then the error surfaces. Shared by atomic_write_text and
-    the epub builder's binary tmp swap."""
-    for attempt in range(5):
+    chapters.json, or a reader holding the exported epub); six attempts,
+    backing off 0.1s..1.6s between them, then the error surfaces. Shared by
+    atomic_write_text, write_chapter, cover's JPEG writes, and the epub
+    builder's binary tmp swap."""
+    for attempt in range(6):
         try:
             os.replace(src, dst)
-            break
+            return
         except PermissionError:
-            if attempt == 4:
+            if attempt == 5:
                 raise
-            time.sleep(0.1)
+            time.sleep(0.1 * 2 ** attempt)
 
 
 def atomic_write_text(path: Path, text: str, newline: str | None = None) -> None:
-    """Atomically replace path's contents with text.
+    """Atomically replace path's contents with text, creating the parent
+    directory when it does not exist yet.
 
     Writes to a temporary file in the same directory and os.replace()s it into
     place, so an interrupt or crash mid-write can never leave a truncated or
@@ -89,9 +95,10 @@ def atomic_write_text(path: Path, text: str, newline: str | None = None) -> None
     (None = universal-newline translation). On Windows, os.replace can raise
     PermissionError while another process holds the destination open (e.g. a
     parallel epub-build child reading chapters.json); the replace is retried
-    briefly before the error surfaces.
+    with backoff before the error surfaces.
     """
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         with tmp.open("w", encoding="utf-8", newline=newline) as fh:
@@ -145,7 +152,8 @@ def read_chapter(path: Path) -> tuple[dict, str]:
 
 
 def write_chapter(path: Path, frontmatter: dict, body: str) -> None:
-    """Write frontmatter + body; the body ends with exactly one newline."""
+    """Write frontmatter + body atomically; the body ends with exactly one
+    newline."""
     body = body.rstrip("\n") + "\n"
     content = (
         "---\n"
@@ -153,7 +161,10 @@ def write_chapter(path: Path, frontmatter: dict, body: str) -> None:
         + "---\n\n"
         + body
     )
-    Path(path).write_text(content, encoding="utf-8", newline="\n")
+    # Same utf-8 / LF bytes as the previous direct write_text, but swapped in
+    # atomically: a crash mid-write can no longer leave a truncated chapter
+    # that read_chapter would silently parse as a frontmatter-less body.
+    atomic_write_text(Path(path), content, newline="\n")
 
 
 def load_manifest(project_dir: Path) -> list[dict]:

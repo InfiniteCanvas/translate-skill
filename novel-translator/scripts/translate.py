@@ -8,9 +8,10 @@
 Subcommands: init, ping, seed, migrate, profile, styles, status, sync,
 translate, retry, mark, tn, review, util, glossary, build-epub.
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
-had failures / glossary search found nothing / glossary count below threshold /
-tn re-check failed chapters or scanned nothing eligible, 2 usage or setup
-error.
+had failures or the report was refused as stale / glossary search found nothing
+/ glossary count below threshold / tn re-check failed chapters or scanned
+nothing eligible / profile generation failed, 2 usage or setup error /
+build-epub builder crashed / ping with one or more providers unreachable.
 """
 
 from __future__ import annotations
@@ -115,8 +116,13 @@ def _maybe_autobuild(project_dir: Path, cfg: dict | None, reason: str, changed: 
         return
     try:
         novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
+        # epub.build returns ok=None when epubcheck itself could not run
+        # (docker infra failure) -- not a validation failure, so say so
+        # instead of blaming the epub.
         epub_path, ok, _output = epub.build(project_dir, novel_info, cfg, False)
-        if ok:
+        if ok is None:
+            print("[warn] epub auto-build could not run (epubcheck unavailable) - skipping validation")
+        elif ok:
             print(f"[epub-auto] build ok (after {reason}): {epub_path}")
         else:
             print(f"[warn] epub auto-build failed validation: {epub_path}")
@@ -275,28 +281,39 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     )
     print(f"[init] wrote {paths['novel_info'].name}")
 
-    # The reset below silently discards exactly three model-grown state
-    # files whenever a glossary.json is already there -- glossary.json
-    # (GLOSSARY_EXPAND terms), tn_history.json (translator's-note history),
-    # and story_state.json (rolling story recaps) -- including the odd case
-    # of a deleted config.json beside a surviving glossary. The per-chapter
-    # notes/ sidecars (and their dropped-candidate files) are NOT reset:
-    # they survive with their translated chapters. Announce the loss; the
-    # term count comes from a best-effort parse (corrupt file -> no count).
-    if paths["glossary"].is_file():
-        try:
-            terms = glossary.load(project_dir).get("terms", [])
-            note = f" ({len(terms)} term(s))" if isinstance(terms, list) else ""
-        except (OSError, ValueError):
-            note = ""
+    # The three model-grown state files -- glossary.json (GLOSSARY_EXPAND
+    # terms), tn_history.json (translator's-note history), and
+    # story_state.json (rolling story recaps) -- survive a plain re-init:
+    # a recovery-init for a deleted config.json must not destroy them, so
+    # only --force resets. The reset announce's term count comes from a
+    # best-effort parse (corrupt file -> no count). The per-chapter notes/
+    # sidecars (and their dropped-candidate files) are NOT reset: they
+    # survive with their translated chapters.
+    existing_state = (
+        paths["glossary"].is_file()
+        or paths["tn_history"].is_file()
+        or paths["story_state"].exists()
+    )
+    if existing_state and not args.force:
         print(
-            f"[init] --force: resetting glossary.json{note}, tn_history.json,"
-            " and story_state.json"
+            "[init] preserving existing glossary.json, tn_history.json, and"
+            " story_state.json (pass --force to reset)"
         )
-    glossary.save(project_dir, glossary.empty())
-    paths["tn_history"].write_text("{}\n", encoding="utf-8", newline="\n")
-    paths["story_state"].unlink(missing_ok=True)
-    print(f"[init] initialized {paths['glossary'].name} and {paths['tn_history'].name}")
+    else:
+        if existing_state:
+            try:
+                terms = glossary.load(project_dir).get("terms", [])
+                note = f" ({len(terms)} term(s))" if isinstance(terms, list) else ""
+            except (OSError, ValueError):
+                note = ""
+            print(
+                f"[init] --force: resetting glossary.json{note}, tn_history.json,"
+                " and story_state.json"
+            )
+        glossary.save(project_dir, glossary.empty())
+        paths["tn_history"].write_text("{}\n", encoding="utf-8", newline="\n")
+        paths["story_state"].unlink(missing_ok=True)
+        print(f"[init] initialized {paths['glossary'].name} and {paths['tn_history'].name}")
 
     copied = 0
     for tpl in sorted(TEMPLATES_SRC_DIR.glob("*.md")):
@@ -305,6 +322,16 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     if copied == 0:
         raise CliError(f"no *.md templates found in {TEMPLATES_SRC_DIR}")
     print(f"[init] copied {copied} template(s) into templates/")
+
+    # Version-control the scaffold BEFORE any chapter rewrite: the repo's
+    # first commit is the project's birth record and captures the BARE
+    # source chapters, so every later rewrite (backfill below, review
+    # fixes, migrations) diffs against them. --force on an existing repo
+    # keeps its history and labels the rewrite.
+    was_repo = vcs.is_repo(project_dir)
+    for line in vcs.ensure_repo(project_dir):
+        print(line)
+    vcs.commit(project_dir, "init: reinitialize project" if was_repo else "init: scaffold project")
 
     # Backfill missing frontmatter on bare source chapters (novel-level
     # fields from the CLI args; chapter_title from the first body line) so
@@ -330,7 +357,7 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
                 continue
             if catalogue.get("language") != args.source_lang:
                 continue
-            added, skipped = glossary.seed(project_dir, catalogue, int(cfg["seed_min_count"]))
+            added, skipped = glossary.seed(project_dir, catalogue, config.get_number(cfg, "seed_min_count"))
             total_added += added
             total_skipped += skipped
             catalogues_used += 1
@@ -371,14 +398,13 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     except Exception as exc:  # noqa: BLE001 - cover problems must not abort init
         print(f"[warn] cover setup failed: {exc}")
 
-    # Version-control the finished scaffold: the repo captures every later
-    # action too (translate, review fixes, migrations), so its first commit
-    # is the project's birth record. --force on an existing repo keeps its
-    # history and labels the rewrite.
-    was_repo = vcs.is_repo(project_dir)
-    for line in vcs.ensure_repo(project_dir):
-        print(line)
-    vcs.commit(project_dir, "init: reinitialize project" if was_repo else "init: scaffold project")
+    # The scaffold commit above captured the bare chapters; commit the
+    # backfilled frontmatter, rebuilt manifest and seeded glossary too, so
+    # init never leaves the tree dirty for the next action's commit to sweep
+    # up (silent no-op when nothing changed). Distinct subject: both commits
+    # are real stages of one init, and identical subjects would make the
+    # history unreadable.
+    vcs.commit(project_dir, "init: reinitialize project" if was_repo else "init: backfill and seed")
 
     print("[ok] project initialized")
     print(f"     title:    {args.title}")
@@ -483,7 +509,7 @@ def cmd_seed(args: argparse.Namespace, project_dir: Path) -> int:
     if args.min_count is not None:
         min_count = int(args.min_count)
     else:
-        min_count = int(cfg.get("seed_min_count", config.DEFAULTS["seed_min_count"]))
+        min_count = config.get_number(cfg, "seed_min_count")
 
     explicit = bool(args.catalogue)
     if explicit:
@@ -648,13 +674,11 @@ def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
 
     sample_chapters = (
         int(args.chapters) if args.chapters is not None
-        else int(cfg.get("style_sample_chapters",
-                         config.DEFAULTS["style_sample_chapters"]))
+        else config.get_number(cfg, "style_sample_chapters")
     )
     sample_chars = (
         int(args.chars) if args.chars is not None
-        else int(cfg.get("style_sample_chars",
-                         config.DEFAULTS["style_sample_chars"]))
+        else config.get_number(cfg, "style_sample_chars")
     )
 
     try:
@@ -928,6 +952,14 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     if not report_path.is_file():
         raise CliError(f"report not found: {report_path}")
 
+    # A writer-generated report carries the glossary digest it was produced
+    # against; replaying its suggestions over a since-changed glossary would
+    # apply stale decisions. Refused before anything runs (dry-run included)
+    # unless --stale-ok; digest-less (old, hand-written) reports never gate.
+    if not getattr(args, "stale_ok", False) and fix.report_is_stale(project_dir, report_path):
+        print("[review fix] report is stale (glossary changed since generation) - regenerate with review glossary")
+        return 1
+
     try:
         specs, findings_count = fix.parse_report(report_path)
     except fix.FixError as exc:
@@ -975,6 +1007,7 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     noop = result["noop"]
     failed = result["failed"]
     invalid = result["skipped_invalid"]
+    conflict = result["skipped_conflict"]
     changed_chapters = result["changed_chapters"]
     needs_decision = max(findings_count - result["specs_run"], 0)
 
@@ -985,13 +1018,14 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
         "noop": noop,
         "failed": failed,
         "skipped_invalid": invalid,
+        "skipped_conflict": conflict,
         "changed_chapters": changed_chapters,
         "needs_decision": needs_decision,
     })
 
     print(
         f"[review fix] applied {applied} / no-op {noop} / failed {failed}"
-        f" / skipped {invalid} of {result['specs_run']} command(s); "
+        f" / skipped {invalid} / conflict {conflict} of {result['specs_run']} command(s); "
         f"{needs_decision} finding(s) need a decision"
     )
 
@@ -1043,8 +1077,8 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
     # parent) applies to every subject. Direct calls to the cmd_review_*
     # helpers bypass this guard by design.
     rejected = {
-        "glossary": ("chapters", "glossary", "dry_run", "exit_on_error"),
-        "notes": ("glossary", "dry_run", "exit_on_error"),
+        "glossary": ("chapters", "glossary", "dry_run", "exit_on_error", "stale_ok"),
+        "notes": ("glossary", "dry_run", "exit_on_error", "stale_ok"),
         "fix": ("chapters", "batch_size"),
     }.get(args.subject, ())
     for dest in rejected:
@@ -1065,7 +1099,7 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     batch_size = (
         int(args.batch_size) if args.batch_size is not None
-        else int(cfg.get("review_batch_size", config.DEFAULTS["review_batch_size"]))
+        else config.get_number(cfg, "review_batch_size")
     )
     if batch_size < 1:
         raise CliError("--batch-size must be a positive integer")
@@ -1199,7 +1233,7 @@ def _cmd_glossary_replace(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError(str(exc)) from exc
     gz = result["glossary"]
     if gz["noop"]:
-        print(f"[ok] glossary '{gz['source']}' already translates as '{gz['new']}' - nothing to do")
+        print(f"[glossary] noop: '{gz['source']}' already translates as '{gz['new']}'")
         return 0
     if args.keep_alt:
         alt_note = " (alt_translations kept)"
@@ -1258,13 +1292,19 @@ def _cmd_glossary_set(args: argparse.Namespace, project_dir: Path) -> int:
     except ValueError as exc:
         raise CliError(str(exc)) from exc
     if not changes:
-        print(f"[glossary] set '{args.source}': already up-to-date")
+        print(f"[glossary] noop: set '{args.source}': already up-to-date")
         return 0
     entry.update(new_entry)
     glossary.save(project_dir, g)
     for field, old_v, new_v in changes:
         print(f"[glossary] set '{args.source}': {field} "
               f"{old_v!r} -> {new_v!r}")
+    # Same advisory as the pipeline's model proposals: a 'unit' entry is a
+    # rendering guide only -- balance.check skips the category entirely, so
+    # a stored translation would never be counted or enforced.
+    if entry.get("category") == "unit" and str(entry.get("translation") or "").strip():
+        print(f"[warn] glossary: '{args.source}' has a translation but "
+              "category 'unit' (guide-only: balance checks skip it)")
     vcs.commit(project_dir, f"glossary set: {args.source}")
     return 0
 
@@ -1280,11 +1320,11 @@ def _cmd_glossary_merge(args: argparse.Namespace, project_dir: Path) -> int:
     _probe_glossary(project_dir)
     g = glossary.load(project_dir)
     if args.remove in glossary.retired_sources(g):
-        print(f"[glossary] merge: '{args.remove}' already retired")
+        print(f"[glossary] noop: merge: '{args.remove}' already retired")
         return 0
     try:
         kept, removed_key, variants_added, alt_added, def_filled = (
-            glossary.merge_entries(g, args.keep, args.remove)
+            glossary.merge_entries(g, args.keep, args.remove, remove_literal=args.remove)
         )
     except ValueError as exc:
         raise CliError(str(exc)) from exc
@@ -1306,9 +1346,9 @@ def _cmd_glossary_retire(args: argparse.Namespace, project_dir: Path) -> int:
     _probe_glossary(project_dir)
     g = glossary.load(project_dir)
     if args.source in glossary.retired_sources(g):
-        print(f"[glossary] already retired: {args.source}")
+        print(f"[glossary] noop: already retired: {args.source}")
         return 0
-    removed = glossary.retire(project_dir, [args.source])
+    removed = glossary.retire(project_dir, [args.source], source_literal=args.source)
     if not removed:
         raise CliError(f"no glossary entry for '{args.source}'")
     print(f"[glossary] retired: {args.source}")
@@ -1322,10 +1362,16 @@ def _cmd_glossary_search(args: argparse.Namespace, project_dir: Path) -> int:
     source/variants/translation/alt_translations. Exit 0 with matches, 1 with
     none (grep convention)."""
     cfg = _load_config_lenient(project_dir)
-    max_distance = (
-        int(args.max_distance) if args.max_distance is not None
-        else int((cfg or {}).get("fuzzy_max_distance", config.DEFAULTS["fuzzy_max_distance"]))
-    )
+    if args.max_distance is not None:
+        max_distance = int(args.max_distance)
+    elif cfg is None or "fuzzy_max_distance" not in cfg:
+        max_distance = int(config.DEFAULTS["fuzzy_max_distance"])
+    else:
+        # .get(key, default) returns None when the key EXISTS with a JSON
+        # null, so the default never rescues and int(None) is a raw
+        # TypeError: get_number raises the contractual ValueError that
+        # main() maps to [FAIL] exit 2 instead.
+        max_distance = int(config.get_number(cfg, "fuzzy_max_distance"))
     if max_distance < 0:
         raise CliError("--max-distance must be >= 0")
     term = args.term.strip()
@@ -1371,10 +1417,15 @@ def _cmd_glossary_count(args: argparse.Namespace, project_dir: Path) -> int:
     threshold (default: config min_term_occurrences). Exit 0 at or above the
     threshold, 1 below it."""
     cfg = _load_config_lenient(project_dir)
-    threshold = (
-        int(args.min) if args.min is not None
-        else int((cfg or {}).get("min_term_occurrences", config.DEFAULTS["min_term_occurrences"]))
-    )
+    if args.min is not None:
+        threshold = int(args.min)
+    elif cfg is None or "min_term_occurrences" not in cfg:
+        threshold = int(config.DEFAULTS["min_term_occurrences"])
+    else:
+        # A key present with a JSON null must not reach int(None) (raw
+        # TypeError): get_number raises the contractual ValueError that
+        # main() maps to [FAIL] exit 2 instead.
+        threshold = int(config.get_number(cfg, "min_term_occurrences"))
     if threshold < 0:
         raise CliError("--min must be >= 0")
     term = args.term.strip()
@@ -1445,9 +1496,14 @@ def cmd_build_epub(args: argparse.Namespace, project_dir: Path) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # allow_abbrev=False on EVERY parser layer (top, shared parents, each
+    # subparser): with abbreviation on, a hand-edited review-report command
+    # could smuggle `--proj=X` past fix.run_commands' exact --project guard
+    # (exact spellings only) and retarget the verb at another project.
     parser = argparse.ArgumentParser(
         prog="translate.py",
         description="Staged, resumable novel translation pipeline (CJK -> target language).",
+        allow_abbrev=False,
     )
     # Accept --project both before and after the subcommand (separate dests so
     # the subparser default can't clobber a value given before it); nested
@@ -1456,11 +1512,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project", dest="project_global", default=None,
                         help="project directory (default: current directory)")
     sub = parser.add_subparsers(dest="command", required=True, metavar="command")
-    common = argparse.ArgumentParser(add_help=False)
+    common = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     common.add_argument("--project", dest="project", default=None,
                         help="project directory (default: current directory)")
 
-    p = sub.add_parser("init", parents=[common], help="initialize a project from source/ chapters")
+    p = sub.add_parser("init", parents=[common], allow_abbrev=False,
+                       help="initialize a project from source/ chapters")
     p.add_argument("--title", required=True, help="novel title (original language)")
     p.add_argument("--author", required=True, help="author name")
     p.add_argument("--source-url", default="", help="URL of the source novel")
@@ -1478,17 +1535,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="reinitialize even if config.json exists")
     p.set_defaults(func=cmd_init)
 
-    p = sub.add_parser("ping", parents=[common], help="check provider endpoints and resolved models")
+    p = sub.add_parser("ping", parents=[common], allow_abbrev=False,
+                       help="check provider endpoints and resolved models")
     p.set_defaults(func=cmd_ping)
 
-    p = sub.add_parser("seed", parents=[common], help="seed the glossary from asset catalogues")
+    p = sub.add_parser("seed", parents=[common], allow_abbrev=False,
+                       help="seed the glossary from asset catalogues")
     p.add_argument("--min-count", type=int, default=None, help="minimum term count in source text")
     p.add_argument("--catalogue", action="append", default=None, metavar="PATH",
                    help="explicit catalogue path (repeatable; bypasses language filter)")
     p.set_defaults(func=cmd_seed)
 
     p = sub.add_parser(
-        "migrate", parents=[common],
+        "migrate", parents=[common], allow_abbrev=False,
         help="upgrade a project to the current skill version (walks per-version migration scripts)")
     p.add_argument("--force", action="store_true",
                    help="overwrite templates that differ from the shipped ones")
@@ -1496,7 +1555,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="report what would change without writing")
     p.set_defaults(func=cmd_migrate)
 
-    p = sub.add_parser("profile", parents=[common],
+    p = sub.add_parser("profile", parents=[common], allow_abbrev=False,
                        help="regenerate the style profile for an initialized project")
     p.add_argument("--chapters", type=int, default=None, metavar="N",
                    help="chapters to sample (default: config style_sample_chapters)")
@@ -1504,19 +1563,22 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="approx. source characters to include (default: config style_sample_chars)")
     p.set_defaults(func=cmd_profile)
 
-    p = sub.add_parser("styles", parents=[common], help="list available translation style presets")
+    p = sub.add_parser("styles", parents=[common], allow_abbrev=False,
+                       help="list available translation style presets")
     p.set_defaults(func=cmd_styles)
 
-    p = sub.add_parser("status", parents=[common], help="show per-chapter pipeline status")
+    p = sub.add_parser("status", parents=[common], allow_abbrev=False,
+                       help="show per-chapter pipeline status")
     p.add_argument("--why", action="store_true",
                    help="show recent feedback for every needs-review chapter")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("sync", parents=[common],
+    p = sub.add_parser("sync", parents=[common], allow_abbrev=False,
                        help="re-scan source/ for new or removed chapters and rebuild the manifest")
     p.set_defaults(func=cmd_sync)
 
-    p = sub.add_parser("translate", parents=[common], help="run the translation pipeline on chapters")
+    p = sub.add_parser("translate", parents=[common], allow_abbrev=False,
+                       help="run the translation pipeline on chapters")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--chapters", metavar="SPEC",
                    help="chapter spec, e.g. 1,3-5,Chapter_0007.md")
@@ -1524,7 +1586,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="retranslate even if already translated")
     p.set_defaults(func=cmd_translate)
 
-    p = sub.add_parser("retry", parents=[common], help="wipe chapter artifacts and translate from scratch")
+    p = sub.add_parser("retry", parents=[common], allow_abbrev=False,
+                       help="wipe chapter artifacts and translate from scratch")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--chapters", metavar="SPEC",
                    help="chapter spec, e.g. 1,3-5,Chapter_0007.md")
@@ -1532,13 +1595,14 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="retry every needs-review chapter (max attempts reached)")
     p.set_defaults(func=cmd_retry)
 
-    p = sub.add_parser("mark", parents=[common], help="force a chapter status")
+    p = sub.add_parser("mark", parents=[common], allow_abbrev=False,
+                       help="force a chapter status")
     p.add_argument("--chapters", metavar="SPEC", required=True, help="chapter spec")
     p.add_argument("--status", required=True, choices=list(MARK_STATUSES))
     p.set_defaults(func=cmd_mark)
 
     p = sub.add_parser(
-        "tn", parents=[common],
+        "tn", parents=[common], allow_abbrev=False,
         help="re-evaluate translator's notes on already-translated chapters (writes the notes/ sidecar)")
     p.add_argument("--chapters", metavar="SPEC", required=True,
                    help="chapter spec, e.g. 1,3-5,Chapter_0007.md")
@@ -1548,7 +1612,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="skip the post-run auto epub rebuild")
     p.set_defaults(func=cmd_tn)
 
-    p = sub.add_parser("review", parents=[common],
+    p = sub.add_parser("review", parents=[common], allow_abbrev=False,
                        help="advisory quality review (glossary: source-translation alignment audit; notes: translator's-note quality audit; fix: apply a report's machine-applicable findings)")
     p.add_argument("subject", choices=["glossary", "notes", "fix"],
                    help="what to review")
@@ -1564,9 +1628,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="(subject=fix) print each command without invoking")
     p.add_argument("--exit-on-error", action="store_true",
                    help="(subject=fix) stop at the first failed command (default: continue past failures)")
+    p.add_argument("--stale-ok", action="store_true", dest="stale_ok",
+                   help="(subject=fix) run the report even if the glossary changed since generation")
     p.set_defaults(func=cmd_review)
 
-    p = sub.add_parser("util", parents=[common],
+    p = sub.add_parser("util", parents=[common], allow_abbrev=False,
                        help="maintenance utilities (replace: rewrite a term across translated chapters)")
     p.add_argument("action", choices=["replace"], help="utility to run")
     p.add_argument("--source", required=True, metavar="TEXT",
@@ -1576,7 +1642,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="report what would change without writing")
     p.set_defaults(func=cmd_util)
 
-    p = sub.add_parser("glossary", parents=[common],
+    p = sub.add_parser("glossary", parents=[common], allow_abbrev=False,
                        help="glossary upkeep (replace | set | merge | retire | search | count)")
     gloss_sub = p.add_subparsers(dest="action", required=True, metavar="action")
 
@@ -1587,10 +1653,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # would let the nested default None clobber a --project already consumed
     # by the outer glossary parser (observed: 'glossary --project DIR search
     # T' lost DIR). main() resolves nested > action-level > global.
-    nested = argparse.ArgumentParser(add_help=False)
+    nested = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     nested.add_argument("--project", dest="project_action", default=None,
                         help="project directory (default: current directory)")
-    pr = gloss_sub.add_parser("replace", parents=[nested],
+    pr = gloss_sub.add_parser("replace", parents=[nested], allow_abbrev=False,
                               help="change a term's translation and rewrite chapters")
     pr.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term (matched by source or variants)")
@@ -1604,7 +1670,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="skip the auto epub build after chapter rewrites (batch callers only)")
     pr.set_defaults(func=cmd_glossary)
 
-    ps = gloss_sub.add_parser("set", parents=[nested],
+    ps = gloss_sub.add_parser("set", parents=[nested], allow_abbrev=False,
                               help="edit metadata fields on a single entry (atomic, idempotent)")
     ps.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term (matched by source or variants)")
@@ -1626,7 +1692,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="remove A from alt_translations (repeatable, no-op when absent)")
     ps.set_defaults(func=cmd_glossary)
 
-    pm = gloss_sub.add_parser("merge", parents=[nested],
+    pm = gloss_sub.add_parser("merge", parents=[nested], allow_abbrev=False,
                               help="merge --remove into --keep; retire --remove")
     pm.add_argument("--keep", required=True, metavar="TERM",
                     help="source of the entry to keep (variants/alts unioned into)")
@@ -1634,13 +1700,13 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="source of the entry to absorb (also appended to 'retired')")
     pm.set_defaults(func=cmd_glossary)
 
-    pt = gloss_sub.add_parser("retire", parents=[nested],
+    pt = gloss_sub.add_parser("retire", parents=[nested], allow_abbrev=False,
                               help="retire a single source from the glossary")
     pt.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term to retire (matched by source or variants)")
     pt.set_defaults(func=cmd_glossary)
 
-    pse = gloss_sub.add_parser("search", parents=[nested],
+    pse = gloss_sub.add_parser("search", parents=[nested], allow_abbrev=False,
                                help="find entries by source or translation (substring + fuzzy)")
     pse.add_argument("term", metavar="TERM",
                      help="text to look for in source, variants, translation and alts")
@@ -1648,7 +1714,7 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="max Levenshtein distance for fuzzy matches (default: config fuzzy_max_distance; 0 = substring only)")
     pse.set_defaults(func=cmd_glossary)
 
-    pc = gloss_sub.add_parser("count", parents=[nested],
+    pc = gloss_sub.add_parser("count", parents=[nested], allow_abbrev=False,
                               help="count a term's occurrences across the source chapters (significance check)")
     pc.add_argument("term", metavar="TERM",
                     help="source-language term to count")
@@ -1660,22 +1726,30 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="significance threshold override (default: config min_term_occurrences)")
     pc.set_defaults(func=cmd_glossary)
 
-    p = sub.add_parser("build-epub", parents=[common], help="assemble translated chapters into an EPUB")
+    p = sub.add_parser("build-epub", parents=[common], allow_abbrev=False,
+                       help="assemble translated chapters into an EPUB")
     p.add_argument("--skip-check", action="store_true", help="skip the epubcheck validation")
     p.set_defaults(func=cmd_build_epub)
 
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    project_dir = Path(
+def resolve_project_dir(args: argparse.Namespace) -> Path:
+    """Resolve --project to the project directory: nested glossary action
+    level > subcommand level > before the subcommand > "." (closest to the
+    action wins; the three separate dests are documented in _build_parser)."""
+    return Path(
         getattr(args, "project_action", None)  # nested glossary action level
         or getattr(args, "project", None)      # subcommand level
         or args.project_global                 # before the subcommand
         or "."
     ).resolve()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    project_dir = resolve_project_dir(args)
     try:
         return int(args.func(args, project_dir))
     except CliError as exc:

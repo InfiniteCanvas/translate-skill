@@ -11,6 +11,8 @@ always includes every chapter.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 from datetime import datetime
@@ -24,6 +26,40 @@ _SCRIPT_PATH = Path(__file__).resolve().parent.parent / "translate.py"
 # step is local file I/O, so a child still running past that plus a margin
 # is hung for another reason and gets killed.
 _REAP_TIMEOUT = 360
+
+# finalize()'s blocking wait announces itself once after 30s so a long (but
+# legitimate) build does not read as a hang; the loop polls at 1s granularity
+# and keeps waiting to _REAP_TIMEOUT before killing.
+_FINALIZE_WARN_S = 30
+_FINALIZE_POLL_S = 1.0
+
+if sys.platform == "win32":
+    # Own process group for the build child: taskkill /T walks the tree by
+    # pid either way, but the group keeps the child addressable as a unit.
+    _SPAWN_EXTRA = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+else:
+    # Own session/process group: the tree kill is os.killpg on the child's
+    # group, which must therefore never be our own group.
+    _SPAWN_EXTRA = {"start_new_session": True}
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill proc and its whole process subtree. A plain proc.kill() would
+    orphan the build child's docker grandchild (epubcheck keeps running) and
+    skip epub.py's finally cleanup; taskkill /T (Windows) and killpg (POSIX)
+    take the whole tree down."""
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
+        )
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            try:
+                proc.kill()  # the pid vanished between getpgid and the signal
+            except ProcessLookupError:
+                pass
 
 
 class AutoBuildScheduler:
@@ -57,10 +93,11 @@ class AutoBuildScheduler:
             self._reap(wait=True)
 
     def abort(self) -> None:
-        """Interrupt path: kill the running child; never spawn another."""
+        """Interrupt path: kill the running child and its subtree; never
+        spawn another."""
         self._pending = None
         if self._proc is not None:
-            self._proc.kill()
+            _kill_tree(self._proc)
             try:
                 self._proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -84,6 +121,7 @@ class AutoBuildScheduler:
                 [sys.executable, str(_SCRIPT_PATH), "build-epub",
                  "--project", str(self._project_dir)],
                 stdout=fh, stderr=subprocess.STDOUT,
+                **_SPAWN_EXTRA,
             )
         except BaseException:
             fh.close()
@@ -96,15 +134,28 @@ class AutoBuildScheduler:
             return
         stalled = False
         if wait:
-            try:
-                self._proc.wait(timeout=_REAP_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
+            # Poll instead of one blocking wait: after _FINALIZE_WARN_S of
+            # silence say so (once), keep waiting to _REAP_TIMEOUT either way.
+            waited = 0.0
+            warned = False
+            while True:
                 try:
-                    self._proc.wait(timeout=10)
+                    self._proc.wait(timeout=_FINALIZE_POLL_S)
+                    break
                 except subprocess.TimeoutExpired:
-                    pass
-                stalled = True
+                    waited += _FINALIZE_POLL_S
+                    if waited >= _REAP_TIMEOUT:
+                        _kill_tree(self._proc)
+                        try:
+                            self._proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            pass
+                        stalled = True
+                        break
+                    if not warned and waited >= _FINALIZE_WARN_S:
+                        warned = True
+                        print(f"[warn] epub auto-build finalize waited "
+                              f"{int(waited)}s for the builder to exit")
         elif self._proc.poll() is None:
             return  # still running
         code = self._proc.returncode

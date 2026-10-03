@@ -74,18 +74,25 @@ skill's catalogues: every catalogue term appearing ≥ `seed_min_count`
 (default 3) times across all source chapters is added. It also turns the
 project directory into a git repository (console
 `[git] initialized repository`) and makes the initial
-`init: scaffold project` commit; every later mutating action commits too
+`init: scaffold project` commit -- the bare chapters, taken before any
+rewrite -- followed by `init: backfill and seed` once the frontmatter,
+manifest and glossary are in place; every later mutating action commits too
 (subject table in `references/file-formats.md` § Git history). On a
 machine without git, init still succeeds but prints
 `[warn] git not found; project history disabled`, and in a project dir
-that is already a repository without the skill `.gitignore` (a foreign
-repo) commits are skipped, with one
+that is already a repository the skill did not create (no
+`.git/novel-translator-managed` marker and a `.gitignore` differing from
+the skill's) commits are skipped, with one
 `[warn] git: skipping commits - ...` line per run (details in
 file-formats.md § Git history).
-Refuses to overwrite an existing project unless `--force`; `--force`
-reinitializes, resetting `glossary.json` and `tn_history.json` to empty
-and deleting `story_state.json` (the per-chapter `notes/` sidecars
-survive with their translated chapters).
+Refuses to overwrite an existing project unless `--force`; the
+`glossary.json`/`tn_history.json`/`story_state.json` reset happens only
+under `--force` (resetting the first two to empty and deleting
+`story_state.json`; the per-chapter `notes/` sidecars survive with their
+translated chapters). Re-running `init` without `--force` on a directory
+whose `config.json` was deleted preserves all three files and prints
+`[init] preserving existing glossary.json, tn_history.json, and
+story_state.json (pass --force to reset)`.
 
 Optional: `--cover-url` to point at a cover image directly.
 
@@ -136,7 +143,10 @@ chapters translate more consistently than earlier ones. Already-`translated`
 chapters are skipped; `--force` retranslates anyway.
 
 Each chapter runs through a state machine (resumable; safe to Ctrl-C and
-rerun the same command). Per-attempt preparation happens inline before the
+rerun the same command). A source chapter with no content lines never
+enters it: `[Chapter_NNNN] [warn] <file>: source chapter has no content -
+marked needs-review` — the chapter is marked `needs-review` outright,
+with no LLM call. Per-attempt preparation happens inline before the
 state machine rather than being a resumable stage: every attempt splits the
 source into an indexed JSON line array and builds the *contextual glossary*
 (only glossary terms actually appearing in this chapter, capped at 200,
@@ -154,7 +164,11 @@ sorted by frequency):
    one-line-in/one-line-out contract intact; a part whose response looks
    truncated (missing line indices / cut JSON) retries once at an escalated
    cap (~1.5x, never above the provider's `max_tokens`), other shape
-   problems at the same cap. A source line whose estimated output exceeds
+   problems at the same cap. A provider `max_tokens` below
+   `translate_max_output_tokens` warns once per run (`[warn] config:
+   providers.translator.max_tokens (N) is below translate_max_output_tokens
+   (M) - retries cannot raise the output cap`). A source line whose
+   estimated output exceeds
    even the escalated cap fails fast with actionable feedback
    (`TRANSLATE failed: ... source line N alone exceeds the output budget
    (estimated X tokens > Y cap); split or shorten the line manually`)
@@ -234,7 +248,11 @@ sorted by frequency):
    category — `unit` included — passes unchanged, an unknown one is
    coerced to `other` with `[glossary] warn unknown category '<cat>' for
    '<source>' - coerced to 'other'`, and the same coercion covers
-   category updates the merge model returns for existing entries. Runs
+   category updates the merge model returns for existing entries.
+   Assigning `unit` to an entry that already has a translation warns
+   (`[warn] glossary: '<source>' has a translation but category 'unit'
+   (guide-only: balance checks skip it)`); `glossary set --category unit`
+   warns the same way. Runs
    only on the
    attempt FAITH just accepted — new terms lock in after the translation is
    accepted, never from a rejected one (a chapter that ends needs-review
@@ -261,7 +279,12 @@ sorted by frequency):
    clause).
 7. **ASSEMBLE** — write `translated/Chapter_NNNN.md` as clean markdown (no
    footnote markers, no notes section) plus the `notes/<stem>.json` sidecar
-   carrying the kept notes; auto-promote. On gate failure the chapter retried
+   carrying the kept notes; auto-promote. The manifest status update is
+   best-effort: after retrying through Windows file-lock contention
+   (exponential backoff, ~3.1s in total) it gives up with `[warn] manifest
+   update failed for <file>: <reason> - chapter file is written; status
+   stays in-progress` — the chapter file is complete, only the status
+   stays `in-progress`. On gate failure the chapter retried
    up to `max_attempts` (default 3) with all accumulated feedback and the
    rejected translation injected into each retry; then it becomes
    `needs-review`.
@@ -330,7 +353,11 @@ sorted by manifest order), metadata from `novel_info.json`, cover from
 the markdown), then validates with the epubcheck
 docker image (when Docker/epubcheck is unavailable the check degrades
 gracefully — `[warn] docker not found; epubcheck skipped` followed by
-`[warn] epubcheck skipped`, and the build still succeeds with exit 0).
+`[warn] epubcheck skipped`, and the build still succeeds with exit 0; an
+epubcheck run exceeding 300s degrades the same way — `[warn] epubcheck
+timed out after 300s`; so does a docker infrastructure failure — daemon
+down, image or volume missing — which is also reported as `epubcheck
+skipped`, never as a validation failure).
 The build fails loudly if epubcheck reports errors — show the
 report to the user and fix the chapter(s) named in it. To run epubcheck
 manually from Git Bash:
@@ -351,12 +378,19 @@ to `logs/epub-build.log` with
 `=== epub build after Chapter_NNNN.md | timestamp ===` separators; the console
 prints `[epub-auto] build ok (after Chapter_NNNN.md)`. Failures are warnings
 only and never change the translate/retry exit code (which still reflects
-translation status); a stalled build is killed after 360s (`[warn] epub
+translation status): a stalled build is killed after 360s (`[warn] epub
 auto-build stalled, killed after 360s (after <reason>) - see
-logs/epub-build.log`). Set `auto_build_epub: false` (default true) in
+logs/epub-build.log`), a failed child prints `[warn] epub auto-build
+failed, exit <code> (after <reason>) - see logs/epub-build.log`, a Ctrl-C
+interrupt prints `[warn] epub auto-build interrupted`, and the
+end-of-batch finalize can report `[warn] epub auto-build finalize waited
+<n>s for the builder to exit`. When epubcheck is unavailable the rebuild
+is skipped with `[warn] epub auto-build could not run (epubcheck
+unavailable) - skipping validation` rather than surfacing as a failed
+validation. Set `auto_build_epub: false` (default true) in
 `config.json` to build only via the command above; Ctrl-C kills a running
-background build too. Builds produce no git commits — `export/` and
-`logs/` are gitignored.
+background build too. Builds produce no git commits — `export/`,
+`logs/`, and `covers/` are gitignored.
 
 ## Operating notes
 
@@ -502,7 +536,7 @@ background build too. Builds produce no git commits — `export/` and
   subject: `review glossary` accepts `--fix` and `--batch-size`,
   `review notes` accepts `--chapters` and `--batch-size`, and `review
   fix` accepts `--glossary` (the report path), `--dry-run`,
-  `--exit-on-error`; anything else exits 2 with
+  `--stale-ok`, `--exit-on-error`; anything else exits 2 with
   `[FAIL] --<flag> does not apply to 'review <subject>'`. Cost ceil(N/review_batch_size)
   model calls; model-tier failures fail safe per batch — heuristic findings
   still report. Every run also writes indexed `<project>/review-report.md`
@@ -511,8 +545,9 @@ background build too. Builds produce no git commits — `export/` and
   same file with the notes format, see Translator's-note re-evaluation;
   console: `[glossary] report: <path>`)
   — a YAML frontmatter block with the run's counts (entries reviewed, batch
-  errors, outstanding warn/info, machine-applicable vs manual-review
-  tallies, and the `[N]` indices of the manual-review findings), then the
+  errors, glossary digest, outstanding warn/info, machine-applicable vs
+  manual-review tallies, and the `[N]` indices of the manual-review
+  findings), then the
   numbered OUTSTANDING findings in two sections: `## Machine-applicable`
   (apply with `review fix`) — each finding with the full entry JSON + an
   Action line + a `- Command:` bullet — then `## Needs manual review`
@@ -521,7 +556,7 @@ background build too. Builds produce no git commits — `export/` and
   the manual-review items — the ones under `## Needs manual review` — to
   an agent as a section, or run
   `uv run "$SCRIPT" review fix --glossary review-report.md [--dry-run]
-  [--exit-on-error]` for the offline machine-actionable path (it applies
+  [--stale-ok] [--exit-on-error]` for the offline machine-actionable path (it applies
   every `- Command:` bullet as a subprocess; exit codes, pre-validation,
   and legacy-report handling are specified in Bulk review fixes below).
   When a glossary translation changes (hand edit or `review
@@ -603,10 +638,15 @@ read-only `glossary search` / `glossary count` commit nothing.
   batches; run `ping` first if the server was restarted.
 - Script output is UTF-8 (CJK terms appear in glossary/replace/search
   lines) with stable `[ok]`/`[FAIL]`/`[warn]`/`[git]` markers prefixing
-  status lines — parse the markers, don't guess. Exit code is non-zero when any
-  chapter ends `needs-review`. Usage/setup errors — bad arguments, missing
-  files, corrupt project JSON — print one `[FAIL]` line and exit 2, never a
-  raw traceback.
+  status lines — parse the markers, don't guess. Non-zero exit is not
+  just the needs-review case: `references/file-formats.md` § Exit codes
+  enumerates them per command (e.g. `build-epub` exits 1 when epubcheck
+  fails validation but 2 when the builder crashes; `ping` exits 2 when
+  providers are unreachable). Usage/setup errors — bad arguments, missing
+  files, corrupt project JSON, a numeric config key set to a non-numeric
+  value or null (`[FAIL] config key '<key>' must be a number (got
+  <value!r>)`) — print one `[FAIL]` line and exit 2, never a raw
+  traceback.
 
 ## Translator's-note re-evaluation
 
@@ -628,8 +668,12 @@ or updating the `tn_generate.md` template — run:
   suppressed — and the same code-enforced `max_notes_per_chapter` cap with
   severity-ordered truncation); the discarded candidates are recorded the
   same way too (`notes/<stem>.dropped.json`, review artifact only, and a
-  pure category change counts as a change); chapter prose is never
-  rewritten except the one-time
+  pure category change counts as a change). An annotator response of
+  zero notes for a chapter that HAS notes is treated as a failed
+  evaluation, not an empty result: the sidecar and the translated
+  markdown are left untouched (`[tn] <file>: annotator returned 0 notes
+  for a chapter with N note(s) - keeping existing sidecar`). Chapter
+  prose is never rewritten except the one-time
   stripping of legacy baked-in notes/markers, then the epub rebuilds unless
   `--no-build` (`--dry-run` still makes the annotator LLM calls but writes
   nothing). A re-check that changed at least one chapter — or that
@@ -679,7 +723,10 @@ translation — run `review notes`:
   Z, misanchored W) -> <report path>` and, when N > 0, a `[warn]` hint
   that fixes are hand edits to `notes/<stem>.json`; a project with no
   sidecars anywhere prints `[ok] no chapter notes found - nothing to
-  review` and writes no report. Commits `review: notes audit` and logs one
+  review` and writes no report — that `[ok]` means genuinely no sidecars,
+  since a run whose chapters all got skipped (missing or unreadable
+  files) prints `[warn] no chapter notes reviewed: N chapter(s) skipped
+  (see failures above)` instead. Commits `review: notes audit` and logs one
   `notes_review` trace event.
 
 ## Bulk review fixes
@@ -690,14 +737,19 @@ collisions with structured merge data, mundane terms to retire); applying
 them one at a time by hand or by an agent is tedious and prone to drift.
 For the offline machine-actionable path, run
 `uv run "$SCRIPT" review fix --glossary review-report.md [--dry-run]
-[--exit-on-error]`: it parses every `- Command:` bullet in the report's
+[--stale-ok] [--exit-on-error]`: it parses every `- Command:` bullet in the report's
 `Machine-applicable` section and runs each as a subprocess (`glossary
 replace | set | merge | retire`), in order, and exits 0 on full success or
 full no-op, 1 if
 any command failed (continues past failures by default; `--exit-on-error` to
-stop at the first), 2 on a missing/unreadable report or a report with no
-machine-applicable commands. `review fix` accepts exactly `--glossary`
-(the report path), `--dry-run`, and `--exit-on-error`; any other review
+stop at the first; a report whose `glossary_digest` no longer matches the
+live glossary.json — the glossary changed since generation — is refused
+with `[review fix] report is stale (glossary changed since generation) -
+regenerate with review glossary` unless `--stale-ok`), 2 on a
+missing/unreadable report or a report with no machine-applicable
+commands. `review fix` accepts exactly `--glossary`
+(the report path), `--dry-run`, `--stale-ok`, and `--exit-on-error`; any
+other review
 flag exits 2 with `[FAIL] --<flag> does not apply to 'review <subject>'`
 (`--fix` on `review fix`/`review notes` keeps its own message:
 `[FAIL] --fix applies to 'review glossary' only; not 'review <subject>'`)
@@ -717,7 +769,14 @@ runtime failures. A Command bullet carrying `--project` in either form
 (`--project X` or `--project=X`) is likewise skipped (`[review fix]
 skipped [N]: command overrides --project`) — the executor always prepends
 its own `--project`, and one smuggled into a hand-edited report would
-silently retarget the command. **The `- Command:` bullet is the contract**:
+silently retarget the command. Two commands targeting the same glossary
+entry with the same verb+target conflict (a `glossary set` verb is its
+edited field, so two `set` commands on different fields of one entry both
+run) — the first one queued wins,
+later ones are skipped (`[review fix] skipped [N]: conflicting command
+for '<source>' (already queued)`). Each spawned command is killed at a
+1800s timeout (`[review fix] command timed out after 1800s: <command>`).
+**The `- Command:` bullet is the contract**:
 `write_report()` emits it on every finding whose fix is fully determined by
 its structured fields, and `review fix` reads it; the closed vocabulary is
 documented in `references/file-formats.md` (per-finding `glossary replace`
@@ -736,24 +795,34 @@ applying, one final `build-epub` runs when chapters changed and
 `auto_build_epub` is on; the `- Command:` lines in the report never carry
 `--no-build`, so they remain human-copyable.
 
+Every glossary verb prints `[glossary] noop: <detail>` when a run changes
+nothing (machine-detectable; `review fix` classifies these as no-ops).
 The batch-flow subcommands:
 
 - `uv run "$SCRIPT" glossary set --project . --source S [--translation T]
   [--definition D] [--category C] [--add-variant V] [--remove-variant V]
   [--alt-translations "A,B"] [--add-alt A] [--remove-alt A]` — atomic
   multi-field metadata edit (CJK-checked against the source like
-  `apply_fixes`); idempotent; silent no-op when nothing actually changes.
+  `apply_fixes`); idempotent; prints `[glossary] noop: <detail>` when
+  nothing actually changes. Assigning `--category unit` to an entry with
+  a non-empty translation warns `[warn] glossary: '<source>' has a
+  translation but category 'unit' (guide-only: balance checks skip it)`.
 - `uv run "$SCRIPT" glossary merge --project . --keep K --remove R` —
   transfer `variants` / `alt_translations` / `definition` from R to K
-  (definition only fills K when K's is empty), append R to the top-level
-  `retired` list, remove R from `terms`; idempotent (already-retired R is a
-  no-op exit 0). Translation / category / origin / first_seen_chapter of
-  the kept entry are preserved.
+  (definition only fills K when K's is empty; a definition arriving for a
+  K that already has one is discarded with `[warn] glossary: definition
+  from '<removed>' discarded ('<kept>' already has one)`), append R to
+  the top-level `retired` list, remove R from `terms`; idempotent
+  (re-running with an already-retired R — canonical source or variant
+  spelling — is a clean no-op exit 0, the supplied spelling recorded in
+  `retired` alongside the canonical source). Translation / category /
+  origin / first_seen_chapter of the kept entry are preserved.
 - `uv run "$SCRIPT" glossary retire --project . --source X` — thin wrapper
   over `glossary.retire()` for a single source. Re-running with the
-  entry's canonical source prints `[glossary] already retired: X` and
-  exits 0; a variant spelling of an already-retired entry behaves like an
-  unknown term (exit 2).
+  entry's canonical source prints `[glossary] noop: already retired: X`
+  and exits 0; a variant spelling of an already-retired entry is also a
+  clean no-op (exit 0) — the supplied spelling is recorded in `retired`
+  alongside the canonical source.
 - `uv run "$SCRIPT" glossary replace --project . --source S
   --translation T [--keep-alt] [--no-build] [--dry-run]` — `--no-build`
   skips the auto epub build for batch runs; the replace behavior itself is

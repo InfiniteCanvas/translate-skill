@@ -318,9 +318,30 @@ def build(
     return out_path, ok, output
 
 
+def _docker_infra_failure(returncode: int, output: str) -> bool:
+    """True when an epubcheck run failed on docker infrastructure (exit 125:
+    image/volume trouble, or a daemon/connection error in the output) rather
+    than because the epub is invalid -- a good epub must read as 'could not
+    run', never as a validation failure."""
+    if returncode == 125:
+        return True
+    lowered = output.lower()
+    return any(
+        needle in lowered
+        for needle in (
+            "cannot connect to the docker daemon",
+            "unable to find image",
+            "error during connect",
+        )
+    )
+
+
 def run_epubcheck(epub_path: Path) -> tuple[bool | None, str]:
     """Validate with the epubcheck docker image. Returns (ok, output); ok is
-    None when epubcheck could not be run at all. Never raises."""
+    None when epubcheck could not be run at all -- the docker binary missing,
+    the run timing out, or a docker infrastructure failure (exit 125, daemon
+    down, image missing), none of which says anything about the epub. Never
+    raises."""
     epub_path = Path(epub_path)
     cmd = [
         "docker",
@@ -339,4 +360,7 @@ def run_epubcheck(epub_path: Path) -> tuple[bool | None, str]:
         return None, "[warn] docker not found; epubcheck skipped"
     except subprocess.TimeoutExpired:
         return None, "[warn] epubcheck timed out after 300s"
-    return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+    output = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0 and _docker_infra_failure(proc.returncode, output):
+        return None, output
+    return proc.returncode == 0, output
