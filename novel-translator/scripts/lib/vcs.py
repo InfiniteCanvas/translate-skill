@@ -194,11 +194,15 @@ def commit(project_dir: Path, subject: str) -> str | None:
         key = os.path.normcase(str(project_dir))
         if key not in _FOREIGN_REPO_WARNED:
             _FOREIGN_REPO_WARNED.add(key)
+            # "no marker and no skill ignore rules": the guard also fires for
+            # a repository that carries the skill's rules AND one foreign
+            # entry, so a message naming only the missing .gitignore would be
+            # wrong exactly where the user needs to be told what to remove.
             print(
                 f"[warn] git: skipping commits - {project_dir} looks like a "
-                "foreign repository (no skill .gitignore); add the skill "
-                ".gitignore to let the skill manage it, or set "
-                "git_commits: false"
+                "foreign repository (no skill marker, and its .gitignore is "
+                "not the skill's alone); add the skill's .gitignore rules to "
+                "let the skill manage it, or set git_commits: false"
             )
         return None
     try:

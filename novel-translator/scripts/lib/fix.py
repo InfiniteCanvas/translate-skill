@@ -308,24 +308,33 @@ _SET_FIELD_FLAGS = ("--definition", "--category", "--translation")
 
 
 def _conflict_key(argv: list[str], g: dict) -> tuple[str, str] | None:
-    """(verb-target, resolved source) identity of one Command spec, or None
+    """(edited field, resolved source) identity of one Command spec, or None
     when the command has no glossary target the conflict guard tracks.
 
-    Keys: replace -> ("replace", source); set -> ("set:<field>", source)
-    for the first of --definition/--category/--translation present; merge
-    -> ("merge", resolved --keep); retire -> ("retire", source). Sources
-    resolve through glossary.find() so a command naming a variant and one
-    naming the canonical source collide -- exactly the pair that would
-    double-apply one review suggestion on the same entry, mirroring the
-    in-review path's skip on (entry, field)."""
+    The key names the FIELD a command writes, not the verb spelling it:
+    `replace` edits the translation, so it shares `set --translation`'s key and
+    the two collide -- two commands writing one field of one entry is the
+    exact pair that double-applies (the second rewriting every chapter back).
+    `set` picks the first of --definition/--category/--translation present, so
+    edits to different fields of one entry both run; variant/alt edits name
+    their own string and stay untracked. merge keys the resolved
+    (--keep, --remove) pair -- one report legitimately emits two merges into
+    one keeper. retire keys the resolved source. Sources resolve through
+    glossary.find() so a command naming a variant and one naming the canonical
+    source collide, mirroring the in-review path's skip on (entry, field)."""
     if len(argv) < 2 or argv[0] != "glossary":
         return None
     verb = argv[1]
-    if verb in ("replace", "retire"):
+    if verb == "replace":
         source = _resolve_source(g, _argv_value(argv, "--source"))
         if source is None:
             return None
-        return (verb, source)
+        return ("set:translation", source)
+    if verb == "retire":
+        source = _resolve_source(g, _argv_value(argv, "--source"))
+        if source is None:
+            return None
+        return ("retire", source)
     if verb == "set":
         field = next(
             (flag for flag in _SET_FIELD_FLAGS

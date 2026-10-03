@@ -84,11 +84,14 @@ def load_state(project_dir: Path) -> dict:
 
 def _prune_absent_stems(project_dir: Path, state: dict) -> None:
     """Drop state["chapters"] entries whose stem is not in the current
-    manifest: entries are keyed by stem and only ever added, so a renumbered
-    or reused stem would otherwise inject another chapter's stale recap as
-    [Background Information]. Skipped when the manifest is missing, empty,
-    or unreadable -- pruning must not destroy data on uncertain grounds.
-    Silent: routine housekeeping, not a failure."""
+    manifest: entries are keyed by stem and only ever added, so a chapter
+    dropped or renumbered out of the manifest would otherwise keep feeding
+    its recap into [Background Information] forever. A stem still IN the
+    manifest is kept even when the file behind it was replaced -- nothing
+    recorded here distinguishes a reused stem, and the recap is advisory
+    context that the chapter's own re-translation refreshes. Skipped when
+    the manifest is missing, empty, or unreadable -- pruning must not destroy
+    data on uncertain grounds. Silent: routine housekeeping, not a failure."""
     try:
         manifest = project.load_manifest(project_dir)
     except (OSError, ValueError):  # corrupt chapters.json (JSONDecodeError)

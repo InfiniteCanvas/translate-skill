@@ -669,6 +669,81 @@ def case_12_conflict_guard() -> None:
               and terms["Excalibur"]["translation"] == "the true sword",
               f"terms={terms}")
 
+    # D: two merges into ONE keeper are legitimate -- one report emits
+    # `merge --keep M --remove A` and `merge --keep M --remove B` when two
+    # entries are duplicates of the same keeper. Keying on the keeper alone
+    # dropped the second entry, leaving it un-merged and un-retired.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "master", "translation": "the original"},
+            {"source": "dupA", "translation": "the original"},
+            {"source": "dupB", "translation": "the original"},
+        ]})
+        (root / "chapters.json").write_text("[]\n", encoding="utf-8")
+        lines = [
+            "- Command: glossary merge --keep 'master' --remove 'dupA'",
+            "- Command: glossary merge --keep 'master' --remove 'dupB'",
+        ]
+        report = root / "review-report.md"
+        report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        specs, _count = fix.parse_report(report)
+        result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        terms = {e["source"] for e in glossary.load(root)["terms"]}
+        check("12h merge-pair: two merges into one keeper BOTH run",
+              result["applied"] == 2 and result["skipped_conflict"] == 0
+              and "dupA" not in terms and "dupB" not in terms,
+              f"result={result} terms={terms}")
+
+    # E: `replace` edits the translation, so it shares `set --translation`'s
+    # key -- two commands writing ONE field of ONE entry is the double-apply
+    # the guard exists to stop. Different fields of one entry still both run.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "灵根", "translation": "spirit root",
+             "definition": "the root of spirit"},
+        ]})
+        (root / "chapters.json").write_text("[]\n", encoding="utf-8")
+        lines = [
+            "- Command: glossary replace --source '灵根' "
+            "--translation 'spiritual root'",
+            "- Command: glossary set --source '灵根' --translation 'other'",
+        ]
+        report = root / "review-report.md"
+        report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        specs, _count = fix.parse_report(report)
+        result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        entry = glossary.load(root)["terms"][0]
+        check("12i conflict-key: replace and set --translation collide "
+              "(second skipped, disk keeps the first)",
+              result["applied"] == 1 and result["skipped_conflict"] == 1
+              and entry.get("translation") == "spiritual root",
+              f"result={result} entry={entry}")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        glossary.save(root, {"terms": [
+            {"source": "灵根", "translation": "spirit root",
+             "definition": "the root of spirit"},
+        ]})
+        (root / "chapters.json").write_text("[]\n", encoding="utf-8")
+        lines = [
+            "- Command: glossary set --source '灵根' "
+            "--definition 'a better definition'",
+            "- Command: glossary set --source '灵根' --category 'skill'",
+        ]
+        report = root / "review-report.md"
+        report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        specs, _count = fix.parse_report(report)
+        result = fix.run_commands(root, SCRIPTS / "translate.py", specs)
+        entry = glossary.load(root)["terms"][0]
+        check("12j conflict-key: two sets on DIFFERENT fields both run",
+              result["applied"] == 2 and result["skipped_conflict"] == 0
+              and entry.get("definition") == "a better definition"
+              and entry.get("category") == "skill",
+              f"result={result} entry={entry}")
+
 
 def case_13_report_staleness() -> None:
     """report_is_stale + the writer's glossary_digest frontmatter anchor

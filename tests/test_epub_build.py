@@ -317,6 +317,15 @@ def case_4_docker_infra_tri_state() -> None:
         (1, "", False),
         (2, "some other docker failure", False),
         (127, "command not found", False),
+        # docker exits 1, not 125, on the registry paths: a machine whose
+        # pulls are blocked must degrade to "could not run" too, or it keeps
+        # reporting good epubs as malformed.
+        (1, "Error response from daemon: pull access denied for epubcheck",
+         True),
+        (1, "Error response from daemon: Could not select a version for the "
+            "image", True),
+        (1, "dial tcp: lookup epubcheck on host: no such host", True),
+        (1, "manifest for epubcheck:1.0 not found: manifest unknown", True),
     ]
     for i, (rc, output, expected) in enumerate(pairs):
         got = E._docker_infra_failure(rc, output)
@@ -333,6 +342,7 @@ def case_4_docker_infra_tri_state() -> None:
             run=fake_run,
             TimeoutExpired=subprocess.TimeoutExpired,
             FileNotFoundError=FileNotFoundError,
+            DEVNULL=subprocess.DEVNULL,
         )
         try:
             return E.run_epubcheck(Path("nowhere") / "book.epub")

@@ -80,9 +80,9 @@ manifest and glossary are in place; every later mutating action commits too
 (subject table in `references/file-formats.md` § Git history). On a
 machine without git, init still succeeds but prints
 `[warn] git not found; project history disabled`, and in a project dir
-that is already a repository the skill did not create (no
-`.git/novel-translator-managed` marker and a `.gitignore` differing from
-the skill's) commits are skipped, with one
+that is already a repository the skill did not create — no
+`.git/novel-translator-managed` marker, and a `.gitignore` that is not the
+skill's rules alone — commits are skipped, with one
 `[warn] git: skipping commits - ...` line per run (details in
 file-formats.md § Git history).
 Refuses to overwrite an existing project unless `--force`; the
@@ -378,7 +378,7 @@ to `logs/epub-build.log` with
 `=== epub build after Chapter_NNNN.md | timestamp ===` separators; the console
 prints `[epub-auto] build ok (after Chapter_NNNN.md)`. Failures are warnings
 only and never change the translate/retry exit code (which still reflects
-translation status): a stalled build is killed after 360s (`[warn] epub
+translation status): a stalled build is killed after 360s — the kill takes the whole process tree, so the builder's own docker run cannot outlive it (`[warn] epub
 auto-build stalled, killed after 360s (after <reason>) - see
 logs/epub-build.log`), a failed child prints `[warn] epub auto-build
 failed, exit <code> (after <reason>) - see logs/epub-build.log`, a Ctrl-C

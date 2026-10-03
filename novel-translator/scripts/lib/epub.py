@@ -319,10 +319,15 @@ def build(
 
 
 def _docker_infra_failure(returncode: int, output: str) -> bool:
-    """True when an epubcheck run failed on docker infrastructure (exit 125:
-    image/volume trouble, or a daemon/connection error in the output) rather
-    than because the epub is invalid -- a good epub must read as 'could not
-    run', never as a validation failure."""
+    """True when an epubcheck run failed on docker infrastructure rather than
+    because the epub is invalid -- a good epub must read as 'could not run',
+    never as a validation failure.
+
+    Exit 125 is docker's own infrastructure code. The needles cover the paths
+    that exit 1 instead: an unreachable daemon, a missing local image, and the
+    registry refusals docker reports as pull errors. epubcheck's own findings
+    (ERROR/FATAL lines about the epub) match none of them, so a real
+    validation failure still reads as one."""
     if returncode == 125:
         return True
     lowered = output.lower()
@@ -332,6 +337,10 @@ def _docker_infra_failure(returncode: int, output: str) -> bool:
             "cannot connect to the docker daemon",
             "unable to find image",
             "error during connect",
+            "pull access denied",
+            "could not select a version",
+            "no such host",
+            "not found: manifest unknown",
         )
     )
 
@@ -354,7 +363,8 @@ def run_epubcheck(epub_path: Path) -> tuple[bool | None, str]:
     ]
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, errors="replace", timeout=300
+            cmd, capture_output=True, text=True, errors="replace", timeout=300,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return None, "[warn] docker not found; epubcheck skipped"

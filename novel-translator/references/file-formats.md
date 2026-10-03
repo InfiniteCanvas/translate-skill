@@ -63,9 +63,10 @@ own pending changes into a skill-labeled commit (see the console lines
 below). The skill recognizes its own repositories by a
 `.git/novel-translator-managed` marker written at creation, or — for
 repositories created before the marker existed — by a `.gitignore` that
-carries every rule the skill writes (a subset test, so a repository whose
-ignore file predates a later rule still counts as the skill's own);
-anything else is the user's own repository.
+carries ALL FOUR original rules (`draft/`, `logs/`, `export/`, `*.tmp`) and
+nothing but rules the skill writes (so an ignore file predating a later rule
+such as `covers/` still counts as the skill's own, while one carrying a
+single foreign rule does not); anything else is the user's own repository.
 `build-epub`, the auto-build, and `glossary search` / `glossary count`
 produce nothing — `export/`, `logs/`, and `covers/` are gitignored, and
 search/count are read-only.
@@ -117,12 +118,13 @@ Console lines — `[git]` is part of the stable marker vocabulary:
   missing-docker tolerance. A foreign repository is also a no-op — but
   not a silent one (next bullet).
 - `[warn] git: skipping commits - <dir> looks like a foreign repository
-  (no skill .gitignore); add the skill .gitignore to let the skill manage
-  it, or set git_commits: false` — the project dir is already a repository
-  the skill does not recognize (no `.git/novel-translator-managed` marker
-  and a `.gitignore` that differs from the skill's), i.e. the user's own;
-  commit() refuses so their pending changes are never swept into a
-  skill-labeled commit. Printed at most once per directory per process.
+  (no skill marker, and its .gitignore is not the skill's alone); add the
+  skill's .gitignore rules to let the skill manage it, or set git_commits:
+  false` — the project dir is already a repository the skill does not
+  recognize (no `.git/novel-translator-managed` marker, and a `.gitignore`
+  that is not the skill's rules alone), i.e. the user's own; commit() refuses
+  so their pending changes are never swept into a skill-labeled commit.
+  Printed at most once per directory per process.
 - `[warn] git not found; project history disabled` — init / migrate on a
   machine without git.
 - `[warn] git init failed: <reason>` / `[warn] git add failed: <reason>` /
@@ -862,9 +864,12 @@ chapter translates without a recap and the next run retries the backfill.
 file is discarded — recaps start fresh, never a crash — with one
 `[warn] story_state.json unreadable (<reason>) - recaps start fresh` line.
 Entries whose chapter stem no longer exists in `chapters.json` are pruned
-at load time, so a reused or renumbered stem cannot inherit a removed
-chapter's recap; a missing, empty, or unreadable manifest disables pruning
-(recaps are never destroyed on uncertain grounds). Staleness semantics:
+at load time, so a dropped or renumbered chapter stops feeding its recap into
+later chapters; a missing, empty, or unreadable manifest disables pruning
+(recaps are never destroyed on uncertain grounds). A stem still present in
+the manifest keeps its recap even when the file behind it was replaced —
+nothing recorded distinguishes a reused stem, and the recap is advisory
+context that the chapter's own re-translation refreshes. Staleness semantics:
 retranslating chapter N refreshes only N's own entry;
 entries after N stay as built until those chapters are themselves
 retranslated — the recap is advisory context, never a gate. Everything the
@@ -1263,6 +1268,7 @@ Every command exits 0 on success. The non-zero exits:
 |---|---|
 | 1 | `translate` / `retry` — at least one chapter ended `needs-review`; `build-epub` — epubcheck reported errors (the epub failed validation); `review glossary` — warns remain after the run; `review fix` — at least one command failed, or the report was refused as stale; `glossary search` — nothing found; `glossary count` — below the significance threshold; `tn` — failed chapters (annotator call or unreadable chapter) or no eligible chapters in range; `profile` — generation failed |
 | 2 | usage or setup error — bad arguments, missing files, corrupt project JSON (one `[FAIL]` line, never a traceback); `build-epub` — the builder subprocess crashed; `ping` — one or more providers unreachable |
+| 130 | interrupted at the keyboard (`Ctrl-C`) — chapter state is saved, re-run to resume |
 
 `build-epub` splits its failures: epubcheck failing validation exits 1,
 the builder itself crashing exits 2. `ping` exits 2 whenever one or more
