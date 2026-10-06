@@ -304,10 +304,12 @@ def case_truncated_retry_cap() -> None:
     """The corrective retry for a TRUNCATED chunk never re-sends at a
     smaller cap than the first attempt, and the below-provider-cap config
     warn prints exactly once across a multi-chapter run. The provider
-    max_tokens (100) sits far below translate_max_output_tokens (8192): the
-    first TRANSLATE response is cut mid-JSON, the retry must go out at
+    max_tokens (100) sits far below translate_max_output_tokens (the default):
+    the first TRANSLATE response is cut mid-JSON, the retry must go out at
     max_out (escalated >= max_out), and chapter 2's run must not repeat the
-    warn. _escalated_cap is additionally checked directly."""
+    warn. _escalated_cap is additionally checked directly. The expected text
+    interpolates config.DEFAULTS rather than hardcoding 8192, so raising the
+    default (v009) cannot silently strand this check."""
     with tempfile.TemporaryDirectory() as td:
         proj = make_cap_project(Path(td), "proj")
         cfg = config.load_config(proj)
@@ -350,24 +352,27 @@ def case_truncated_retry_cap() -> None:
             pipeline._chat = orig
 
         warn = ("[warn] config: providers.translator.max_tokens (100) is "
-                "below translate_max_output_tokens (8192) - retries cannot "
-                "raise the output cap")
+                f"below translate_max_output_tokens "
+                f"({config.DEFAULTS['translate_max_output_tokens']}) - retries "
+                "cannot raise the output cap")
         check("5a cap: both chapters translate",
               exc1 is None and outcome1 == "translated"
               and exc2 is None and outcome2 == "translated",
               f"outcomes={outcome1}/{outcome2} exc={exc1!r}/{exc2!r}")
+        max_out = config.DEFAULTS["translate_max_output_tokens"]
         check("5b cap: truncated first response retried at max_out, not the "
               "smaller provider cap",
-              calls == [8192, 8192, 8192], f"calls={calls}")
+              calls == [max_out, max_out, max_out], f"calls={calls}")
         check("5c cap: warn prints once across the two-chapter run",
               out1.count(warn) == 1 and warn not in out2, f"out1={out1!r}")
         check("5d cap: helper keeps escalated >= max_out",
-              pipeline._escalated_cap(8192, 100) == 8192
-              and pipeline._escalated_cap(8192, 16384) == 12288
+              pipeline._escalated_cap(max_out, 100) == max_out
+              and pipeline._escalated_cap(max_out, max_out * 2)
+              == int(round(max_out * 1.5))
               and pipeline._escalated_cap(1000, 1200) == 1200
               and pipeline._escalated_cap(1000, 500) == 1000,
-              f"caps={pipeline._escalated_cap(8192, 100)},"
-              f"{pipeline._escalated_cap(8192, 16384)},"
+              f"caps={pipeline._escalated_cap(max_out, 100)},"
+              f"{pipeline._escalated_cap(max_out, max_out * 2)},"
               f"{pipeline._escalated_cap(1000, 1200)},"
               f"{pipeline._escalated_cap(1000, 500)}")
 

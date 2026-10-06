@@ -179,10 +179,10 @@ LLM call.
   "providers": {
     "translator": [
       { "base_url": "http://100.85.218.125:8888/v1", "model": null,
-        "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384,
+        "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536,
         "thinking": false },   // sglang chat_template_kwargs.enable_thinking; false = output budget spent on the answer, not a reasoning chain
       { "base_url": "http://100.85.218.125:8889/v1", "model": "Qwen3-235B-A22B",
-        "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384,
+        "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536,
         "thinking": false }    // 2nd block = 2nd model: multi-model consensus (see below)
     ],
     "glossary":    [ { "...same block shape, temperature 0.2" } ],
@@ -213,7 +213,7 @@ LLM call.
   "contextual_glossary_cap": 200, // safety valve only — every glossary term present in the chapter goes in
   "max_new_terms_per_chapter": 15,
   "max_notes_per_chapter": 10,
-  "translate_max_output_tokens": 8192, // per-call OUTPUT cap (card recommends 4k-8k) + packing budget for splitting: parts close past floor(0.8*this)-256 of per-line estimated cost; input context is never limited
+  "translate_max_output_tokens": 65536, // per-call OUTPUT cap + packing budget for splitting: parts close past floor(0.8*this)-256 of per-line estimated cost; input context is never limited. 64k, raised in v009 from 8192 so a reasoning model drawing from the same budget (measured ~10.5k on GLM-5.3's translator's-notes pass) does not truncate the answer; must stay <= the translator blocks' max_tokens
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation (--style auto only)
   "style_sample_chars": 12000,   // rough source-character budget for the sample (--style auto only)
   "log_llm": true,               // full request/response LLM trace; false disables the LLM trace lines only
@@ -914,7 +914,23 @@ lets an omitted job inherit the project's translator list, and
 materializes the consensus entry, reporting the same
 provider-blocks-normalized line as v007; the template sync ships the new
 `consensus.md` (the synthesis prompt over the original task plus the
-labeled candidates) (idempotent).
+labeled candidates) (idempotent). `v009` (DESCRIPTION: `raise the
+translation output budget to 64k (translate_max_output_tokens
+8192->65536 and provider max_tokens 16384->65536, together)`) rewrites
+BOTH numbers together: `translate_max_output_tokens` 8192 -> 65536 and
+every `providers.<job>[].max_tokens` still at 16384 -> 65536. They move as a
+pair on purpose — `pipeline._escalated_cap` clamps the corrective retry for a
+truncated chunk to the smallest translator `max_tokens`, so raising only the
+translate cap would make the retry smaller than the attempt it is retrying
+and guarantee the same truncation. Unlike v001-v008 this step REWRITES
+existing values rather than only adding missing keys, and only where the value
+exactly equals the old default (the chain's "untouched default" rule), so a
+project on any other number keeps it; a value that was genuinely chosen at
+8192 cannot be distinguished from an untouched one and is bumped —
+reversible by setting it back, after which `migrate` is a no-op. It reads
+and writes the RAW config (not load_config's merged form) so the report names
+the numbers that actually moved, and delegates the unchanged template sync
+to `common.sync_templates` (idempotent).
 `--dry-run` writes nothing and reports
 `[git] would initialize the repository (a real run commits after each
 migrate step)` (cmd_migrate prefixes step lines with `[dry-run] `). A
@@ -1261,8 +1277,9 @@ previous chunk's final lines for chunks 2+; the section is empty when no
 background or recap is set and the chunk has no predecessor).
 
 **Whole-chapter translation**: only the OUTPUT is constrained. Each translate
-call sends `max_tokens = translate_max_output_tokens` (default 8192, the model
-card's recommended range); chapters whose EXPECTED output fits the packing
+call sends `max_tokens = translate_max_output_tokens` (default 65536 since
+v009, up from the old 8192 — reasoning-capable hosted models share this
+budget with the answer); chapters whose EXPECTED output fits the packing
 budget below are
 translated in ONE call — the model sees the chapter's full context (input is
 never limited by this). Longer chapters split by greedy per-line token-budget

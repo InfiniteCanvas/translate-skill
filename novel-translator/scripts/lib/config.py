@@ -25,11 +25,20 @@ DEFAULTS: dict = {
     "contextual_glossary_cap": 200,
     "max_new_terms_per_chapter": 15,
     "max_notes_per_chapter": 10,
-    # Per-call OUTPUT cap for translation (model card recommends 4k-8k) and
-    # the packing budget: long chapters split into parts sized so each
-    # part's expected output (per-line cost, 0.8 headroom) fits this cap;
-    # smaller ones translate whole. Input context is never limited by this.
-    "translate_max_output_tokens": 8192,
+    # Per-call OUTPUT cap for translation and the packing budget: long chapters
+    # split into parts sized so each part's expected output (per-line cost, 0.8
+    # headroom) fits this cap; smaller ones translate whole. Input context is
+    # never limited by this.
+    #
+    # 65536, not the Hy-MT2 card's 4k-8k: reasoning-capable hosted models
+    # (GLM-5.3, MiniMax-M3) draw from THIS SAME budget, measured live at
+    # ~700-1300 reasoning tokens for a plain chapter but ~10462 for a
+    # translator's-notes prompt -- an overthinking GLM would otherwise hit the
+    # old 8192 ceiling with the answer truncated away. Must stay <= the
+    # translator blocks' max_tokens (pipeline._escalated_cap clamps the
+    # truncation retry to it; a lower value would make the retry smaller than
+    # the attempt it is retrying and guarantee the same failure).
+    "translate_max_output_tokens": 65536,
     # Style-profile generation at init: how many chapters to sample and
     # roughly how many source characters to include in the prompt.
     "style_sample_chapters": 4,
@@ -63,7 +72,14 @@ DEFAULTS: dict = {
 }
 
 DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"
-DEFAULT_MAX_TOKENS = 16384
+# Every provider job's max_tokens default. Kept >= DEFAULTS'
+# translate_max_output_tokens on purpose: the truncation-retry cap is
+# min(escalated, min block max_tokens), so a provider default BELOW the
+# translate cap would clamp the corrective retry below the first attempt --
+# the exact defect v009 was written to close. A local server that cannot
+# generate 64k should set its own lower value per project; this is the
+# ceiling, not a request to always emit the maximum.
+DEFAULT_MAX_TOKENS = 65536
 
 # Skill-level settings overlay, copied into every project `init` creates and
 # merged on demand by `sync-config`. It holds the same shape as config.json

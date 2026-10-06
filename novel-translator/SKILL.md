@@ -201,7 +201,8 @@ sorted by frequency):
 1. **TRANSLATE** — fill `templates/translation.md`, call the `translator`
    provider with the WHOLE chapter when its expected output fits the
    one-call budget `floor(0.8 × translate_max_output_tokens) − 256`
-   (the cap defaults to 8k, the model card's recommended output range);
+   (the cap defaults to 64k since v009, raised from 8k so a reasoning
+   model drawing on the same budget cannot truncate the answer);
    longer chapters split by greedy per-line token-budget packing (parts
    close past that same budget, so every part takes at least one line),
    each still carrying style
@@ -576,7 +577,14 @@ background build too. Builds produce no git commits — `export/`,
   array; user-set keys kept verbatim) and the new `consensus` job is
   materialized (an omitted job still inherits the translator's list;
   consensus itself is exactly one block), with the template sync
-  shipping the new `consensus.md` synthesis prompt. A template that
+  shipping the new `consensus.md` synthesis prompt. v009 raises the
+  translation output budget (DESCRIPTION: `raise the translation output
+  budget to 64k (translate_max_output_tokens 8192->65536 and provider
+  max_tokens 16384->65536, together)`): both numbers move in the same step,
+  since the truncation-retry cap is clamped to the smallest translator
+  `max_tokens` and raising only the translate cap would make the retry
+  smaller than the attempt it retries. Only values still equal to the old
+  default are rewritten, so custom numbers survive. A template that
   exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:

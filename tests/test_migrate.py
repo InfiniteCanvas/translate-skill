@@ -543,13 +543,14 @@ def case_4_real_chain() -> None:
     v005's in case 8, v007's in case 9, and v008's in case 11; only the
     chain shape is pinned here."""
     steps = migrations.chain()
-    check("4a real chain: eight steps v001..v008, VERSIONs 1..8",
-          len(steps) == 8 and [s.VERSION for s in steps] == [1, 2, 3, 4, 5, 6, 7, 8]
+    check("4a real chain: every step v001..vNNN, VERSIONs 1..NNN",
+          len(steps) == migrations.current_version()
+          and [s.VERSION for s in steps] == list(range(1, len(steps) + 1))
           and [s.__name__[-4:] for s in steps]
-          == ["v001", "v002", "v003", "v004", "v005", "v006", "v007", "v008"],
+          == [f"v{i:03d}" for i in range(1, len(steps) + 1)],
           f"steps={[getattr(s, '__name__', s) for s in steps]}")
-    check("4b real chain: all eight steps expose DESCRIPTION and callable migrate",
-          len(steps) == 8
+    check("4b real chain: every step exposes DESCRIPTION and callable migrate",
+          len(steps) >= 8
           and all(isinstance(s.DESCRIPTION, str) for s in steps)
           and all(callable(s.migrate) for s in steps))
     check("4c real chain: v003's DESCRIPTION string is exact",
@@ -576,7 +577,8 @@ def case_4_real_chain() -> None:
           steps[7].DESCRIPTION == "provider arrays + the consensus job "
           "(multi-model consensus); ship consensus.md",
           f"DESCRIPTION={steps[7].DESCRIPTION!r}")
-    check("4d real chain: current_version() == 8", migrations.current_version() == 8)
+    check("4d real chain: current_version() == head VERSION",
+          migrations.current_version() == steps[-1].VERSION)
 
 
 def case_5_confirm_prompt() -> None:
@@ -1053,13 +1055,18 @@ def case_9_v007() -> None:
             with patched_confirm(yes_confirm):
                 code, out, exc = run_migrate(ns, full)
             disk = json.loads((full / "config.json").read_text(encoding="utf-8"))
-            check("9k v007: chain-walked v6 project applies v007 then v008, exit 0",
+            head = migrations.current_version()
+            # A v6 project walks every step from v007 to the chain head, so
+            # the number of "[migrate]" lines and the stamped version both
+            # track migrations.current_version() rather than a literal.
+            expected_steps = head - 6
+            check(f"9k v007: chain-walked v6 project applies v007..v{head:03d}, exit 0",
                   code == 0 and exc is None and "applying v007" in out
-                  and "applying v008" in out and "applying v006" not in out
-                  and len([ln for ln in out.splitlines() if ln.startswith("[migrate]")]) == 2,
+                  and f"applying v{head:03d}" in out and "applying v006" not in out
+                  and len([ln for ln in out.splitlines() if ln.startswith("[migrate]")]) == expected_steps,
                   f"code={code} exc={exc!r} out={out}")
-            check("9l v007: version stamped to 8 with the recap job materialized",
-                  disk.get("version") == 8
+            check(f"9l v007: version stamped to {head} with the recap job materialized",
+                  disk.get("version") == head
                   and sorted(disk["providers"]) == sorted(config.PROVIDER_JOBS),
                   f"version={disk.get('version')!r}")
             check("9m v007: drifted tn_generate.md refreshed byte-equal after one prompt",
@@ -1073,7 +1080,7 @@ def case_9_v007() -> None:
                   f"asked={asked!r}")
 
             # --dry-run: same would-be changes reported (the new templates,
-            # the pending y/N choice, "version 6 -> 8"), nothing written --
+            # the pending y/N choice, "version 6 -> {head}"), nothing written --
             # byte snapshot equal, version still 6, no templates added.
             dry = make_v6_project(root, "dry")
             before_dry = snapshot(dry)
@@ -1086,7 +1093,7 @@ def case_9_v007() -> None:
                   and "[dry-run] [ok] config: provider blocks normalized" in out_d
                   and "[dry-run] [ok] templates + recap.md (new)" in out_d
                   and "[dry-run] [ok] templates + notes_review.md (new)" in out_d
-                  and "would migrate project: version 6 -> 8" in out_d,
+                  and f"would migrate project: version 6 -> {head}" in out_d,
                   f"code={code_d} exc={exc_d!r} out={out_d}")
             check("9o v007: --dry-run writes nothing (byte snapshot, version, templates)",
                   snapshot(dry) == before_dry and dry_disk.get("version") == 6

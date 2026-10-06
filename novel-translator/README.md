@@ -108,9 +108,21 @@ through uv automatically):
    version stamp untouched; a missing repository is backfilled), so
    `migrate --force` refreshes stale
    templates on current projects too. Each applied step is committed
-   once it lands (`migrate: vNNN <description>`). The newest step, v008,
-   lands the provider-array batch (DESCRIPTION: `provider arrays + the
-   consensus job (multi-model consensus); ship consensus.md`): every
+   once it lands (`migrate: vNNN <description>`). The newest step, v009,
+   raises the translation output budget (DESCRIPTION: `raise the
+   translation output budget to 64k (translate_max_output_tokens
+   8192->65536 and provider max_tokens 16384->65536, together)`):
+   `translate_max_output_tokens` goes 8192 -> 65536 and every provider
+   block still at 16384 goes to 65536 in the same step, because the
+   truncation-retry cap is clamped to the smallest translator
+   `max_tokens` -- raising only one would make the retry smaller than the
+   attempt it retries. Values are rewritten only where they still equal the
+   old default, so your own numbers are preserved. Reasoning-capable hosted
+   models draw from this same budget (GLM-5.3 measured ~10.5k reasoning
+   tokens on a translator's-notes pass), which is why the ceiling went up.
+   Before it, v008 landed the provider-array batch (DESCRIPTION: `provider
+   arrays + the consensus job (multi-model consensus); ship consensus.md`):
+   every
    `providers.<job>` value is normalized to an array of provider blocks
    (a legacy single-block dict wraps into a one-element array; every
    user-set key kept verbatim) and the new `consensus` job is
@@ -662,9 +674,9 @@ to exit`; details land in
 
       "translator": [
         { "base_url": "http://100.85.218.125:8888/v1", "model": null,
-          "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384, "thinking": false },
+          "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536, "thinking": false },
         { "base_url": "http://100.85.218.125:8889/v1", "model": "Qwen3-235B-A22B",
-          "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384, "thinking": false }
+          "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536, "thinking": false }
       ]
 - Temperature and `top_p` per provider. The translator defaults to
   temperature 0.7 and `top_p` 1.0 per the Hy-MT2 model card -- tune to

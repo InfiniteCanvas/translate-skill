@@ -41,7 +41,7 @@ latest one:
 
 - Name it `vNNN.py`, with NNN = highest existing version + 1 (currently
   `v001.py`, `v002.py`, `v003.py`, `v004.py`, `v005.py`, `v006.py`,
-  `v007.py`, `v008.py`, so the next is `v009.py`).
+  `v007.py`, `v008.py`, `v009.py`, so the next is `v010.py`).
 - The module must define `VERSION` (int, equal to the NNN in the filename),
   `DESCRIPTION` (one line), and
   `migrate(project_dir, templates_src, dry_run=False, force=False, confirm=None) -> list[str]`
