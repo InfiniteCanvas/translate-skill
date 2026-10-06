@@ -668,7 +668,8 @@ def case_10_shipped_examples_are_valid() -> None:
     """
     skill_root = Path(__file__).resolve().parent.parent / "novel-translator"
     examples = ["config.local.example.zai.json",
-                "config.local.example.minimax.json"]
+                "config.local.example.minimax.json",
+                "config.local.example.mixed.json"]
     for name in examples:
         path = skill_root / name
         check(f"10 {name}: shipped example exists", path.is_file(),
@@ -732,17 +733,30 @@ def case_10_shipped_examples_are_valid() -> None:
         # translator's-note prompt, so the budget must clear that with room to
         # spare -- 64k, verified accepted by both live APIs.
         jobs = overlay.get("providers", {})
-        no_disable = sorted(job for job, block in jobs.items()
+
+        # Providers may be a single block dict or an array of blocks (the
+        # consensus fan-out); the checks below must read every block either
+        # way, or a multi-model example silently escapes validation.
+        def _blocks(job_value):
+            if isinstance(job_value, dict):
+                return [job_value]
+            if isinstance(job_value, list):
+                return [b for b in job_value if isinstance(b, dict)]
+            return []
+
+        no_disable = sorted(job for job, value in jobs.items()
+                            for block in _blocks(value)
                             if (block.get("extra_body", {})
                                 .get("thinking", {})
                                 .get("type")) == "disabled")
         check(f"10 {name}: thinking is left ON (no thinking:disabled)",
               not no_disable, f"jobs with thinking disabled: {no_disable}")
 
-        small = sorted(job for job, block in jobs.items()
+        small = sorted(f"{job}[{i}]" for job, value in jobs.items()
+                       for i, block in enumerate(_blocks(value))
                        if int(block.get("max_tokens", 0)) < 65536)
-        check(f"10 {name}: every job carries the 64k output budget",
-              not small, f"jobs below 65536 max_tokens: {small}")
+        check(f"10 {name}: every block carries the 64k output budget",
+              not small, f"blocks below 65536 max_tokens: {small}")
 
         check(f"10 {name}: translate_max_output_tokens is 64k",
               overlay.get("translate_max_output_tokens") == 65536,

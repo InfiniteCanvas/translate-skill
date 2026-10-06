@@ -8,10 +8,14 @@ loads, normalizes, and lands on every job correctly.
 |---|---|---|---|
 | `config.local.example.zai.json` | Z.AI (GLM) | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` |
 | `config.local.example.minimax.json` | MiniMax (M3) | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` |
+| `config.local.example.mixed.json` | both — see below | both | both |
 
-Both files were verified end-to-end against the live APIs: all seven provider
-jobs ping reachable, and a full chapter translates with no reasoning-tag
-leakage.
+The **mixed** file is the one to reach for when you hold both plans: it
+routes each job to the model that is actually good at it. Both single-provider
+files remain for when only one plan is available.
+
+All three were verified end-to-end against the live APIs: every provider job
+pings reachable, and a full chapter translates cleanly.
 
 ## Use
 
@@ -114,16 +118,60 @@ own parameters. Setting the provider-block `thinking: false` remains
 meaningful for a **local sglang server**, where it is what stops reasoning
 from eating the budget.
 
+## Routing a two-plan setup
+
+The two subscription plans meter **differently**, so they should not be used
+the same way:
+
+- **Z.AI** bills **credits derived from tokens**, and the model multiplier is
+  steep: `glm-5.3` costs **1x off-peak / 3x peak**, while `glm-5.3-flash`
+  costs **0.4x / 1.2x** — roughly a quarter of the flagship. Off-peak (outside
+  Mon–Fri 14:00–18:00 UTC+8, weekends included) bills at half.
+- **MiniMax** bills a flat **monthly token pool** (~1.7B tokens/month on the
+  Go tier), independent of which model you name.
+
+So: spend Z.AI credits on judgment, spend MiniMax's pool on volume.
+
+| Job | Model | Why |
+|---|---|---|
+| `translator` | `glm-5.3` **+** `MiniMax-M3.1-Flash-Preview` | two-model array — the consensus fan-out; each call reaches a different plan |
+| `reviewer` | `glm-5.3` | the faithfulness gate; a false rejection costs more than a cheap review |
+| `consensus` | `glm-5.3` | synthesizes the candidates, so it gets the strongest |
+| `annotator` | `glm-5.3-flash` | translation notes — high volume, where 0.4x matters most |
+| `glossary` / `recap` / `profile` | `glm-5.3-flash` | structured extraction and summaries; a cheap model genuinely suffices |
+
+Batch big runs outside **Mon–Fri 14:00–18:00 UTC+8** and Z.AI bills at half
+— a free 2x on the credit-heavy jobs.
+
+### `MiniMax-M3.1-Flash-Preview` vs `MiniMax-M3`
+
+M3.1-Flash-Preview is the better pick here, with two caveats worth knowing:
+
+- It is **not listed by `GET /v1/models`** (which still advertises only
+  `MiniMax-M3`, `M2.7`, `M2.5`, `M2.1`, `M2`) yet the API accepts it. It is
+  unpublished, so pin it deliberately rather than trusting auto-resolution —
+  a model this new can be renamed or retired without notice.
+- It reasons **~25% less** (140 vs 189 tokens on the same prompt) and, unlike
+  M3, returns **no `<think>` block in `content` at all** — M3 inlined ~968
+  characters of visible reasoning into the payload. The client strips a
+  leading think block, so either is safe for the pipeline, but keeping the
+  reasoning at the source is better.
+
+Note that `translate_max_output_tokens` and each block's `max_tokens` must
+stay consistent, and with a two-block translator array the SMALLEST block
+`max_tokens` governs packing — here both are 65536, so it is a non-issue.
+
 ## Mixing the two providers
 
-Nothing prevents mixing them — point one job at each:
+Nothing prevents mixing them on any job — point one job at each:
 
 ```json
 {
   "providers": {
     "translator": { "base_url": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.3",
                     "api_key_env": "ZAI_API_KEY", "max_tokens": 65536 },
-    "annotator":  { "base_url": "https://api.minimax.io/v1", "model": "MiniMax-M3",
+    "annotator":  { "base_url": "https://api.minimax.io/v1",
+                    "model": "MiniMax-M3.1-Flash-Preview",
                     "api_key_env": "MINIMAX_API_KEY", "max_tokens": 65536,
                     "extra_body": { "max_completion_tokens": 65536 } }
   },
@@ -132,7 +180,8 @@ Nothing prevents mixing them — point one job at each:
 ```
 
 Jobs you omit inherit the translator's block, so name every job you want
-pointed somewhere specific.
+pointed somewhere specific. `config.local.example.mixed.json` is this pattern
+written out for all seven jobs.
 
 ## Related
 
