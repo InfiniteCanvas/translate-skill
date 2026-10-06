@@ -134,11 +134,25 @@ So: spend Z.AI credits on judgment, spend MiniMax's pool on volume.
 
 | Job | Model | Why |
 |---|---|---|
-| `translator` | `glm-5.3` **+** `MiniMax-M3.1-Flash-Preview` | two-model array — the consensus fan-out; each call reaches a different plan |
+| `translator` | `glm-5.3` **+** `MiniMax-M3.1-Flash-Preview` | two-model array — the consensus fan-out; each candidate reaches a different plan |
+| `annotator` | `glm-5.3-flash` **+** `MiniMax-M3.1-Flash-Preview` | same idea for translation notes, where two cheap models agreeing beats one |
 | `reviewer` | `glm-5.3` | the faithfulness gate; a false rejection costs more than a cheap review |
-| `consensus` | `glm-5.3` | synthesizes the candidates, so it gets the strongest |
-| `annotator` | `glm-5.3-flash` | translation notes — high volume, where 0.4x matters most |
+| `consensus` | `glm-5.3` | synthesizes every fan-out, so it gets the strongest |
 | `glossary` / `recap` / `profile` | `glm-5.3-flash` | structured extraction and summaries; a cheap model genuinely suffices |
+
+Fan-out is **per job, not translator-only**: any job whose array carries two
+or more blocks runs both models in parallel and merges them through the
+`consensus` provider (`consensus.py` `chat()` is what every job call routes
+through). So each fan-out job costs 3 calls — 2 candidates plus 1 synthesis —
+and the synthesis always runs on the `consensus` block, whatever that is set
+to. Both fan-outs run in parallel across blocks, so wall-clock stays at the
+slowest model rather than the sum, but credit/token spend is multiplied.
+
+Keep `consensus` on the flagship if translator quality is the priority: it is
+the synthesizer for *every* fan-out job, so demoting it to save credits would
+degrade the translator too. If credits are the binding constraint instead, the
+lever with the best ratio is dropping a fan-out job back to a single block —
+it removes a candidate *and* its synthesis call.
 
 Batch big runs outside **Mon–Fri 14:00–18:00 UTC+8** and Z.AI bills at half
 — a free 2x on the credit-heavy jobs.
