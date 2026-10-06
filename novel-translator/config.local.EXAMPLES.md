@@ -6,15 +6,19 @@ loads, normalizes, and lands on every job correctly.
 
 | File | Provider | Endpoint | Auth env var |
 |---|---|---|---|
-| `config.local.example.zai.json` | Z.AI (GLM) | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` |
-| `config.local.example.minimax.json` | MiniMax (M3) | `https://api.minimax.io/v1` | `MINIMAX_TOKEN` |
+| `config.local.example.zai.json` | Z.AI (GLM) | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` |
+| `config.local.example.minimax.json` | MiniMax (M3) | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` |
+
+Both files were verified end-to-end against the live APIs: all seven provider
+jobs ping reachable, and a full chapter translates with no reasoning-tag
+leakage.
 
 ## Use
 
 ```powershell
 Copy-Item novel-translator\config.local.example.minimax.json `
           novel-translator\config.local.json
-$env:MINIMAX_TOKEN = "sk-your-key"
+$env:MINIMAX_API_KEY = "sk-your-key"
 uv run novel-translator\scripts\translate.py ping --project .
 ```
 
@@ -42,40 +46,69 @@ Top-level keys used here: `providers` (the map above) plus
 `translate_max_output_tokens` (per-chapter cap the pipeline passes to the
 translator call) and `max_attempts` (retries per LLM call).
 
-## Two provider quirks these files encode
+## Three provider quirks these files encode
 
-**MiniMax counts output with `max_completion_tokens`.** Their Chat Completions
-API wants that field rather than `max_tokens`, so the examples carry
-`"max_completion_tokens"` inside `extra_body`. The client always sends
-`max_tokens` as well, so both appear on the wire; the pair is kept in sync by
-hand if you change `max_tokens`. MiniMax also ignores `presence_penalty` and
-`frequency_penalty`, which is why neither appears here. `reasoning_effort`
-thinks over reasoning tokens.
+**`thinking: {"type": "disabled"}` is not optional — without it every call
+returns empty content.** Both GLM-5.3 and MiniMax-M3 spend the output budget
+on reasoning first. Measured against the live APIs with `max_tokens: 50`,
+GLM-5.3 returned `finish_reason: length`, `content: ""`, and
+`usage.completion_tokens_details.reasoning_tokens: 48` — the entire budget
+gone to thinking. That is the exact failure `lib/client.py` guards against
+(it raises "empty completion content ... set thinking=false"). Adding the
+`extra_body` entry returns clean content. MiniMax-M3 has the same default,
+and inlines its reasoning as `<think>...</think>` **inside `content`** when
+left on, which would otherwise be written straight into the translated
+chapter.
 
-**Z.AI disables thinking with `thinking: {"type": "disabled"}`.** Thinking is
-on by default for reasoning-capable GLM models; turning it off keeps the
-output budget on the translation itself.
+**Z.AI Coding Plan keys only work on the coding endpoint.** Use
+`https://api.z.ai/api/coding/paas/v4`. The general endpoint
+(`https://api.z.ai/api/paas/v4`) is for pay-per-token developer keys; a
+Coding Plan key sent there is rejected. The two are not interchangeable.
 
-## Known caveat: `thinking` cannot currently be switched off per provider
+**MiniMax accepts `max_tokens` as well as `max_completion_tokens`.** Their
+docs name `max_completion_tokens` for Chat Completions, but the live API
+accepts either and also tolerates both being present (which is what this
+skill sends, since the client always sets `max_tokens`). Keep the two
+`extra_body` and top-level values in sync if you change `max_tokens`.
+MiniMax ignores `presence_penalty` and `frequency_penalty`, which is why
+neither appears here.
 
-`thinking` maps to sglang's `chat_template_kwargs.enable_thinking`, which
-Z.AI and MiniMax do not read — they use their own top-level parameters, so
-the correct move is to leave `thinking` out of the block and let `extra_body`
-carry the real control (as these examples do).
+## Known caveat: the sglang-only `thinking` key is also sent
 
-There is currently **no way to do that**: `PROVIDER_DEFAULTS` sets
-`thinking: false` for every job, and `client.chat` sends
-`chat_template_kwargs` whenever the key is non-`null`. So every request to a
-hosted provider — including these examples — carries
-`chat_template_kwargs: {"enable_thinking": false}` whether or not the block
-asks for it. Z.AI and MiniMax generally ignore unknown body fields, so this
-is harmless in practice; if you hit a strict-400 rejection mentioning
-`chat_template_kwargs`, that is the cause, and removing the key from
-`_with_defaults`/`client.chat` is the real fix (a one-line change to make
-`thinking` opt-in rather than defaulted).
+`thinking` (the provider-block field, not the `extra_body` one) maps to
+sglang's `chat_template_kwargs.enable_thinking`, which neither hosted API
+reads. It cannot currently be suppressed: `PROVIDER_DEFAULTS` sets it for
+every job and `client.chat` sends it whenever the key is non-`null`, so
+every request to a hosted provider carries
+`chat_template_kwargs: {"enable_thinking": false}` regardless.
 
-Set `thinking: false` explicitly only against a local sglang server, where it
-is meaningful and recommended.
+Both APIs ignore unknown body fields — verified live on the exact request
+bodies these examples produce — so it is harmless in practice. If a provider
+ever rejects it with a strict 400, the fix is to make `thinking` opt-in in
+`_with_defaults` instead of defaulted.
+
+Setting the provider-block `thinking: false` remains meaningful for a **local
+sglang server**, where it is what stops reasoning from eating the budget.
+
+## Mixing the two providers
+
+Nothing prevents mixing them — point one job at each:
+
+```json
+{
+  "providers": {
+    "translator": { "base_url": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.3",
+                    "api_key_env": "ZAI_API_KEY",
+                    "extra_body": { "thinking": { "type": "disabled" } } },
+    "annotator":  { "base_url": "https://api.minimax.io/v1", "model": "MiniMax-M3",
+                    "api_key_env": "MINIMAX_API_KEY",
+                    "extra_body": { "thinking": { "type": "disabled" } } }
+  }
+}
+```
+
+Jobs you omit inherit the translator's block, so name every job you want
+pointed somewhere specific.
 
 ## Related
 

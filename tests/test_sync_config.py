@@ -717,6 +717,26 @@ def case_10_shipped_examples_are_valid() -> None:
                 check(f"10 {name}: normalizes to a working translator block",
                       False, f"{type(exc).__name__}: {exc}")
 
+        # Every job must be covered. A partial overlay leaves the rest on the
+        # hard-coded DEFAULT_BASE_URL (a LAN sglang box), which fails at the
+        # first ping with a connection error rather than anything obvious.
+        named = set(overlay.get("providers", {}))
+        missing = sorted(set(config.PROVIDER_JOBS) - named)
+        check(f"10 {name}: covers ALL {len(config.PROVIDER_JOBS)} provider jobs",
+              not missing, f"jobs left on the default endpoint: {missing}")
+
+        # And every job must disable hosted thinking. Without
+        # extra_body.thinking.type=disabled, GLM-5.3 and MiniMax-M3 spend the
+        # whole output budget on reasoning and return empty content (measured
+        # live: reasoning_tokens 48 of a 50-token budget).
+        jobs = overlay.get("providers", {})
+        no_disable = sorted(job for job, block in jobs.items()
+                            if (block.get("extra_body", {})
+                                .get("thinking", {})
+                                .get("type")) != "disabled")
+        check(f"10 {name}: every job disables hosted thinking",
+              not no_disable, f"jobs without thinking disabled: {no_disable}")
+
 
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)

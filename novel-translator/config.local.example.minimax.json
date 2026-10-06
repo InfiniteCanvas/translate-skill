@@ -3,49 +3,78 @@
     "translator": {
       "base_url": "https://api.minimax.io/v1",
       "model": "MiniMax-M3",
-      "api_key_env": "MINIMAX_TOKEN",
+      "api_key_env": "MINIMAX_API_KEY",
       "temperature": 1.0,
       "top_p": 0.95,
       "max_tokens": 16384,
       "extra_body": {
-        "max_completion_tokens": 16384,
-        "reasoning_effort": "low"
+        "thinking": { "type": "disabled" }
       }
     },
     "glossary": {
       "base_url": "https://api.minimax.io/v1",
       "model": "MiniMax-M3",
-      "api_key_env": "MINIMAX_TOKEN",
+      "api_key_env": "MINIMAX_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
       "max_tokens": 8192,
       "extra_body": {
-        "max_completion_tokens": 8192,
-        "reasoning_effort": "low"
+        "thinking": { "type": "disabled" }
       }
     },
     "reviewer": {
       "base_url": "https://api.minimax.io/v1",
       "model": "MiniMax-M3",
-      "api_key_env": "MINIMAX_TOKEN",
+      "api_key_env": "MINIMAX_API_KEY",
       "temperature": 0.2,
       "top_p": 0.95,
       "max_tokens": 8192,
       "extra_body": {
-        "max_completion_tokens": 8192,
-        "reasoning_effort": "low"
+        "thinking": { "type": "disabled" }
+      }
+    },
+    "annotator": {
+      "base_url": "https://api.minimax.io/v1",
+      "model": "MiniMax-M3",
+      "api_key_env": "MINIMAX_API_KEY",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "extra_body": {
+        "thinking": { "type": "disabled" }
+      }
+    },
+    "recap": {
+      "base_url": "https://api.minimax.io/v1",
+      "model": "MiniMax-M3",
+      "api_key_env": "MINIMAX_API_KEY",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "extra_body": {
+        "thinking": { "type": "disabled" }
+      }
+    },
+    "profile": {
+      "base_url": "https://api.minimax.io/v1",
+      "model": "MiniMax-M3",
+      "api_key_env": "MINIMAX_API_KEY",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "extra_body": {
+        "thinking": { "type": "disabled" }
       }
     },
     "consensus": {
       "base_url": "https://api.minimax.io/v1",
       "model": "MiniMax-M3",
-      "api_key_env": "MINIMAX_TOKEN",
+      "api_key_env": "MINIMAX_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
       "max_tokens": 8192,
       "extra_body": {
-        "max_completion_tokens": 8192,
-        "reasoning_effort": "low"
+        "thinking": { "type": "disabled" }
       }
     }
   },
