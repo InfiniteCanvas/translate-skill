@@ -23,7 +23,13 @@ stalks" never belonged; seeded/catalogue and `category: "unit"`
 entries exempt) in batches of
 `review_batch_size`
 (default 40; `--batch-size N` overrides per run)
-through `templates/glossary_review.md`. Console sequence: the header
+through `templates/glossary_review.md`. With a multi-model `glossary`
+array each batch fans out to every model in parallel and merges via the
+consensus provider, announced by `[consensus] glossary: {n} model(s) -
+merging results via the consensus provider`; candidate failures warn
+and continue while any survivor remains (`[warn] consensus: glossary
+candidate {i}/{n} ({model}) failed: {err} - continuing with the
+remaining candidates`). Console sequence: the header
 `[glossary] review: N entries (B model batch(es) of up to S)` prints
 before the model calls, `[glossary] reviewing batch i/n` before each
 batch, `[glossary] warn batch i/n review failed - <error>` after a
@@ -185,7 +191,13 @@ translation — run `review notes`:
   `--batch-size N` overrides) by the `reviewer` provider (temperature
   0.0) through `templates/notes_review.md`, each note paired with its
   translated line, the line-aligned source line, and the ±2-line target
-  context. Judgment kinds, a closed vocabulary: `restates` (the note adds
+  context. With a multi-model `reviewer` array each batch fans out to
+  every model in parallel and merges via the consensus provider,
+  announced by `[consensus] reviewer: {n} model(s) - merging results via
+  the consensus provider`; candidate failures warn and continue while
+  any survivor remains (`[warn] consensus: reviewer candidate {i}/{n}
+  ({model}) failed: {err} - continuing with the remaining candidates`).
+  Judgment kinds, a closed vocabulary: `restates` (the note adds
   nothing beyond what the translation already says), `overexplains`
   (common knowledge or inferable from context — fails the comprehension
   threshold), `wrong` (the note misexplains the source term),

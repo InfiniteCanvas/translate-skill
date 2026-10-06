@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import shutil
 import sys
@@ -39,7 +40,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, cover, epub, fix, glossary, logger, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs  # noqa: E402
+from lib import client, config, consensus, cover, epub, fix, glossary, logger, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
@@ -233,19 +234,24 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
 
     # Derive the job list and per-job sampling knobs from PROVIDER_JOBS /
     # PROVIDER_DEFAULTS so a job added there can never be missed here (a
-    # fresh project is stamped at the chain head and never migrates).
+    # fresh project is stamped at the chain head and never migrates). Each
+    # job starts as a one-block model array: config.json's per-job value is
+    # a list of provider blocks, so appending entries opts a job into
+    # consensus fan-out.
     providers = {
-        job: {
-            "base_url": args.api_base,
-            "model": None,
-            "temperature": config.PROVIDER_DEFAULTS[job]["temperature"],
-            "max_tokens": config.PROVIDER_DEFAULTS[job]["max_tokens"],
-            "thinking": config.PROVIDER_DEFAULTS[job]["thinking"],
-        }
+        job: [
+            {
+                "base_url": args.api_base,
+                "model": None,
+                "temperature": config.PROVIDER_DEFAULTS[job]["temperature"],
+                "max_tokens": config.PROVIDER_DEFAULTS[job]["max_tokens"],
+                "thinking": config.PROVIDER_DEFAULTS[job]["thinking"],
+            }
+        ]
         for job in config.PROVIDER_JOBS
     }
     # Hy-MT2 model card: translation sampling is temperature 0.7, top_p 1.0.
-    providers["translator"]["top_p"] = 1.0
+    providers["translator"][0]["top_p"] = 1.0
     cfg: dict[str, Any] = {
         "source_lang": args.source_lang,
         "target_lang": args.target_lang,
@@ -474,32 +480,52 @@ def cmd_ping(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     failed = False
     for job in config.PROVIDER_JOBS:
-        pcfg = config.provider(cfg, job)
-        base_url = str(pcfg.get("base_url", ""))
-        try:
-            model = client.resolve_model(base_url, headers=client.auth_headers(pcfg))
-            extra = f" (config model: {pcfg['model']})" if pcfg.get("model") else ""
-            print(f"[ok] {job:<10} {base_url} -> {model}{extra}")
-        except Exception as exc:  # noqa: BLE001 - endpoint errors are reported per job
-            # Hosted providers may not serve /models (or auth-gate it); a
-            # minimal chat completion still proves routing + auth work.
-            if pcfg.get("model"):
-                try:
-                    client.probe(pcfg)
-                    print(
-                        f"[ok] {job:<10} {base_url} -> {pcfg['model']} "
-                        f"(chat ok; /models failed: {_ping_err(exc)})"
-                    )
-                    continue
-                except Exception as exc2:  # noqa: BLE001 - report both failures
+        blocks = config.provider_list(cfg, job)
+        multi = len(blocks) > 1
+        seen: dict[str, int] = {}  # resolved model -> first block index
+        for i, pcfg in enumerate(blocks):
+            # Single-block jobs keep the pre-array line shape (bare padded
+            # job name); blocks of a multi-block array are index-suffixed
+            # (0-based) so operators can tell them apart.
+            label = f"{job}[{i}]" if multi else f"{job:<10}"
+            base_url = str(pcfg.get("base_url", ""))
+            try:
+                resolved = client.resolve_model(
+                    base_url, headers=client.auth_headers(pcfg))
+                extra = f" (config model: {pcfg['model']})" if pcfg.get("model") else ""
+                print(f"[ok] {label} {base_url} -> {resolved}{extra}")
+                # client.chat prefers the block's explicit model over the
+                # /models default, so duplicates are judged on the model
+                # that will actually run (same rule as consensus
+                # ._model_label).
+                model = str(pcfg["model"]) if pcfg.get("model") else resolved
+            except Exception as exc:  # noqa: BLE001 - endpoint errors are reported per job
+                # Hosted providers may not serve /models (or auth-gate it); a
+                # minimal chat completion still proves routing + auth work.
+                if pcfg.get("model"):
+                    try:
+                        client.probe(pcfg)
+                        print(
+                            f"[ok] {label} {base_url} -> {pcfg['model']} "
+                            f"(chat ok; /models failed: {_ping_err(exc)})"
+                        )
+                        model = str(pcfg["model"])
+                    except Exception as exc2:  # noqa: BLE001 - report both failures
+                        failed = True
+                        print(
+                            f"[FAIL] {label} {base_url} -> "
+                            f"/models: {_ping_err(exc)}; chat: {_ping_err(exc2)}"
+                        )
+                        continue
+                else:
                     failed = True
-                    print(
-                        f"[FAIL] {job:<10} {base_url} -> "
-                        f"/models: {_ping_err(exc)}; chat: {_ping_err(exc2)}"
-                    )
+                    print(f"[FAIL] {label} {base_url} -> {_ping_err(exc)}")
                     continue
-            failed = True
-            print(f"[FAIL] {job:<10} {base_url} -> {_ping_err(exc)}")
+            if multi and model in seen:
+                print(f"[warn] {job}[{i}]: same model as {job}[{seen[model]}] "
+                      f"({model}) - candidates will be near-identical")
+            else:
+                seen.setdefault(model, i)
     if failed:
         _fail("ping: one or more providers unreachable")
         return 2
@@ -1789,6 +1815,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except KeyboardInterrupt:
         _fail("interrupted (chapter state is saved; re-run to resume)")
+        # With a multi-model fan-out in flight, worker threads sit in
+        # uninterruptible HTTP retries and the interpreter's atexit join
+        # would wait out their whole retry ladder. Chapter/chunk state is
+        # persisted at stage boundaries, so hard-exit instead of unwinding.
+        # (In-process callers -- the test suite -- never have a fan-out
+        # live and keep the ordinary return-130 path.)
+        if consensus._ACTIVE_FANS:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(130)
         return 130
     except OSError as exc:
         _fail(f"{type(exc).__name__}: {exc}")

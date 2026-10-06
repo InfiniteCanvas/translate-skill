@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from lib import balance, client, config, glossary, logger, pipeline, project
+from lib import balance, client, config, consensus, glossary, pipeline, project
 from lib.pipeline import _lang_name, fill
 
 KINDS = ("mistranslation", "wrong_language", "definition", "category",
@@ -213,13 +213,9 @@ def _model_findings(
                 "glossary_review.md",
             )
 
-            def hook(meta: dict) -> None:
-                if bool(cfg.get("log_llm", config.DEFAULTS["log_llm"])):
-                    logger.log_event(project_dir, {"job": "glossary", **meta})
-
-            resp = client.chat(
-                config.provider(cfg, "glossary"), prompt,
-                json_schema=REVIEW_SCHEMA, meta_hook=hook,
+            resp = consensus.chat(
+                project_dir, cfg, "glossary", prompt,
+                json_schema=REVIEW_SCHEMA,
             )
             data = client.extract_json(resp)
             if not isinstance(data, dict) or not isinstance(data.get("findings"), list):

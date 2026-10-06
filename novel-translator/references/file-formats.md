@@ -176,22 +176,28 @@ LLM call.
   "source_lang": "zh",
   "target_lang": "en",
   "providers": {
-    "translator": { "base_url": "http://100.85.218.125:8888/v1", "model": null,
-                    "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384,
-                    "thinking": false },   // sglang chat_template_kwargs.enable_thinking; false = output budget spent on the answer, not a reasoning chain
-    "glossary":    { "...same shape, temperature 0.2" },
-    "reviewer":    { "...same shape, temperature 0.0",
-                     // hosted-provider example: any job can call a 3rd-party
-                     // OpenAI-compatible endpoint with Bearer auth
-                     // "base_url": "https://api.z.ai/api/paas/v4", "model": "glm-5.3",
-                     // "api_key_env": "ZAI_API_KEY" },   // or "api_key": "sk-..." inline
-                     // optional "extra_body": { "thinking": { "type": "disabled" } }
-                     // merges provider-specific params verbatim into the request body
-                     // (after the known knobs, before response_format; ping's probe never sends it)
-                   },
-    "annotator":   { "...same shape, temperature 0.2" },
-    "recap":       { "...same shape, temperature 0.2" },   // rolling story-so-far recap generation (one cheap call per chapter; point it at a cheap model)
-    "profile":     { "...same shape, temperature 0.3" }   // style-profile generation (--style auto / `profile` only)
+    "translator": [
+      { "base_url": "http://100.85.218.125:8888/v1", "model": null,
+        "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384,
+        "thinking": false },   // sglang chat_template_kwargs.enable_thinking; false = output budget spent on the answer, not a reasoning chain
+      { "base_url": "http://100.85.218.125:8889/v1", "model": "Qwen3-235B-A22B",
+        "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384,
+        "thinking": false }    // 2nd block = 2nd model: multi-model consensus (see below)
+    ],
+    "glossary":    [ { "...same block shape, temperature 0.2" } ],
+    "reviewer":    [ { "...same block shape, temperature 0.0",
+                       // hosted-provider example: any block can call a 3rd-party
+                       // OpenAI-compatible endpoint with Bearer auth
+                       // "base_url": "https://api.z.ai/api/paas/v4", "model": "glm-5.3",
+                       // "api_key_env": "ZAI_API_KEY" },   // or "api_key": "sk-..." inline
+                       // optional "extra_body": { "thinking": { "type": "disabled" } }
+                       // merges provider-specific params verbatim into the request body
+                       // (after the known knobs, before response_format; ping's probe never sends it)
+                     } ],
+    "annotator":   [ { "...same block shape, temperature 0.2" } ],
+    "recap":       [ { "...same block shape, temperature 0.2" } ],   // rolling story-so-far recap generation (one cheap call per chapter; point it at a cheap model)
+    "profile":     [ { "...same block shape, temperature 0.3" } ],   // style-profile generation (--style auto / `profile` only)
+    "consensus":   [ { "...same block shape, temperature 0.2" } ]    // merges a multi-model job's candidates into the final response (exactly one block)
   },
   "seed_min_count": 3,           // catalogue term must appear >= N times in source/ to seed
   "min_term_occurrences": 3,     // minimum novel-wide occurrences for GLOSSARY_EXPAND to add a brand-new term (0 disables the gate); also the default threshold for `glossary count`
@@ -213,7 +219,7 @@ LLM call.
   "log_llm_keep_runs": 5,        // one llm-*.jsonl per project per CLI invocation; older logs pruned to the newest N (by mtime)
   "review_batch_size": 40,       // entries per `review glossary` / `review notes` model review call; `--batch-size` overrides per run
   "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary` / `review notes`, read back by `review fix`)
-  "version": 7                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
+  "version": 8                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
 
@@ -222,9 +228,41 @@ LLM call.
   base_url + resolved auth identity, so two jobs sharing a URL with
   different keys keep distinct resolutions), works with any sglang/vLLM
   server.
+- `providers.<job>` is an **array of provider blocks** — one block per
+  model. A bare block object (no array) is the legacy single-model shape
+  and loads unchanged: it normalizes to a one-element array, so pre-v8
+  config.json files need no edit. Per-block keys are unchanged (`model`
+  stays a scalar string; `null` → the `/models` first id), and every block
+  independently carries its base_url, auth, and sampling knobs.
 - Each job can point at a **different provider**: keep `translator` on the
-  translation model, later point `reviewer` at a stronger model. Any job block
-  you omit inherits the `translator` block.
+  translation model, later point `reviewer` at a stronger model. A
+  non-consensus job you omit inherits the `translator` array whole,
+  element-wise: each element merges onto that job's own defaults, so
+  authored keys win while the job's sampling defaults (temperature et
+  al.) still apply.
+- **Multi-model consensus**: a job whose array carries more than one block
+  fans every prompt out to all its models in parallel (one worker thread
+  per model; Ctrl-C cancels pending calls and abandons in-flight ones),
+  then ONE call to the `consensus` provider synthesizes the final
+  response from the original task prompt plus the labeled candidates,
+  under the task's own JSON schema — downstream validators treat it
+  exactly like a single-model reply. Console: `[consensus] {job}: {n}
+  model(s) - merging results via the consensus provider` announces the
+  fan-out (once per process per job/n). Failure policy: candidate
+  failures are tolerated while any survivor remains — `[warn]
+  consensus: {job} candidate {i}/{n} ({model}) failed: {err} -
+  continuing with the remaining candidates` per failure — all candidates
+  failing re-raises the last error; a lone survivor is used verbatim
+  (`[warn] consensus: {job}: only one candidate survived - using it
+  without a consensus call`); a failed consensus call degrades to the
+  first surviving candidate (`[warn] consensus: {job}: consensus call
+  failed ({err}) - using candidate {first_survivor_index} without
+  merging`). A single-block job behaves exactly as before: one call, no
+  consensus. The `consensus` job itself is special: exactly ONE block —
+  when omitted it inherits only the translator's FIRST block (that
+  block's authored keys win; the consensus temperature 0.2 applies only
+  when the block leaves it unset), and an explicitly authored multi-block
+  consensus array is rejected at load.
 - **Sampling knobs**: `temperature` and `top_p` (plus optional `top_k`,
   `repetition_penalty`) are per-provider and passed through to the server.
   Only `translator` carries `top_p` by default (1.0, per the model card);
@@ -242,11 +280,24 @@ LLM call.
   (`<value!r>` is the Python repr of the value that was read). Provider
   sampling knobs (`temperature`, `top_p`, `max_tokens`) are read per request
   and are not validated the same way.
-- A provider `max_tokens` below `translate_max_output_tokens` draws a
+- A `providers.<job>` value that is neither a block object nor an array of
+  block objects fails config load (`[FAIL] cannot read config.json: ...`,
+  exit 2), with one of four messages — `providers.{job} must be a provider
+  block (object) or an array of blocks`, `providers.{job} must not be an
+  empty array`, `providers.{job}[{i}] must be an object`, and
+  `providers.consensus must list exactly one model (got {n})`.
+- A translator `max_tokens` below `translate_max_output_tokens` draws a
   once-per-run warning — `[warn] config: providers.translator.max_tokens
   (N) is below translate_max_output_tokens (M) - retries cannot raise the
   output cap` — the truncation-retry escalation caps at the provider's
-  `max_tokens`, so retries cannot raise the output cap past it.
+  `max_tokens`, so retries cannot raise the output cap past it. With a
+  multi-block translator array the SMALLEST `max_tokens` across blocks
+  governs: chunk packing packs against it (so no model in the array
+  truncates its part), and the warning's N is that minimum.
+- Downgrade caveat: skill versions before v8 silently ignore an array
+  `providers.<job>` value (the job falls back to its defaults), so moving
+  a project back to an older skill after using multi-model arrays means
+  restoring the dict shape by hand.
 
 ## novel_info.json
 
@@ -797,7 +848,19 @@ runs the same template sync — shipping the two new templates (`recap.md`
 for the rolling story recap, `notes_review.md` for the `review notes`
 tier) and refreshing the rewritten `tn_generate.md` (glossary-aware
 categorized annotation with the code-enforced cap; every pre-v007
-project's copy reads as drifted) (idempotent).
+project's copy reads as drifted) (idempotent). `v008` (DESCRIPTION:
+`provider arrays + the consensus job (multi-model consensus); ship
+consensus.md`) converts the project's `providers.<job>` values to the
+array form and materializes the new `consensus` job — no top-level key
+is added, removed, or renamed (the schema change lives entirely inside
+`providers`), so the conversion rides the established provider
+normalization: load_config wraps a legacy single-block dict into a
+one-element array, keeps every user-set key verbatim inside its block,
+lets an omitted job inherit the project's translator list, and
+materializes the consensus entry, reporting the same
+provider-blocks-normalized line as v007; the template sync ships the new
+`consensus.md` (the synthesis prompt over the original task plus the
+labeled candidates) (idempotent).
 `--dry-run` writes nothing and reports
 `[git] would initialize the repository (a real run commits after each
 migrate step)` (cmd_migrate prefixes step lines with `[dry-run] `). A
@@ -1124,6 +1187,7 @@ after filling — typos fail fast.
 | `glossary_review.md` | `review glossary` model tier | `source_lang target_lang entries` |
 | `notes_review.md` | `review notes` model tier | `source_lang target_lang entries` |
 | `style_profile.md` | `--style auto` init / `profile` (legacy) | `source_lang target_lang sample_text` |
+| `consensus.md` | the consensus call of any multi-model job | `task_prompt candidates_section` |
 
 `source_lines` / `translation_lines` are substituted as JSON arrays (compact,
 `ensure_ascii=False`); `glossary_review.md`'s and `notes_review.md`'s
@@ -1157,7 +1221,9 @@ Packing is deterministic given (source, config), so part bounds — and with
 them the `[Rejected Previous Attempt]` feedback slices — reproduce exactly
 across attempts and resumes. A part whose response looks truncated (missing
 line indices, or a response cut mid-JSON) retries once at an escalated cap
-(min(round(1.5 × cap), the translator provider's `max_tokens`)); other shape
+(min(round(1.5 × cap), the smallest `max_tokens` across the translator
+array's blocks — packing and the escalation budget against the minimum so
+no model in the array truncates its part)); other shape
 problems retry at the same cap. A single source line whose estimated output
 exceeds even the escalated cap fails fast with actionable feedback before any
 model call (split or shorten the line by hand); a line over the packing

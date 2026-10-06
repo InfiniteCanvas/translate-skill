@@ -169,11 +169,14 @@ sorted by frequency):
    numbered-line protocol plus the corrective retry keep the
    one-line-in/one-line-out contract intact; a part whose response looks
    truncated (missing line indices / cut JSON) retries once at an escalated
-   cap (~1.5x, never above the provider's `max_tokens`), other shape
-   problems at the same cap. A provider `max_tokens` below
+   cap (~1.5x, never above the smallest `max_tokens` across the
+   translator's blocks), other shape
+   problems at the same cap. A translator `max_tokens` below
    `translate_max_output_tokens` warns once per run (`[warn] config:
    providers.translator.max_tokens (N) is below translate_max_output_tokens
-   (M) - retries cannot raise the output cap`). A source line whose
+   (M) - retries cannot raise the output cap`; with a multi-block
+   translator array, N is the smallest `max_tokens` across blocks — the
+   minimum governs packing so no model truncates its part). A source line whose
    estimated output exceeds
    even the escalated cap fails fast with actionable feedback
    (`TRANSLATE failed: ... source line N alone exceeds the output budget
@@ -300,6 +303,18 @@ sorted by frequency):
    up to `max_attempts` (default 3) with all accumulated feedback and the
    rejected translation injected into each retry; then it becomes
    `needs-review`.
+
+**Multi-model consensus**: every provider call the pipeline makes —
+TRANSLATE, FAITH, GLOSSARY_EXPAND, the glossary merge/cleanup judgments,
+TN_GENERATE, and the recap below — goes through the job's provider array
+in `config.json`. A single-block job makes exactly one call; a job with
+two or more blocks fans the prompt out to all its models in parallel and
+ONE `consensus`-provider call merges the labeled candidates into the
+final response under the task's own JSON schema, so gates and validators
+see an ordinary single-model reply (console: `[consensus] {job}: {n}
+model(s) - merging results via the consensus provider`; a failed
+candidate warns and continues while any survivor remains — the failure
+ladder is in `references/file-formats.md` § config.json).
 
 **Rolling story recap**: every chapter also maintains a running "story so
 far" in `story_state.json` (one entry per chapter). After ASSEMBLE, one
@@ -433,11 +448,26 @@ background build too. Builds produce no git commits — `export/`,
   adaptation threshold pattern for translation notes. Keep new template
   edits aligned with those patterns.
 - **Providers are per job** in `config.json` (`translator`, `glossary`,
-  `reviewer`, `annotator`, `recap`, `profile`; the `recap` job generates
-  the rolling story-so-far recap — a cheap model is a good fit — and the
-  `profile` job only serves `--style auto`). Start with one endpoint doing
-  everything; later point `reviewer` at a stronger model without touching
-  the rest. `ping` shows what each job resolves to. Temperature and top_p
+  `reviewer`, `annotator`, `recap`, `profile`, `consensus`; the `recap` job
+  generates the rolling story-so-far recap — a cheap model is a good fit —
+  the `profile` job only serves `--style auto`, and `consensus` merges
+  multi-model candidates). Each job's value is an ARRAY of provider blocks
+  (a bare block object is the legacy single-model shape and loads
+  unchanged); two or more blocks fan the job's prompts out to all models
+  in parallel and merge via the consensus provider (see the multi-model
+  note under the pipeline). An omitted job inherits the translator's whole
+  array element-wise (authored keys win, the job's sampling defaults
+  apply); `consensus` never inherits the array — exactly one block,
+  defaulting to the translator's first block (its authored keys win;
+  temperature 0.2 unless it sets one). Start
+  with one endpoint doing everything; later point `reviewer` at a stronger
+  model, or add a second translator block, without touching the rest.
+  `ping` shows what each job resolves to, one line per block: single-block
+  jobs keep the bare padded job name, while a multi-block job's blocks are
+  index-suffixed (`[ok] translator[0] <url> -> <model> (config model:
+  <m>)`) and a repeated model inside one job warns (`[warn]
+  translator[i]: same model as translator[j] (<model>) - candidates will
+  be near-identical`). Temperature and top_p
   are per-provider passthroughs (translator defaults 0.7/1.0 per the model
   card — quality across temperatures is subjective; the user tunes this).
   A per-provider `thinking` flag defaults to false (sglang
@@ -499,7 +529,15 @@ background build too. Builds produce no git commits — `export/`,
   the template sync ships the two new templates (`recap.md`, the rolling
   story recap prompt; `notes_review.md`, the `review notes` tier) plus
   the rewritten `tn_generate.md` — a pre-v007 project's copy always
-  reads as drifted. A template that exists but
+  reads as drifted. v008 lands the provider-array batch (DESCRIPTION:
+  `provider arrays + the consensus job (multi-model consensus); ship
+  consensus.md`): every `providers.<job>` value is normalized to an
+  array of blocks (a legacy single-block dict wraps into a one-element
+  array; user-set keys kept verbatim) and the new `consensus` job is
+  materialized (an omitted job still inherits the translator's list;
+  consensus itself is exactly one block), with the template sync
+  shipping the new `consensus.md` synthesis prompt. A template that
+  exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:
   `templates ~ <name>.md differs from the shipped copy - overwrite
@@ -542,7 +580,9 @@ background build too. Builds produce no git commits — `export/`,
 - **Cost/cadence**: each chapter ≈ 5 model calls + retries (translate —
   one call per part on longer chapters — faithfulness, glossary
   expansion, notes, story recap), plus a cleanup-judgment call only when
-  balance flags drift signals; one glossary
+  balance flags drift signals; a job whose provider array carries N
+  models multiplies its calls by N plus one consensus call per fan-out;
+  one glossary
   review pass ≈ ceil(N/review_batch_size) calls for N entries (40 by
   default), one notes review pass ≈ ceil(M/review_batch_size) calls for M
   notes. `status` before long

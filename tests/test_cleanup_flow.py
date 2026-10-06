@@ -311,7 +311,7 @@ def case_truncated_retry_cap() -> None:
     with tempfile.TemporaryDirectory() as td:
         proj = make_cap_project(Path(td), "proj")
         cfg = config.load_config(proj)
-        cfg["providers"]["translator"]["max_tokens"] = 100
+        cfg["providers"]["translator"][0]["max_tokens"] = 100
         # _run_path is process-global and pins the FIRST project that logs;
         # reset it so this sandbox's logs/ owns the run's trace.
         logger._run_path = None

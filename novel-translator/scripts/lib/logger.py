@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,13 @@ from lib import config
 # Setting _run_path = None forces the next event to open a fresh run.
 _run_path: Path | None = None
 _run_project: Path | None = None
+
+# log_event is called from worker threads too (the consensus fan-out logs
+# candidate calls concurrently), and its check-then-act on
+# _run_path/_run_project plus the append write are not thread-safe: without
+# serialization two threads could race past the run-file check and interleave
+# partial lines into one file. One lock held for the whole body.
+_LOG_LOCK = threading.Lock()
 
 
 def _command_tag() -> str:
@@ -85,18 +93,19 @@ def log_event(project_dir: Path | str, event: dict[str, Any]) -> None:
     effort): a different resolved project_dir re-points the run file, and
     clearing `_run_path` (None) forces the next event to start a fresh run."""
     global _run_path, _run_project
-    try:
-        proj = Path(project_dir).resolve()
-        if _run_path is None or _run_project != proj:
-            base = proj / "logs"
-            base.mkdir(parents=True, exist_ok=True)
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            _run_path = base / f"llm-{stamp}-{_command_tag()}-{os.getpid()}.jsonl"
-            _run_project = proj
-            _run_path.touch()  # occupy a retention slot before pruning
-            _prune(base, _keep_count(proj))
-        entry = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **event}
-        with _run_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
+    with _LOG_LOCK:
+        try:
+            proj = Path(project_dir).resolve()
+            if _run_path is None or _run_project != proj:
+                base = proj / "logs"
+                base.mkdir(parents=True, exist_ok=True)
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                _run_path = base / f"llm-{stamp}-{_command_tag()}-{os.getpid()}.jsonl"
+                _run_project = proj
+                _run_path.touch()  # occupy a retention slot before pruning
+                _prune(base, _keep_count(proj))
+            entry = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **event}
+            with _run_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            pass

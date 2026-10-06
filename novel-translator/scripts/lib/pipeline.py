@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from lib import assemble, autobuild, balance, client, config, glossary, logger, project, story, styles, tn, vcs
+from lib import assemble, autobuild, balance, client, config, consensus, glossary, logger, project, story, styles, tn, vcs
 
 STAGES = (
     "TRANSLATE",
@@ -832,16 +832,12 @@ def _response_cut(resp: str) -> bool:
 def _chat(project_dir: Path, cfg: dict, job: str, prompt: str,
           json_schema: dict | None = None,
           max_tokens: int | None = None) -> str:
-    """client.chat with per-project trace logging of the full exchange."""
-    enabled = bool(cfg.get("log_llm", config.DEFAULTS["log_llm"]))
-
-    def hook(meta: dict) -> None:
-        if enabled:
-            logger.log_event(project_dir, {"job": job, **meta})
-
-    return client.chat(config.provider(cfg, job), prompt,
-                       json_schema=json_schema, meta_hook=hook,
-                       max_tokens=max_tokens)
+    """client.chat with per-project trace logging of the full exchange,
+    fanned out over the job's provider blocks and merged by the consensus
+    provider when there is more than one -- consensus.chat owns the trace
+    logging and the fan-out."""
+    return consensus.chat(project_dir, cfg, job, prompt,
+                          json_schema=json_schema, max_tokens=max_tokens)
 
 
 def _notes_report_line(tag: str, stem: str, kept: list[dict],
@@ -1085,9 +1081,12 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 # protocol and the corrective retry keep the line contract
                 # either way).
                 max_out = int(_cfg_value(cfg, "translate_max_output_tokens"))
-                provider_max = int(
-                    config.provider(cfg, "translator").get("max_tokens")
-                    or config.DEFAULT_MAX_TOKENS
+                # Model arrays: the first block no longer speaks for the
+                # whole job -- pack against the SMALLEST max_tokens across
+                # blocks so no model in the array truncates its part.
+                provider_max = min(
+                    int(b.get("max_tokens") or config.DEFAULT_MAX_TOKENS)
+                    for b in config.provider_list(cfg, "translator")
                 )
                 _warn_token_cap(provider_max, max_out)
                 escalated = _escalated_cap(max_out, provider_max)

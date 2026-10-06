@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "profile")
+PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "profile", "consensus")
 
 DEFAULTS: dict = {
     "seed_min_count": 3,
@@ -80,6 +80,10 @@ PROVIDER_DEFAULTS: dict[str, dict] = {
     # chapter, story_state.json); point it at a cheap model.
     "recap": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
     "profile": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.3, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    # The consensus job merges the multi-model candidates of a fan-out into
+    # the final response (one call per fan-out); temperature 0.2 like the
+    # annotator/glossary synthesis jobs.
+    "consensus": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
 }
 
 
@@ -94,26 +98,81 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
-def _normalize_providers(providers: dict) -> dict:
-    """Guarantee every job in PROVIDER_JOBS exists with every default key filled.
+def _provider_blocks(providers: dict, job: str) -> list[dict] | None:
+    """A job's authored providers value as a list of blocks, or None when the
+    job is absent. A bare dict is the legacy single-block shape and wraps into
+    a one-element list; an array is the multi-model shape. The three
+    ValueError texts are contractual (mirrored in references/file-formats.md
+    and asserted verbatim by the tests)."""
+    value = providers.get(job)
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return [value]
+    if not isinstance(value, list):
+        raise ValueError(
+            f"providers.{job} must be a provider block (object) or an array of blocks")
+    if not value:
+        raise ValueError(f"providers.{job} must not be an empty array")
+    for i, element in enumerate(value):
+        if not isinstance(element, dict):
+            raise ValueError(f"providers.{job}[{i}] must be an object")
+    return value
 
-    A missing job inherits the "translator" block if present; any key still
-    missing is filled from PROVIDER_DEFAULTS[job]. Unknown extra jobs are
-    passed through untouched.
+
+def _with_defaults(job: str, element: dict) -> dict:
+    """One provider block with PROVIDER_DEFAULTS[job] filling the keys the
+    block does not set (authored keys win -- per-key override semantics)."""
+    merged = dict(PROVIDER_DEFAULTS[job])
+    merged.update(element)
+    return merged
+
+
+def _normalize_providers(providers: dict) -> dict:
+    """Guarantee every job in PROVIDER_JOBS exists as a LIST of provider
+    blocks with every default key filled.
+
+    providers.<job> is now an array of blocks -- the consensus fan-out
+    (lib/consensus.py) runs one model per block. A bare dict is the legacy
+    single-block shape and normalizes to a one-element list, so
+    pre-consensus config.json files load unchanged. A missing non-translator
+    job inherits the translator's whole list, but only its authored keys:
+    each element merges onto PROVIDER_DEFAULTS[job], so a single-model
+    project keeps every job on its model while each job's own sampling
+    defaults (temperature et al.) still apply. The consensus job never
+    inherits the array -- it synthesizes ONE final response, so when absent
+    it inherits only the translator's FIRST block: that block's authored
+    keys win (base_url/model/auth from the project's endpoint, and its
+    temperature if it sets one), with the consensus defaults (temperature
+    0.2) filling only what it leaves unset -- deliberately not the
+    hard-coded DEFAULT_BASE_URL. An explicitly authored consensus array
+    with more than one block is rejected; inherited consensus is always
+    exactly one block, so legacy configs can never trip that check.
+    Unknown extra jobs pass through untouched.
     """
-    translator_block = providers.get("translator")
-    normalized: dict[str, dict] = {}
+    translator = _provider_blocks(providers, "translator")
+    normalized: dict[str, list[dict]] = {}
     for job in PROVIDER_JOBS:
-        block = providers.get(job)
-        if block is None and job != "translator":
-            block = translator_block
-        merged = dict(PROVIDER_DEFAULTS[job])
-        if isinstance(block, dict):
-            merged.update(block)
-        normalized[job] = merged
-    for key, block in providers.items():
+        if job == "translator":
+            authored = translator
+        else:
+            authored = _provider_blocks(providers, job)
+            if authored is None:
+                if job == "consensus":
+                    # The arbitrator is ONE model: first translator block only.
+                    authored = [translator[0]] if translator else None
+                else:
+                    authored = translator
+        if authored is None:  # nothing authored to inherit from: plain defaults
+            normalized[job] = [_with_defaults(job, {})]
+            continue
+        if job == "consensus" and len(authored) > 1:
+            raise ValueError(
+                f"providers.consensus must list exactly one model (got {len(authored)})")
+        normalized[job] = [_with_defaults(job, element) for element in authored]
+    for key, value in providers.items():
         if key not in normalized:
-            normalized[key] = block
+            normalized[key] = value
     return normalized
 
 
@@ -145,8 +204,23 @@ def save_config(project_dir: Path, cfg: dict) -> None:
 
 
 def provider(cfg: dict, job: str) -> dict:
-    """Return the provider block for a job from a loaded config."""
-    return cfg["providers"][job]
+    """Return the job's FIRST provider block from a loaded config: the block
+    single-model callers always used, and the one block the exactly-one
+    consensus job resolves to."""
+    return provider_list(cfg, job)[0]
+
+
+def provider_list(cfg: dict, job: str) -> list:
+    """Return the job's provider blocks (>= 1 after load_config
+    normalization): one block per model -- what the consensus fan-out
+    iterates.
+
+    Dict-tolerant at read time: cfg["providers"][job] may still be a bare
+    dict -- hand-built cfg dicts in tests never pass through load_config's
+    normalizer, so a dict is wrapped into [dict] on the fly to keep them
+    working."""
+    blocks = cfg["providers"][job]
+    return [blocks] if isinstance(blocks, dict) else blocks
 
 
 def _as_number(key: str, value: object) -> int | float:

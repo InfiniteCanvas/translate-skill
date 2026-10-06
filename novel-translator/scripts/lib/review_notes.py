@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from lib import client, config, logger, pipeline, project, tn
+from lib import client, config, consensus, logger, pipeline, project, tn
 from lib.pipeline import _lang_name, fill
 
 KINDS = ("restates", "overexplains", "wrong", "misanchored")
@@ -257,13 +257,9 @@ def _model_findings(
                 "notes_review.md",
             )
 
-            def hook(meta: dict) -> None:
-                if bool(cfg.get("log_llm", config.DEFAULTS["log_llm"])):
-                    logger.log_event(project_dir, {"job": "reviewer", **meta})
-
-            resp = client.chat(
-                config.provider(cfg, "reviewer"), prompt,
-                json_schema=FINDINGS_SCHEMA, meta_hook=hook,
+            resp = consensus.chat(
+                project_dir, cfg, "reviewer", prompt,
+                json_schema=FINDINGS_SCHEMA,
             )
             data = client.extract_json(resp)
             if not isinstance(data, dict) or not isinstance(data.get("findings"), list):

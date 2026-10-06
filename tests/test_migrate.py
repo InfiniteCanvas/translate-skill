@@ -21,15 +21,18 @@ missing-project CliError, v002's direct add-only materialize (user-set
 values -- including ones already sitting under the new key names -- survive
 verbatim, a file missing exactly the new keys gets them reported and
 defaulted, a second identical run reports [] and writes nothing), and the
-real package's chain() == [v001, v002, v003, v004, v005, v006, v007] with
-current_version() == 7 (v003's own behavior tests live in
+real package's chain() == [v001, v002, v003, v004, v005, v006, v007, v008]
+with current_version() == 8 (v003's own behavior tests live in
 tests/test_git.py; only the chain shape is pinned here, plus v004's
 direct add-only materialize of min_term_occurrences mirroring the v002
 cases, and v005's direct templates-only sync -- config.json never
 touched; v006 is templates-only like v005, so only its chain shape and
 exact DESCRIPTION are pinned; v007's recap-job materialize plus the
 three-template sync has its own direct case AND a chain-walked v6-era
-end-to-end case), plus direct sync_templates BOM cases: a dest whose only
+end-to-end case; v008's provider-array/consensus normalization plus the
+consensus.md ship has its own direct case, and the case-1 full-chain
+walk now ends at version 8 with array-shaped providers), plus direct
+sync_templates BOM cases: a dest whose only
 difference from the shipped copy is a leading BOM is NOT drift (no prompt,
 no report line, bytes untouched), while a genuinely drifted BOM'd dest
 still refreshes to the shipped bytes after an accepted prompt.
@@ -78,7 +81,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
-from migrations import v002, v004, v005, v006, v007  # noqa: E402
+from migrations import v002, v004, v005, v006, v007, v008  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -160,7 +163,7 @@ def case_1_v001() -> None:
     --dry-run); materialize DEFAULTS preserving user values; stamp the
     chain-head version; second run no-op; the already-current maintenance
     pass (trap fixed)."""
-    HEAD = migrations.current_version()  # real chain head (7 since v007)
+    HEAD = migrations.current_version()  # real chain head (8 since v008)
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
@@ -214,14 +217,23 @@ def case_1_v001() -> None:
             check("1g v001: user value tn_gap_chapters preserved",
                   disk.get("tn_gap_chapters") == 5, f"tn_gap_chapters={disk.get('tn_gap_chapters')}")
             check("1h v001: user provider endpoint preserved",
-                  disk["providers"]["translator"]["base_url"] == "http://mine:9999/v1"
-                  and disk["providers"]["translator"]["model"] == "m1")
+                  disk["providers"]["translator"][0]["base_url"] == "http://mine:9999/v1"
+                  and disk["providers"]["translator"][0]["model"] == "m1")
             check("1i v001: every provider job filled",
                   sorted(disk["providers"]) == sorted(config.PROVIDER_JOBS),
                   f"jobs={sorted(disk['providers'])}")
             check("1j chain: version stamped to the chain head",
                   disk.get("version") == HEAD,
                   f"version={disk.get('version')!r} head={HEAD}")
+            # The full v001->v008 walk ends array-shaped (v008's step, and
+            # the normalization every materialize performs since then):
+            # every job a list of blocks, the consensus job exactly one.
+            check("1j2 chain: full v1->v8 walk leaves array-shaped providers with consensus",
+                  all(isinstance(disk["providers"][job], list)
+                      for job in config.PROVIDER_JOBS)
+                  and len(disk["providers"]["consensus"]) == 1
+                  and disk["providers"]["consensus"][0]["base_url"] == "http://mine:9999/v1",
+                  f"consensus={disk['providers'].get('consensus')!r}")
 
             before = snapshot(proj)
             with patched_confirm(lambda question: False):
@@ -501,17 +513,18 @@ def case_3_not_a_project() -> None:
 
 def case_4_real_chain() -> None:
     """The real migrations package: exactly [v001, v002, v003, v004, v005,
-    v006, v007], VERSIONs [1, 2, 3, 4, 5, 6, 7], head version 7. v003's
-    behavior is covered in tests/test_git.py, v004's in case 7, v005's in
-    case 8, and v007's in case 9; only the chain shape is pinned here."""
+    v006, v007, v008], VERSIONs [1, 2, 3, 4, 5, 6, 7, 8], head version 8.
+    v003's behavior is covered in tests/test_git.py, v004's in case 7,
+    v005's in case 8, v007's in case 9, and v008's in case 11; only the
+    chain shape is pinned here."""
     steps = migrations.chain()
-    check("4a real chain: seven steps v001..v007, VERSIONs 1..7",
-          len(steps) == 7 and [s.VERSION for s in steps] == [1, 2, 3, 4, 5, 6, 7]
+    check("4a real chain: eight steps v001..v008, VERSIONs 1..8",
+          len(steps) == 8 and [s.VERSION for s in steps] == [1, 2, 3, 4, 5, 6, 7, 8]
           and [s.__name__[-4:] for s in steps]
-          == ["v001", "v002", "v003", "v004", "v005", "v006", "v007"],
+          == ["v001", "v002", "v003", "v004", "v005", "v006", "v007", "v008"],
           f"steps={[getattr(s, '__name__', s) for s in steps]}")
-    check("4b real chain: all seven steps expose DESCRIPTION and callable migrate",
-          len(steps) == 7
+    check("4b real chain: all eight steps expose DESCRIPTION and callable migrate",
+          len(steps) == 8
           and all(isinstance(s.DESCRIPTION, str) for s in steps)
           and all(callable(s.migrate) for s in steps))
     check("4c real chain: v003's DESCRIPTION string is exact",
@@ -534,7 +547,11 @@ def case_4_real_chain() -> None:
           steps[6].DESCRIPTION == "materialize the recap provider job; "
           "ship recap.md and notes_review.md; refresh tn_generate.md",
           f"DESCRIPTION={steps[6].DESCRIPTION!r}")
-    check("4d real chain: current_version() == 7", migrations.current_version() == 7)
+    check("4c6 real chain: v008's DESCRIPTION string is exact",
+          steps[7].DESCRIPTION == "provider arrays + the consensus job "
+          "(multi-model consensus); ship consensus.md",
+          f"DESCRIPTION={steps[7].DESCRIPTION!r}")
+    check("4d real chain: current_version() == 8", migrations.current_version() == 8)
 
 
 def case_5_confirm_prompt() -> None:
@@ -884,10 +901,10 @@ def case_9_v007() -> None:
     The step never moves the version stamp, and a second identical call
     over the fully-synced result reports [] and writes nothing.
 
-    Chain-walked (cmd_migrate): a v6-era project applies ONLY v007 (the
-    version gate skips v001-v006), stamps 7, and syncs the drifted
+    Chain-walked (cmd_migrate): a v6-era project applies v007 then v008
+    (the version gate skips v001-v006), stamps 8, and syncs the drifted
     tn_generate.md byte-equal to the shipped copy after one accepted
-    prompt; --dry-run reports the same would-be changes ("version 6 -> 7")
+    prompt; --dry-run reports the same would-be changes ("version 6 -> 8")
     while writing nothing."""
     def make_v6_project(root: Path, name: str) -> Path:
         """A project as v006 left it: every DEFAULTS key (v007 adds none),
@@ -948,9 +965,9 @@ def case_9_v007() -> None:
               sorted(disk["providers"]) == sorted(config.PROVIDER_JOBS),
               f"jobs={sorted(disk['providers'])}")
         check("9c v007: materialized recap job inherits the translator block",
-              disk["providers"]["recap"]["base_url"] == "http://mine:9999/v1"
-              and disk["providers"]["recap"]["model"] == "m1"
-              and disk["providers"]["recap"]["temperature"] == 0.7,
+              disk["providers"]["recap"][0]["base_url"] == "http://mine:9999/v1"
+              and disk["providers"]["recap"][0]["model"] == "m1"
+              and disk["providers"]["recap"][0]["temperature"] == 0.7,
               f"recap={disk['providers'].get('recap')!r}")
         check("9d v007: user-set max_attempts survives the materialize",
               disk.get("max_attempts") == 9, f"max_attempts={disk.get('max_attempts')!r}")
@@ -984,7 +1001,7 @@ def case_9_v007() -> None:
               snapshot(proj) == before)
 
     # Chain-walked end to end through cmd_migrate: the v6 stamp gates the
-    # chain to v007 alone, the applied step stamps 7, and the accepted
+    # chain to v007+v008, the last applied step stamps 8, and the accepted
     # prompt refreshes the drifted tn_generate.md byte-equal to the ship
     # dir. (No git setup needed: v003 never runs for a version-6 project,
     # and vcs.commit is a silent no-op on a non-repo directory.)
@@ -1011,13 +1028,13 @@ def case_9_v007() -> None:
             with patched_confirm(yes_confirm):
                 code, out, exc = run_migrate(ns, full)
             disk = json.loads((full / "config.json").read_text(encoding="utf-8"))
-            check("9k v007: chain-walked v6 project applies only v007, exit 0",
+            check("9k v007: chain-walked v6 project applies v007 then v008, exit 0",
                   code == 0 and exc is None and "applying v007" in out
-                  and "applying v006" not in out
-                  and len([ln for ln in out.splitlines() if ln.startswith("[migrate]")]) == 1,
+                  and "applying v008" in out and "applying v006" not in out
+                  and len([ln for ln in out.splitlines() if ln.startswith("[migrate]")]) == 2,
                   f"code={code} exc={exc!r} out={out}")
-            check("9l v007: version stamped to 7 with the recap job materialized",
-                  disk.get("version") == 7
+            check("9l v007: version stamped to 8 with the recap job materialized",
+                  disk.get("version") == 8
                   and sorted(disk["providers"]) == sorted(config.PROVIDER_JOBS),
                   f"version={disk.get('version')!r}")
             check("9m v007: drifted tn_generate.md refreshed byte-equal after one prompt",
@@ -1031,7 +1048,7 @@ def case_9_v007() -> None:
                   f"asked={asked!r}")
 
             # --dry-run: same would-be changes reported (the new templates,
-            # the pending y/N choice, "version 6 -> 7"), nothing written --
+            # the pending y/N choice, "version 6 -> 8"), nothing written --
             # byte snapshot equal, version still 6, no templates added.
             dry = make_v6_project(root, "dry")
             before_dry = snapshot(dry)
@@ -1044,7 +1061,7 @@ def case_9_v007() -> None:
                   and "[dry-run] [ok] config: provider blocks normalized" in out_d
                   and "[dry-run] [ok] templates + recap.md (new)" in out_d
                   and "[dry-run] [ok] templates + notes_review.md (new)" in out_d
-                  and "would migrate project: version 6 -> 7" in out_d,
+                  and "would migrate project: version 6 -> 8" in out_d,
                   f"code={code_d} exc={exc_d!r} out={out_d}")
             check("9o v007: --dry-run writes nothing (byte snapshot, version, templates)",
                   snapshot(dry) == before_dry and dry_disk.get("version") == 6
@@ -1100,6 +1117,132 @@ def case_10_sync_bom() -> None:
               f"lines={lines_d!r} asked={asked!r}")
 
 
+def case_11_v008() -> None:
+    """v008 called directly: the provider-array + consensus normalization
+    and the consensus.md ship, modeled on case_9's v007 coverage.
+
+    A v7-era project (dict-shaped provider blocks, some jobs omitted,
+    version 7) is normalized into the array form through materialize_config
+    (report: "provider blocks normalized", no materialize-count line since
+    no top-level key is new): every providers.<job> on disk becomes a list,
+    user values survive verbatim inside their blocks, the omitted
+    glossary/recap/profile jobs inherit the translator's list element-wise
+    at their own defaults, and the omitted consensus job materializes as
+    exactly one block inheriting the user translator base_url at the
+    consensus temperature 0.2. consensus.md is shipped as "(new)". The step
+    never moves the version stamp; a second identical call over the
+    normalized result reports [] and writes nothing (idempotent); a
+    --dry-run variant leaves the on-disk config dict-shaped and untouched.
+    (The full v001->v008 chain walk -- a version-0 project ending at
+    version 8 array-shaped with consensus -- is pinned in case 1, check
+    1j2.)"""
+    def make_v7_project(root: Path, name: str) -> Path:
+        """A project as v007 left it: every DEFAULTS key (v008 adds none),
+        minimal user-authored DICT-shaped provider blocks (base_url + model
+        only -- sampling knobs unauthored, so the v008 inheritance semantics
+        show: omitted jobs get their OWN defaults, not the translator's)
+        for translator/reviewer/annotator only (glossary/recap/profile
+        omitted -> inherit the translator's list; the consensus job did not
+        exist in the v7 era), a user-tuned max_attempts, version stamped to
+        7, and a templates/ dir without consensus.md."""
+        proj = root / name
+        proj.mkdir()
+        cfg = dict(config.DEFAULTS)
+        cfg.update({
+            "source_lang": "zh",
+            "target_lang": "en",
+            "max_attempts": 9,
+            "version": 7,
+            "providers": {
+                job: {"base_url": "http://mine:9999/v1", "model": "m1"}
+                for job in ("translator", "reviewer", "annotator")
+            },
+        })
+        (proj / "config.json").write_text(
+            json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        tdir = proj / "templates"
+        tdir.mkdir()
+        # A v7-era template that keeps matching the ship dir below: proves
+        # sync_templates stays silent for identical copies while consensus.md
+        # lands as the only new one.
+        (tdir / "translation.md").write_text("v7 translation prompt\n",
+                                             encoding="utf-8", newline="\n")
+        return proj
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+        (src / "consensus.md").write_text("v8 consensus prompt\n",
+                                          encoding="utf-8", newline="\n")
+        (src / "translation.md").write_text("v7 translation prompt\n",
+                                            encoding="utf-8", newline="\n")
+
+        # Direct call, confirm=None (cmd_migrate's non-interactive form):
+        # dict blocks wrap into arrays, consensus materializes, consensus.md
+        # is copied, the identical translation.md stays silent.
+        proj = make_v7_project(root, "direct")
+        lines = v008.migrate(proj, src)
+        check("11a v008: provider blocks normalized + consensus.md shipped",
+              lines == ["[ok] config: provider blocks normalized (no new top-level keys)",
+                        "[ok] templates + consensus.md (new)"],
+              f"lines={lines!r}")
+        disk = json.loads((proj / "config.json").read_text(encoding="utf-8"))
+        check("11b v008: every providers.<job> on disk is a list of blocks",
+              all(isinstance(value, list) and value
+                  and all(isinstance(el, dict) for el in value)
+                  for value in disk["providers"].values()),
+              f"providers={ {k: type(v).__name__ for k, v in disk['providers'].items()} }")
+        check("11c v008: user values preserved inside the wrapped blocks",
+              disk["providers"]["translator"][0]["base_url"] == "http://mine:9999/v1"
+              and disk["providers"]["translator"][0]["model"] == "m1"
+              and disk.get("max_attempts") == 9,
+              f"translator={disk['providers']['translator']!r}")
+        check("11d v008: consensus job present as exactly one block at temperature 0.2",
+              len(disk["providers"]["consensus"]) == 1
+              and disk["providers"]["consensus"][0]["base_url"] == "http://mine:9999/v1"
+              and disk["providers"]["consensus"][0]["temperature"] == 0.2,
+              f"consensus={disk['providers'].get('consensus')!r}")
+        check("11e v008: omitted jobs inherit the list at their OWN sampling defaults",
+              disk["providers"]["glossary"][0]["base_url"] == "http://mine:9999/v1"
+              and disk["providers"]["glossary"][0]["model"] == "m1"
+              and disk["providers"]["glossary"][0]["temperature"] == 0.2
+              and disk["providers"]["recap"][0]["temperature"] == 0.2,
+              f"glossary={disk['providers'].get('glossary')!r}")
+        check("11f v008: consensus.md copied into templates/",
+              (proj / "templates" / "consensus.md").read_text(encoding="utf-8")
+              == "v8 consensus prompt\n")
+        check("11g v008: the step itself never moves the version stamp",
+              disk.get("version") == 7, f"version={disk.get('version')!r}")
+
+        # Idempotency: config normalized, all templates matching -- a second
+        # run reports [] and writes nothing (byte snapshot).
+        before = snapshot(proj)
+        again = v008.migrate(proj, src)
+        check("11h v008: second identical call returns []",
+              again == [], f"lines={again!r}")
+        check("11i v008: second call wrote nothing (byte snapshot equal)",
+              snapshot(proj) == before)
+
+        # --dry-run: the report still names both changes, but the on-disk
+        # config stays dict-shaped with no consensus key and no template is
+        # copied.
+        dry = make_v7_project(root, "dry")
+        before_dry = snapshot(dry)
+        lines_d = v008.migrate(dry, src, dry_run=True)
+        dry_disk = json.loads((dry / "config.json").read_text(encoding="utf-8"))
+        check("11j v008: --dry-run reports the normalization and the new template",
+              lines_d == ["[ok] config: provider blocks normalized (no new top-level keys)",
+                          "[ok] templates + consensus.md (new)"],
+              f"lines={lines_d!r}")
+        check("11k v008: --dry-run leaves the dict-shaped config untouched",
+              snapshot(dry) == before_dry
+              and isinstance(dry_disk["providers"]["translator"], dict)
+              and "consensus" not in dry_disk["providers"]
+              and not (dry / "templates" / "consensus.md").exists(),
+              f"translator={dry_disk['providers']['translator']!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -1115,6 +1258,7 @@ def main() -> int:
     case_8_v005()
     case_9_v007()
     case_10_sync_bom()
+    case_11_v008()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

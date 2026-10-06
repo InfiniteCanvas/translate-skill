@@ -85,8 +85,15 @@ through uv automatically):
    version stamp untouched; a missing repository is backfilled), so
    `migrate --force` refreshes stale
    templates on current projects too. Each applied step is committed
-   once it lands (`migrate: vNNN <description>`). The newest step, v007,
-   lands the rolling-recap batch (DESCRIPTION: `materialize the recap
+   once it lands (`migrate: vNNN <description>`). The newest step, v008,
+   lands the provider-array batch (DESCRIPTION: `provider arrays + the
+   consensus job (multi-model consensus); ship consensus.md`): every
+   `providers.<job>` value is normalized to an array of provider blocks
+   (a legacy single-block dict wraps into a one-element array; every
+   user-set key kept verbatim) and the new `consensus` job is
+   materialized (exactly one block), while the template sync ships the
+   new `consensus.md` (the multi-model synthesis prompt); v007 landed
+   the rolling-recap batch (DESCRIPTION: `materialize the recap
    provider job; ship recap.md and notes_review.md; refresh
    tn_generate.md`): the new `recap` provider block is folded into
    config.json (no new top-level key -- an omitted job inherits the
@@ -134,7 +141,13 @@ through uv automatically):
    has `api_key`/`api_key_env`); hosted providers with an explicit `model`
    configured that don't serve that route fall back to a minimal chat
    completion, so an `[ok] ... (chat ok; /models failed: ...)` line still
-   means the provider works.
+   means the provider works. One line per provider block: single-block
+   jobs keep the bare padded job name (`[ok] translator <url> ->
+   <model>`), while the blocks of a multi-block job are index-suffixed
+   (`[ok] translator[0] <url> -> <model> (config model: <m>)`,
+   `[ok] translator[1] ...`) and a repeated model inside one job warns
+   (`[warn] translator[i]: same model as translator[j] (<model>) -
+   candidates will be near-identical`).
 
 ## Daily loop
 
@@ -156,7 +169,8 @@ chapter lands as its own commit -- `translate: chapter NNNN (translated)`
 or `translate: chapter NNNN (needs-review)` -- so the project's git
 history grows one labeled entry per chapter. Each translated chapter also
 refreshes a ≤ 120-word "story so far" recap in `story_state.json` (one
-`recap`-provider call after assembly; the next chapter's prompts receive
+`recap`-provider call after assembly — a multi-model array fans it out
+and merges via the consensus provider; the next chapter's prompts receive
 it as context — advisory only, a recap failure never fails a chapter, and
 retranslating a chapter refreshes only its own entry).
 
@@ -280,7 +294,8 @@ anything else exits 2 with
 `[FAIL] --<flag> does not apply to 'review <subject>'`; `--fix` on
 `review fix`/`review notes` keeps its own message,
 `[FAIL] --fix applies to 'review glossary' only; not 'review <subject>'`). Cost
-ceil(N/review_batch_size) model calls.
+ceil(N/review_batch_size) model calls (each batch fans out to every
+model when the job's provider array is multi-block).
 
 Every run also writes `<project>/review-report.md` (filename from the
 `review_report_path` config key; overwritten each run,
@@ -416,7 +431,9 @@ line becomes a `misanchored` warn deterministically, without a model
 call. Every resolvable note is judged in `review_batch_size` batches
 (default 40; `--batch-size N` overrides) by the `reviewer` provider
 through `templates/notes_review.md`, paired with its translated line, the
-line-aligned source line, and the ±2-line target context. Judgment kinds:
+line-aligned source line, and the ±2-line target context — a
+multi-model `reviewer` array fans each batch out to every model in
+parallel and merges via the consensus provider. Judgment kinds:
 `restates` (adds nothing the translation doesn't already say),
 `overexplains` (common knowledge or inferable from context — fails the
 comprehension threshold), `wrong` (misexplains the source term),
@@ -606,9 +623,26 @@ to exit`; details land in
 ## Tuning (config.json)
 
 - `providers` -- endpoint and model per job: `translator`, `glossary`,
-  `reviewer`, `annotator`, `recap`, `profile`. The `recap` job generates
-  the rolling story-so-far recap (one cheap call per translated chapter);
-  a small model is a good fit.
+  `reviewer`, `annotator`, `recap`, `profile`, `consensus`. The `recap` job
+  generates the rolling story-so-far recap (one cheap call per translated
+  chapter; a small model is a good fit). Each job's value is an array of
+  provider blocks (a bare block object is the legacy single-model shape
+  and loads unchanged); two or more blocks run multi-model consensus --
+  every prompt fans out to all the job's models in parallel and one
+  `consensus`-provider call merges the candidates into the final
+  response under the task's own JSON schema. The `consensus` job itself
+  is exactly one block (omitted, it defaults to the translator's first
+  block — that block's settings win, with temperature 0.2 filling what it
+  leaves unset); any other omitted job inherits the
+  translator's whole array, each element onto the job's own defaults.
+  Two translator models:
+
+      "translator": [
+        { "base_url": "http://100.85.218.125:8888/v1", "model": null,
+          "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384, "thinking": false },
+        { "base_url": "http://100.85.218.125:8889/v1", "model": "Qwen3-235B-A22B",
+          "temperature": 0.7, "top_p": 1.0, "max_tokens": 16384, "thinking": false }
+      ]
 - Temperature and `top_p` per provider. The translator defaults to
   temperature 0.7 and `top_p` 1.0 per the Hy-MT2 model card -- tune to
   taste.
@@ -633,8 +667,10 @@ to exit`; details land in
   budget: the whole chapter goes in one call while its expected output
   fits `floor(0.8 × translate_max_output_tokens) − 256`, and longer
   chapters split into parts that each fit that budget; a
-  truncating part retries once at ~1.5x, capped by the provider's
-  `max_tokens`; a single line too big for even that fails fast with
+  truncating part retries once at ~1.5x, capped by the smallest
+  `max_tokens` across the translator's blocks (the minimum governs
+  packing and retries so no model in the array truncates its part); a
+  single line too big for even that fails fast with
   feedback to split or shorten it), `style_sample_chapters` / `style_sample_chars`
   (only used by `--style auto`), `contextual_glossary_cap`.
 - `tn_keep_low_confidence` (default false) — keep notes the annotator
@@ -682,7 +718,11 @@ invocation: the request (params + full prompt, written before the call) and
 the response (raw response, finish_reason, usage, timing), paired by
 `call_id`; a call that hits the 400 fallback (retry without
 `response_format`) adds one extra `llm_request` line for the retried
-request.
+request. A multi-model job's fan-out logs one request/response pair per
+candidate (meta `{"job": <job>, "candidate": i, "candidates": n}`, i
+1-based) plus the consensus call (meta `{"job": "consensus",
+"consensus_for": <job>}`), so a job with N models in its array makes
+N + 1 calls per task where the single-model pipeline makes one.
 Pipeline attempts, `balance_advisory` events (which now carry drift
 signals alongside under-use warnings and over-count info),
 `glossary_cleanup` events, `glossary_review` events (entries, batches,

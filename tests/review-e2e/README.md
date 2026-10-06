@@ -2,7 +2,7 @@
 
 A manual end-to-end kit for the advisory glossary review flow against the
 offline mock server — nothing here is wired into the automated suite. The
-two files are a complete minimal project: `config.json` points all six
+two files are a complete minimal project: `config.json` points all seven
 provider jobs at `http://127.0.0.1:8901/v1` (the mock server's default port),
 and `glossary.json` holds the three terms from `tests/test_glossary_review.py`
 case 10 (天雷宗 -> "river town", 裴家村, 灵石).

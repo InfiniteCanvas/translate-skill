@@ -3,6 +3,10 @@
 Serves:
   GET  /v1/models            -> one model, id "mock-model"
   POST /v1/chat/completions  -> canned responses, sniffed from prompt content:
+       - "### Candidate 1" + "consensus arbitrator" -> consensus merge:
+                                      candidate 1 verbatim (sniffed FIRST --
+                                      the consensus prompt embeds the whole
+                                      task prompt and would misroute below)
        - asks for a "verdict"      -> faithfulness check (SUCCESS)
        - asks for "notes"          -> one translation note (term 测试)
        - merge prompt ("Merge them into ONE canonical entry") -> merged glossary entry
@@ -75,6 +79,16 @@ def _balanced_arrays(text: str):
 
 
 def mock_reply(prompt: str) -> str:
+    # Consensus arbitration is sniffed FIRST: the consensus prompt embeds
+    # the whole original task prompt (translation arrays, "terms", "recap"
+    # labels and all), so any later branch would misroute it. The mock
+    # arbitrator simply returns candidate 1 verbatim.
+    if "### Candidate 1" in prompt and "consensus arbitrator" in prompt:
+        m = re.search(
+            r"### Candidate 1 \(model: [^)]*\)\n\n(.*?)(?=\n### Candidate \d+ \(model:|\Z)",
+            prompt, re.DOTALL)
+        if m:
+            return m.group(1).strip()
     if "verdict" in prompt:
         return json.dumps({"verdict": "SUCCESS", "reasons": []})
     if '"notes"' in prompt or '"note"' in prompt:

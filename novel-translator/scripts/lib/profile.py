@@ -7,7 +7,7 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from lib import client, config, logger, pipeline, project
+from lib import client, consensus, pipeline, project
 from lib.pipeline import _lang_name, fill
 
 PROFILE_SCHEMA: dict = {
@@ -75,13 +75,8 @@ def generate_profile(
         },
         "style_profile.md",
     )
-    def hook(meta: dict) -> None:
-        if bool(cfg.get("log_llm", config.DEFAULTS["log_llm"])):
-            logger.log_event(project_dir, {"job": "profile", **meta})
-
-    resp = client.chat(
-        config.provider(cfg, "profile"), prompt, json_schema=PROFILE_SCHEMA,
-        meta_hook=hook,
+    resp = consensus.chat(
+        project_dir, cfg, "profile", prompt, json_schema=PROFILE_SCHEMA,
     )
     data = client.extract_json(resp)
     if not isinstance(data, dict):
