@@ -16,7 +16,14 @@ rot quietly:
   schema, exit codes, and the migration contract.
 - `novel-translator/SKILL.md` and `novel-translator/README.md` restate
   subcommand semantics, defaults, console markers (`[ok]`/`[warn]`/`[FAIL]`),
-  and migrate prompt wording.
+  and migrate prompt wording for the pipeline and project commands.
+  README, written for humans running the CLI, restates the maintenance
+  workflows as well.
+- `novel-translator/references/maintenance.md` restates subcommand
+  semantics, defaults, and console markers for the maintenance commands
+  (`review glossary|notes|fix`, `tn`, `glossary
+  set|merge|retire|replace|search|count`, `util replace`); SKILL.md
+  carries only their trigger line.
 - `novel-translator/references/ingestion.md` mirrors ingestion behavior.
 
 Defaults, key names, exit codes, flags, console output, or schemas that
