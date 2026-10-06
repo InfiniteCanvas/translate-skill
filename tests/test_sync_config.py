@@ -658,6 +658,66 @@ def case_9_corrupt_overlay_is_a_clean_error() -> None:
                                                / "assets" / "templates")
 
 
+def case_10_shipped_examples_are_valid() -> None:
+    """The shipped example overlays must actually load.
+
+    An example file that cannot be parsed, or that carries a shape the
+    loader rejects, is worse than no example -- it invites a user to copy a
+    config that fails on first `init`. These two are asserted against the
+    real loader so they cannot silently rot as config.py evolves.
+    """
+    skill_root = Path(__file__).resolve().parent.parent / "novel-translator"
+    examples = ["config.local.example.zai.json",
+                "config.local.example.minimax.json"]
+    for name in examples:
+        path = skill_root / name
+        check(f"10 {name}: shipped example exists", path.is_file(),
+              f"missing {path}")
+        if not path.is_file():
+            continue
+
+        # Valid JSON object, and it must pass the REAL reader (shape rules,
+        # no `version`, providers must be an object).
+        with tempfile.TemporaryDirectory() as td:
+            write_overlay(Path(td), path.read_text(encoding="utf-8"))
+            try:
+                overlay = config.load_local_config(Path(td))
+                check(f"10 {name}: passes load_local_config", overlay is not None)
+            except Exception as exc:  # noqa: BLE001
+                check(f"10 {name}: passes load_local_config", False,
+                      f"{type(exc).__name__}: {exc}")
+                continue
+
+            # No inline secrets: examples must model the safe form.
+            check(f"10 {name}: carries no inline api_key",
+                  config.inline_api_keys(overlay) == [],
+                  f"found {config.inline_api_keys(overlay)}")
+            check(f"10 {name}: uses api_key_env, not api_key",
+                  all("api_key_env" in block
+                      for job in overlay.get("providers", {}).values()
+                      for block in ([job] if isinstance(job, dict) else job)),
+                  "a block falls back to an inline key")
+
+            # And it must normalize into a usable project config.
+            project = Path(td) / "proj"
+            project.mkdir()
+            (project / "config.json").write_text(
+                json.dumps({"source_lang": "zh", "target_lang": "en",
+                            "version": 8,
+                            "providers": overlay["providers"]}),
+                encoding="utf-8")
+            try:
+                cfg = config.load_config(project)
+                block = config.provider(cfg, "translator")
+                check(f"10 {name}: normalizes to a working translator block",
+                      all(block.get(k) for k in ("base_url", "model"))
+                      and bool(config.provider_list(cfg, "translator")),
+                      f"block={block!r}")
+            except Exception as exc:  # noqa: BLE001
+                check(f"10 {name}: normalizes to a working translator block",
+                      False, f"{type(exc).__name__}: {exc}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -672,6 +732,7 @@ def main() -> int:
     case_7_init_without_overlay_is_unchanged()
     case_8_corrupt_base_config_is_a_clean_error()
     case_9_corrupt_overlay_is_a_clean_error()
+    case_10_shipped_examples_are_valid()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

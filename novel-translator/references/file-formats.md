@@ -347,6 +347,12 @@ copied into the project's `config.json`, which the project repo COMMITS —
 both entry points print a `[warn]` naming each one. Use `"api_key_env"`
 instead to keep the key in the environment and out of every file.
 
+Ready-made overlays for two hosted providers ship beside this section:
+`config.local.example.zai.json` (Z.AI/GLM) and
+`config.local.example.minimax.json` (MiniMax/M3), with
+`config.local.EXAMPLES.md` documenting every provider-block field and the
+provider quirks they encode.
+
 ## novel_info.json
 
 ```jsonc

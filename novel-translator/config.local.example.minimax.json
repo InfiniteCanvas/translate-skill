@@ -1,0 +1,54 @@
+{
+  "providers": {
+    "translator": {
+      "base_url": "https://api.minimax.io/v1",
+      "model": "MiniMax-M3",
+      "api_key_env": "MINIMAX_TOKEN",
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "max_tokens": 16384,
+      "extra_body": {
+        "max_completion_tokens": 16384,
+        "reasoning_effort": "low"
+      }
+    },
+    "glossary": {
+      "base_url": "https://api.minimax.io/v1",
+      "model": "MiniMax-M3",
+      "api_key_env": "MINIMAX_TOKEN",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "extra_body": {
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low"
+      }
+    },
+    "reviewer": {
+      "base_url": "https://api.minimax.io/v1",
+      "model": "MiniMax-M3",
+      "api_key_env": "MINIMAX_TOKEN",
+      "temperature": 0.2,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "extra_body": {
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low"
+      }
+    },
+    "consensus": {
+      "base_url": "https://api.minimax.io/v1",
+      "model": "MiniMax-M3",
+      "api_key_env": "MINIMAX_TOKEN",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "extra_body": {
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low"
+      }
+    }
+  },
+  "translate_max_output_tokens": 8192,
+  "max_attempts": 3
+}

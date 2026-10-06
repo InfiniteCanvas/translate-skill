@@ -1,0 +1,50 @@
+{
+  "providers": {
+    "translator": {
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "model": "glm-5.3",
+      "api_key_env": "ZAI_API_KEY",
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "max_tokens": 16384,
+      "extra_body": {
+        "thinking": { "type": "disabled" }
+      }
+    },
+    "glossary": {
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "model": "glm-5.3",
+      "api_key_env": "ZAI_API_KEY",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "extra_body": {
+        "thinking": { "type": "disabled" }
+      }
+    },
+    "reviewer": {
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "model": "glm-5.3",
+      "api_key_env": "ZAI_API_KEY",
+      "temperature": 0.2,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "extra_body": {
+        "thinking": { "type": "disabled" }
+      }
+    },
+    "consensus": {
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "model": "glm-5.3",
+      "api_key_env": "ZAI_API_KEY",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "extra_body": {
+        "thinking": { "type": "disabled" }
+      }
+    }
+  },
+  "translate_max_output_tokens": 8192,
+  "max_attempts": 3
+}
