@@ -9,5 +9,9 @@ export/
 # Local agent/tooling session state
 .zcode/
 
+# Per-machine skill config (endpoints, model, auth) that `init` copies into
+# new projects and `sync-config` merges into an existing one. Never committed.
+config.local.json
+
 # uv PEP 723 script lockfiles (created next to scripts on uv run)
 *.py.lock

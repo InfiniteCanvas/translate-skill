@@ -65,6 +65,29 @@ through uv automatically):
    global is touched), and every following action is committed with a
    descriptive subject, so `git log` is a labeled backup of the project.
 
+   If you keep a `config.local.json` in the skill directory (optional, and
+   gitignored so it never gets committed), `init` deep-merges it into the
+   new `config.json` automatically -- your endpoint, model, and auth are
+   applied once and reused by every project you start, instead of being
+   retyped per novel. Keys the overlay does not mention (languages,
+   thresholds, the `version` stamp) are left exactly as `init` wrote them.
+   To apply it to a project that already exists:
+
+       uv run scripts/translate.py sync-config --project .
+
+   `sync-config` is the same merge, safe to re-run (a second run with no
+   change reports `no changes`), and it prints the dotted key paths it
+   changed. An absent overlay file is a clean no-op, not an error; a
+   malformed one exits 2 with a `[FAIL]` line rather than leaving the
+   project pointed at the wrong endpoint. Merge rules: an overlay
+   `providers.<job>` given as an array replaces that job's blocks
+   wholesale, while a single block object merges into the existing blocks
+   (so `{"model": "x"}` keeps your `base_url` and auth). The overlay may
+   not carry `version`. Note that an inline `"api_key"` is safe in the
+   gitignored overlay but does get copied into the project's `config.json`,
+   which the project repo commits -- both commands print a `[warn]` naming
+   each one, and `"api_key_env": "MY_KEY"` avoids it entirely.
+
    After updating the skill itself, upgrade existing projects in place:
 
        uv run scripts/translate.py migrate --project .
@@ -660,6 +683,11 @@ to exit`; details land in
   `extra_body` on a provider block merges provider-specific parameters
   verbatim into the request body (after the known knobs, before
   `response_format`; not sent by ping's minimal probe).
+- Don't want to re-enter the same settings for every new novel? Keep them
+  in `config.local.json` beside the skill's `scripts/` directory (gitignored,
+  any subset of `config.json`'s keys). `init` merges it into each new
+  project and `sync-config --project .` applies it to an existing one; see
+  the setup section above and `references/file-formats.md`.
 - Thresholds: `min_term_coverage` (advisory usage floor; a term with >= 2
   source occurrences and zero renderings becomes a drift signal for the
   FAITH reviewer), `tn_gap_chapters`, `max_attempts`,

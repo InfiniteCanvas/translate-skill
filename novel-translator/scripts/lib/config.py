@@ -65,6 +65,25 @@ DEFAULTS: dict = {
 DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"
 DEFAULT_MAX_TOKENS = 16384
 
+# Skill-level settings overlay, copied into every project `init` creates and
+# merged on demand by `sync-config`. It holds the same shape as config.json
+# (any subset of its keys) and is gitignored, so per-machine details -- most
+# usefully the provider endpoint, model, and auth of whoever runs the skill --
+# live in exactly one place instead of being retyped per novel.
+#
+# Deliberately NOT a config.DEFAULTS key: an overlay that is absent must be a
+# silent no-op, and a boolean gate would have to be materialized into every
+# existing project's config.json (and carried by every migration). The file's
+# presence IS the opt-in, so nothing is added to the project schema and no
+# migration is required.
+LOCAL_CONFIG_NAME = "config.local.json"
+
+# Keys the overlay may never carry. `version` is the project's own migration
+# stamp: taking it from the overlay would make `migrate` replay steps the
+# project has already run (or skip ones it has not), and the stamp is written
+# by `init`/`migrate` alone.
+LOCAL_CONFIG_FORBIDDEN = ("version",)
+
 # translator temperature/top_p follow the Hy-MT2 model card recommendation
 # (0.7 / 1.0); every other job keeps the server default for its sampling
 # knobs (no top_p key sent). `thinking` maps to sglang's
@@ -201,6 +220,182 @@ def save_config(project_dir: Path, cfg: dict) -> None:
     cfg_path = Path(project_dir) / "config.json"
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
                         encoding="utf-8", newline="\n")
+
+
+def local_config_path(skill_root: Path) -> Path:
+    """Where the skill looks for the optional overlay: config.local.json
+    directly under the skill root (the novel-translator/ package dir)."""
+    return Path(skill_root) / LOCAL_CONFIG_NAME
+
+
+def load_local_config(skill_root: Path) -> dict | None:
+    """Read the skill-level overlay, or None when it does not exist.
+
+    An ABSENT file is the normal case (the overlay is optional) and returns
+    None rather than raising, so callers treat it as a silent no-op. A file
+    that exists but cannot be read or parsed raises ValueError: silently
+    ignoring a malformed overlay would drop the user's endpoint and send the
+    next translate at a different model, which is far worse than a clear
+    failure. The `version` key is rejected here rather than silently dropped
+    (see LOCAL_CONFIG_FORBIDDEN)."""
+    path = local_config_path(skill_root)
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except OSError as exc:
+        raise ValueError(f"cannot read {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    # `providers` is the one key whose shape the merge special-case reaches
+    # into directly, so a non-object here would raise AttributeError deep in
+    # merge_overlay -- which main() does not catch, turning a typo in the
+    # user's own overlay into a traceback and exit 1. Reject it here, where
+    # the message can name the file.
+    if "providers" in raw and not isinstance(raw["providers"], dict):
+        raise ValueError(f"{path}: 'providers' must be a JSON object")
+    forbidden = [key for key in LOCAL_CONFIG_FORBIDDEN if key in raw]
+    if forbidden:
+        raise ValueError(
+            f"{path} must not contain {', '.join(forbidden)}: the project "
+            "version stamp belongs to init/migrate")
+    return raw
+
+
+def merge_overlay(base: dict, overlay: dict) -> dict:
+    """Deep-merge the overlay ONTO base, overlay values winning.
+
+    The project's own keys survive anything the overlay does not mention --
+    which is the whole point: source_lang/target_lang, the version stamp and
+    every threshold the user set stay put while their endpoint, model and auth
+    are replaced from the overlay.
+
+    Lists are replaced wholesale, never merged element-wise. providers.<job>
+    is an array of blocks (the consensus fan-out), and splicing two arrays
+    index-by-index would produce a Frankenstein of both machines' models with
+    no way to tell which block came from where; an overlay naming a job as an
+    ARRAY therefore takes the job over completely.
+
+    The one deliberate exception is a providers job given as a single block
+    object (the legacy shape, e.g. {"model": "x"}): that merges key-wise into
+    EVERY block the project already has. Replacing the array outright here
+    would drop the project's base_url and auth for the job, and the missing
+    endpoint would then fall back to PROVIDER_DEFAULTS' hard-coded
+    DEFAULT_BASE_URL -- silently sending the next run at a different server.
+    A partial overlay must never quietly un-point a working provider."""
+    merged = _deep_merge(base, overlay)
+    base_providers = base.get("providers") if isinstance(base, dict) else None
+    over_providers = overlay.get("providers") if isinstance(overlay, dict) else None
+    if isinstance(base_providers, dict) and isinstance(over_providers, dict):
+        for job, over_block in over_providers.items():
+            project_blocks = base_providers.get(job)
+            if not isinstance(over_block, dict) or not isinstance(project_blocks, list):
+                continue
+            merged["providers"][job] = [_deep_merge(block, over_block)
+                                        if isinstance(block, dict) else block
+                                        for block in project_blocks]
+    return merged
+
+
+def apply_overlay(project_dir: Path, overlay: dict) -> tuple[dict, list[str]]:
+    """Merge the overlay onto the project's RAW config.json and save the
+    result. Returns (changed_keys, report_lines).
+
+    Works from the raw on-disk file rather than load_config's merged form, so
+    the write is minimal: the file keeps its shape and gains only the
+    overlay's keys, instead of being rewritten with every DEFAULTS value
+    expanded into it. That keeps the diff reviewable and keeps `version` (which
+    load_config would never fabricate, and which the overlay may not set)
+    exactly as the project left it.
+
+    Validates the merged form through load_config BEFORE writing, so a
+    malformed overlay -- a providers block of the wrong shape, say -- fails
+    with a clear error instead of leaving a config.json that every later
+    command rejects.
+
+    The base is shape-checked too, not just the result: this reads the file
+    RAW, and a config.json that is itself corrupt (a bare number or null
+    body, or a `providers` that is not an object) would otherwise reach
+    _deep_merge and raise AttributeError/TypeError, which main() does not
+    catch -- the CLI would die with a traceback and exit 1 instead of the
+    documented exit 2. Mirrors load_config's own guards, raising the same
+    ValueError shape so the caller reports it identically."""
+    project_dir = Path(project_dir)
+    cfg_path = project_dir / "config.json"
+    raw = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{cfg_path} must contain a JSON object")
+    if "providers" in raw and not isinstance(raw["providers"], dict):
+        raise ValueError(f"{cfg_path}: 'providers' must be a JSON object")
+    # Same guard on the overlay side: apply_overlay is a public helper, and a
+    # hand-built overlay dict (not one from load_local_config) can still carry
+    # a non-object `providers`. Checked here so no caller can reach the
+    # AttributeError inside merge_overlay.
+    if not isinstance(overlay, dict):
+        raise ValueError("config.local.json overlay must be a JSON object")
+    if "providers" in overlay and not isinstance(overlay["providers"], dict):
+        raise ValueError("config.local.json: 'providers' must be a JSON object")
+    merged = merge_overlay(raw, overlay)
+    # Prove the result is loadable before it replaces a working config.json.
+    # Validation only: the value written below is `merged`, not this form.
+    _normalize_providers(merged.get("providers") or {})
+    changed = sorted(_changed_keys(raw, merged))
+    if merged != raw:
+        save_config(project_dir, merged)
+    lines = [f"[ok] config.local.json: applied {len(changed)} key(s): "
+             + ", ".join(changed)] if changed else [
+        "[ok] config.local.json: no changes (project already matches)"]
+    return changed, lines
+
+
+def _changed_keys(before: dict, after: dict) -> list[str]:
+    """Dotted paths whose values differ between two config dicts.
+
+    Reports the paths the overlay actually moved, so the command can name the
+    settings it changed instead of making the user diff the file. A container
+    that was replaced (a providers array, say) reports as its own leaf rather
+    than as every index inside it."""
+    keys: set[str] = set()
+
+    def walk(prefix: str, old: object, new: object) -> None:
+        if isinstance(old, dict) and isinstance(new, dict):
+            for key in set(old) | set(new):
+                walk(f"{prefix}.{key}" if prefix else str(key),
+                     old.get(key), new.get(key))
+            return
+        if old != new:
+            keys.add(prefix)
+
+    walk("", before, after)
+    return sorted(keys)
+
+
+def inline_api_keys(overlay: dict) -> list[str]:
+    """Dotted paths of every inline api_key in the overlay.
+
+    An inline key is a credential written to disk in a file the skill git
+    IGNORES -- but `sync-config` merges it into the project's config.json,
+    which the project repo DOES commit. Callers warn about these so the user
+    can move to api_key_env (or drop the key) before the secret reaches a
+    project history."""
+    found: list[str] = []
+
+    def walk(prefix: str, node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child = f"{prefix}.{key}" if prefix else str(key)
+                if key == "api_key" and value:
+                    found.append(child)
+                else:
+                    walk(child, value)
+        elif isinstance(node, list):
+            for index, element in enumerate(node):
+                walk(f"{prefix}[{index}]", element)
+
+    walk("", overlay)
+    return sorted(found)
 
 
 def provider(cfg: dict, job: str) -> dict:

@@ -96,12 +96,52 @@ story_state.json (pass --force to reset)`.
 
 Optional: `--cover-url` to point at a cover image directly.
 
+If the skill ships a `config.local.json` (it is gitignored, so you will only
+ever have one if you created it), `init` deep-merges it into the new
+`config.json` automatically — your endpoint, model and auth land in every
+project without retyping them, and everything the overlay does not mention
+(languages, thresholds, the `version` stamp) is left as `init` wrote it.
+Nothing changes when the file is absent; a malformed one warns and is skipped
+without failing `init`. See `sync-config` below to re-apply it later.
+
 Downloading more chapters later? Drop them in `source/` and run
 `uv run "$SCRIPT" sync --project .` - it re-scans `source/`, backfills
 their frontmatter, and rebuilds `chapters.json` (added/removed chapters
 reported; statuses and titles preserved) without touching glossary.json
 or tn_history.json. Exit 0, no LLM calls; a sync that changed anything
 commits `sync: rescan source`; run it after every download batch.
+
+### Sharing settings across projects (`sync-config`)
+
+```bash
+uv run "$SCRIPT" sync-config --project .
+```
+
+Deep-merges the skill's `config.local.json` into this project's
+`config.json` — the same pass `init` does — so a project created before you
+wrote the file (or one whose endpoint you have since changed) picks up your
+current settings. Overlay keys win; every other key in the project file is
+preserved, including the `version` stamp, so this is safe to re-run
+(idempotent: a second run reports `no changes`). An absent overlay is a
+clean no-op (`[ok] no local config at ... - nothing to sync`, exit 0); an
+unreadable or malformed one fails with exit 2 rather than silently leaving
+the project on the wrong endpoint. Commits as `sync-config: apply local
+config`.
+
+Merge rules worth knowing: scalars and objects merge key-by-key, but a
+`providers.<job>` given as an **array** replaces that job's blocks
+wholesale, while a single block **object** merges into every existing block.
+So `{"providers": {"translator": {"model": "x"}}}` re-points only the model
+and keeps the project's `base_url`/auth, while a full array replaces the
+whole job (this is how a different endpoint gets swapped in). The overlay
+may not carry `version` — that stamp belongs to `init`/`migrate` alone and
+is rejected if present.
+
+**Secrets:** an inline `"api_key": "sk-..."` in the overlay is gitignored in
+this repo, but merging it puts it into the project's `config.json`, which the
+project repository *does* commit — `sync-config` prints a `[warn]` naming
+every such key. Prefer `"api_key_env": "MY_KEY"` (the key then stays in the
+environment and never reaches any file).
 
 Re-run seeding with `uv run "$SCRIPT" seed --project .` after adding
 chapters or editing a catalogue; `--min-count N` overrides the seed

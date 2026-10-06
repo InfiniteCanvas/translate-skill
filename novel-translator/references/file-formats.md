@@ -90,6 +90,7 @@ actually changed:
 | fresh `init` | `init: scaffold project`, then `init: backfill and seed` |
 | `init --force` over an existing repository (history is kept) | `init: reinitialize project`, then `init: reseed after reinitialize` |
 | `sync` that changed anything | `sync: rescan source` |
+| `sync-config` that changed anything | `sync-config: apply local config` |
 | finished chapter — `translate` and `retry`; skipped chapters commit nothing | `translate: chapter NNNN (translated)` / `translate: chapter NNNN (needs-review)` |
 | `mark` | `mark: <file> -> <status>[, ...]` |
 | `tn` (when at least one chapter changed, or only `tn_history.json` drifted — kept notes bump `times`/`last_order` even when every sidecar is identical) | `tn: re-check notes` |
@@ -298,6 +299,53 @@ LLM call.
   `providers.<job>` value (the job falls back to its defaults), so moving
   a project back to an older skill after using multi-model arrays means
   restoring the dict shape by hand.
+
+## config.local.json (skill-level overlay, optional)
+
+`novel-translator/config.local.json` — an OPTIONAL, gitignored file beside
+`scripts/` in the skill directory, holding any subset of the keys
+`config.json` accepts. It exists so per-machine settings (endpoint, model,
+auth) are written once instead of per novel. It is not part of any project
+and never appears in a project's file tree.
+
+It is applied in two places, both deep-merging it ONTO the project's
+`config.json` with overlay values winning and every unmentioned project key
+preserved (including `version`, which the overlay may not carry):
+
+- `init` applies it automatically to the new project, before the scaffold
+  commit, so the merged config lands in the project's first commit. Absent
+  file → nothing happens and nothing is printed; unreadable/malformed file →
+  a `[warn]` line, and `init` continues (repair it and re-run `sync-config`).
+- `sync-config` applies it to an existing project, printing the changed
+  dotted key paths, e.g.
+  `[ok] config.local.json: applied 1 key(s): providers.translator`. Exit 0
+  on success or when there is no overlay file
+  (`[ok] no local config at <path> - nothing to sync`); exit 2 when the file
+  is malformed or the project has no `config.json`. Idempotent — a second
+  identical run reports `no changes`.
+
+Malformed input on EITHER side is a clean `[FAIL]` line and exit 2, never a
+traceback: an overlay that is not a JSON object, that carries `version`, or
+whose `providers` is not an object; and a project `config.json` that is not
+a JSON object or whose `providers` is not an object. Both are shape-checked
+before the merge, so a refused sync leaves the project's `config.json`
+byte-identical. A `providers.<job>` block of the wrong shape inside an
+otherwise well-formed overlay (an empty array, an array of non-objects, two
+`consensus` blocks) is likewise rejected before anything is written.
+
+Merge rules: objects and scalars merge key-by-key; a `providers.<job>`
+given as an ARRAY replaces that job's blocks wholesale, while a single block
+OBJECT merges into every block the project already has (so
+`{"model": "x"}` re-points the model without dropping the project's
+`base_url`/auth — replacing there would silently fall back to the
+hard-coded default endpoint). The written file is the raw project file plus
+the overlay's keys: `load_config`'s expanded `DEFAULTS` form is never
+written back, so the diff stays minimal.
+
+Secrets: an inline `"api_key"` is safe in this file (gitignored) but is
+copied into the project's `config.json`, which the project repo COMMITS —
+both entry points print a `[warn]` naming each one. Use `"api_key_env"`
+instead to keep the key in the environment and out of every file.
 
 ## novel_info.json
 
@@ -1366,7 +1414,7 @@ Every command exits 0 on success. The non-zero exits:
 | Exit | Meaning |
 |---|---|
 | 1 | `translate` / `retry` — at least one chapter ended `needs-review`; `build-epub` — epubcheck reported errors (the epub failed validation); `review glossary` — warns remain after the run; `review fix` — at least one command failed, or the report was refused as stale; `glossary search` — nothing found; `glossary count` — below the significance threshold; `tn` — failed chapters (annotator call or unreadable chapter) or no eligible chapters in range; `profile` — generation failed |
-| 2 | usage or setup error — bad arguments, missing files, corrupt project JSON (one `[FAIL]` line, never a traceback); `build-epub` — the builder subprocess crashed; `ping` — one or more providers unreachable |
+| 2 | usage or setup error — bad arguments, missing files, corrupt project JSON (one `[FAIL]` line, never a traceback); `build-epub` — the builder subprocess crashed; `ping` — one or more providers unreachable; `sync-config` — the skill's `config.local.json` is unreadable/malformed, or the project has no `config.json` |
 | 130 | interrupted at the keyboard (`Ctrl-C`) — chapter state is saved, re-run to resume |
 
 `build-epub` splits its failures: epubcheck failing validation exits 1,

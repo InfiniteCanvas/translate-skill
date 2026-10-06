@@ -6,7 +6,7 @@
 """novel-translator: staged, resumable CJK novel translation CLI.
 
 Subcommands: init, ping, seed, migrate, profile, styles, status, sync,
-translate, retry, mark, tn, review, util, glossary, build-epub.
+sync-config, translate, retry, mark, tn, review, util, glossary, build-epub.
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
 had failures or the report was refused as stale / glossary search found nothing
 / glossary count below threshold / tn re-check failed chapters or scanned
@@ -269,6 +269,36 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     config.save_config(project_dir, cfg)
     print(f"[init] wrote {paths['config'].name}")
 
+    # Apply the skill's config.local.json overlay, if the user keeps one, so a
+    # new project starts with their own endpoint/model/auth and nobody has to
+    # retype it per novel. Same deep-merge as `sync-config`, and the same
+    # "absent is a silent no-op" rule: a machine with no overlay file prints
+    # nothing extra. A malformed overlay warns rather than failing init --
+    # the project is otherwise valid, and the user can repair the file and
+    # re-run `sync-config`. Runs before the scaffold commit below so the
+    # merged config lands in the project's very first commit.
+    try:
+        overlay = config.load_local_config(SKILL_ROOT)
+    except ValueError as exc:
+        overlay = None
+        print(f"[warn] local config ignored at init: {exc}")
+    if overlay is not None:
+        for path_key in config.inline_api_keys(overlay):
+            print(f"[warn] {path_key} is an inline key - it will be committed "
+                  "in this project's git history; prefer api_key_env")
+        try:
+            _changed, overlay_lines = config.apply_overlay(project_dir, overlay)
+        except (OSError, ValueError) as exc:
+            print(f"[warn] local config not applied: {exc}")
+        else:
+            for line in overlay_lines:
+                print(f"[init] {line}")
+            # Re-read so the in-memory cfg used below (seed_min_count for the
+            # catalogue pass, style_sample_* for the profile call) reflects
+            # what actually landed on disk -- the overlay is allowed to set
+            # those keys too.
+            cfg = _load_config(project_dir)
+
     novel_info: dict[str, Any] = {
         "title": args.title,
         "title_translated": None,
@@ -468,6 +498,46 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
         print(f"[sync] removed {len(removed)} chapter(s): {', '.join(removed)}")
     print(f"[ok] manifest: {len(manifest)} chapter(s)")
     vcs.commit(project_dir, "sync: rescan source")
+    return 0
+
+
+def cmd_sync_config(args: argparse.Namespace, project_dir: Path) -> int:
+    """Copy the skill's config.local.json into this project.
+
+    The overlay is deep-merged ONTO the project's config.json, not written
+    over it: keys the overlay does not mention (languages, the version stamp,
+    hand-tuned thresholds) are preserved, so this is safe to re-run after
+    changing the overlay. An absent overlay is a clean no-op, not an error --
+    the file is optional, and a machine without one still works.
+
+    Exit 0 on success or no-op, 2 when the overlay is missing/unreadable/
+    malformed (a silent skip would point the next translate at a different
+    model, which is worse than a loud failure)."""
+    try:
+        overlay = config.load_local_config(SKILL_ROOT)
+    except ValueError as exc:
+        raise CliError(f"cannot sync config: {exc}") from exc
+    if overlay is None:
+        path = config.local_config_path(SKILL_ROOT)
+        print(f"[ok] no local config at {path} - nothing to sync")
+        return 0
+    if not (project_dir / "config.json").is_file():
+        raise CliError(
+            f"{project_dir / 'config.json'} not found - run 'init' first")
+
+    # Warn BEFORE writing: these are credentials about to move from an
+    # ignored file into one the project repo commits.
+    for path_key in config.inline_api_keys(overlay):
+        print(f"[warn] {path_key} is an inline key - it will be committed in "
+              "this project's git history; prefer api_key_env")
+
+    try:
+        _changed, lines = config.apply_overlay(project_dir, overlay)
+    except (OSError, ValueError) as exc:
+        raise CliError(f"cannot sync config: {exc}") from exc
+    for line in lines:
+        print(line)
+    vcs.commit(project_dir, "sync-config: apply local config")
     return 0
 
 
@@ -1628,6 +1698,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sync", parents=[common], allow_abbrev=False,
                        help="re-scan source/ for new or removed chapters and rebuild the manifest")
     p.set_defaults(func=cmd_sync)
+
+    p = sub.add_parser("sync-config", parents=[common], allow_abbrev=False,
+                       help="merge the skill's config.local.json into this project's config.json")
+    p.set_defaults(func=cmd_sync_config)
 
     p = sub.add_parser("translate", parents=[common], allow_abbrev=False,
                        help="run the translation pipeline on chapters")
