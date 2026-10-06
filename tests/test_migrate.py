@@ -40,11 +40,16 @@ still refreshes to the shipped bytes after an accepted prompt.
 cmd_migrate reads translate.TEMPLATES_SRC_DIR, migrations.chain, and (all
 as module-global lookups at call time) translate._confirm_template_refresh,
 so each is monkeypatched by attribute swap with orig/restore in
-try/finally. Interactivity MUST be pinned explicitly: running this suite
-from an interactive terminal makes stdin a TTY, and any case whose
-cmd_migrate run can reach a differing template would otherwise block on a
-real prompt -- fakes answer, and the refusal fake fails the check loudly
-wherever the code must NOT prompt. All fixtures live in
+try/finally. Interactivity MUST be pinned explicitly: cmd_migrate decides
+whether to consult the prompt at all with `sys.stdin.isatty()`, so
+patched_confirm swaps BOTH the module global AND sys.stdin. Swapping only
+the global leaves `confirm` bound to None under a piped stdin (CI, an agent
+shell, any redirect), where sync_templates never prompts -- which made six
+checks pass on a developer's terminal and fail everywhere else. The suite
+is therefore now launch-independent. Cases whose cmd_migrate run must NOT
+prompt use refuse_confirm, which raises if asked; pinning the TTY makes
+those assertions stricter, not weaker. Direct sync_templates cases pass
+`confirm=` explicitly and never depend on stdin. All fixtures live in
 TemporaryDirectory sandboxes; repo assets are never touched. Since v003,
 any real (non-dry-run) chain walk also turns the fixture into a git
 repository and commits after the last step, so byte snapshots exclude the
@@ -134,16 +139,36 @@ def refuse_confirm(question: str) -> bool:
 
 @contextlib.contextmanager
 def patched_confirm(fake: Callable[[str], bool]):
-    """Swap translate._confirm_template_refresh for `fake` (cmd_migrate
-    resolves it as a module global at call time). Mandatory everywhere a
-    cmd_migrate run can reach a differing template -- never depend on
-    whether this process happens to have a TTY on stdin."""
-    orig = translate._confirm_template_refresh
+    """Make one cmd_migrate run use `fake` as its template prompt, and pin the
+    interactivity that decides whether the prompt is consulted AT ALL.
+
+    Two swaps, both required. cmd_migrate resolves the prompt as a module
+    global:
+
+        confirm = _confirm_template_refresh if sys.stdin.isatty() else None
+
+    so swapping the global alone is not enough -- with a piped stdin (CI, an
+    agent shell, any redirect) `confirm` binds to None and sync_templates
+    takes its non-interactive branch, never calling the fake. That made six
+    checks pass on a developer's terminal and fail everywhere else: the
+    same suite was green or red purely on how it was launched. Pinning
+    sys.stdin.isatty() alongside the global makes each case deterministic and
+    matches the "never depend on whether this process happens to have a TTY"
+    rule the file has always claimed.
+
+    Mandatory everywhere a cmd_migrate run can reach a differing template.
+    A `refuse_confirm` case is made STRICTER by the TTY pin, not weaker: the
+    fake raises if asked, so asserting "must not prompt" still holds and now
+    holds regardless of the runner. Every restore is in finally."""
+    orig_fn = translate._confirm_template_refresh
+    orig_stdin = sys.stdin
     translate._confirm_template_refresh = fake
+    sys.stdin = types.SimpleNamespace(isatty=lambda: True)
     try:
         yield
     finally:
-        translate._confirm_template_refresh = orig
+        translate._confirm_template_refresh = orig_fn
+        sys.stdin = orig_stdin
 
 
 # A config written by a pre-versioning init: user-tuned tn_gap_chapters and

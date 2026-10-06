@@ -8,6 +8,13 @@ so the working directory only affects where a "." --project would resolve
 -- running from tests/ keeps that deterministic. Output is captured and
 printed only for failing scripts so the summary stays readable.
 
+Children inherit this process's stdin, so a script run under a pipe, a
+redirect, or a CI job sees stdin.isatty() == False. A suite that must not
+depend on that pins it itself (see test_migrate.patched_confirm); do NOT
+"fix" such a suite by forcing stdin here -- that would hard-code one
+environment's answer into the runner and hide the very dependency the
+test is meant to surface.
+
 Exit code alone cannot tell a real pass from a script whose main() never
 ran, so each script's own summary line ("N passed, M failed") is parsed
 and a script reporting zero checks is failed here. The check count is
