@@ -725,17 +725,28 @@ def case_10_shipped_examples_are_valid() -> None:
         check(f"10 {name}: covers ALL {len(config.PROVIDER_JOBS)} provider jobs",
               not missing, f"jobs left on the default endpoint: {missing}")
 
-        # And every job must disable hosted thinking. Without
-        # extra_body.thinking.type=disabled, GLM-5.3 and MiniMax-M3 spend the
-        # whole output budget on reasoning and return empty content (measured
-        # live: reasoning_tokens 48 of a 50-token budget).
+        # And every job must leave hosted thinking ON and carry a large budget.
+        # With thinking disabled the model returns empty content (measured live:
+        # reasoning_tokens 48 of a 50-token budget). With it ON, reasoning costs
+        # only ~700-800 tokens on a normal chapter and ~7.9k on a heavy
+        # translator's-note prompt, so the budget must clear that with room to
+        # spare -- 64k, verified accepted by both live APIs.
         jobs = overlay.get("providers", {})
         no_disable = sorted(job for job, block in jobs.items()
                             if (block.get("extra_body", {})
                                 .get("thinking", {})
-                                .get("type")) != "disabled")
-        check(f"10 {name}: every job disables hosted thinking",
-              not no_disable, f"jobs without thinking disabled: {no_disable}")
+                                .get("type")) == "disabled")
+        check(f"10 {name}: thinking is left ON (no thinking:disabled)",
+              not no_disable, f"jobs with thinking disabled: {no_disable}")
+
+        small = sorted(job for job, block in jobs.items()
+                       if int(block.get("max_tokens", 0)) < 65536)
+        check(f"10 {name}: every job carries the 64k output budget",
+              not small, f"jobs below 65536 max_tokens: {small}")
+
+        check(f"10 {name}: translate_max_output_tokens is 64k",
+              overlay.get("translate_max_output_tokens") == 65536,
+              f"got {overlay.get('translate_max_output_tokens')!r}")
 
 
 def main() -> int:

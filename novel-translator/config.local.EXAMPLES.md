@@ -46,19 +46,43 @@ Top-level keys used here: `providers` (the map above) plus
 `translate_max_output_tokens` (per-chapter cap the pipeline passes to the
 translator call) and `max_attempts` (retries per LLM call).
 
-## Three provider quirks these files encode
+## Thinking is ON, and why the budget is 64k
 
-**`thinking: {"type": "disabled"}` is not optional — without it every call
-returns empty content.** Both GLM-5.3 and MiniMax-M3 spend the output budget
-on reasoning first. Measured against the live APIs with `max_tokens: 50`,
-GLM-5.3 returned `finish_reason: length`, `content: ""`, and
-`usage.completion_tokens_details.reasoning_tokens: 48` — the entire budget
-gone to thinking. That is the exact failure `lib/client.py` guards against
-(it raises "empty completion content ... set thinking=false"). Adding the
-`extra_body` entry returns clean content. MiniMax-M3 has the same default,
-and inlines its reasoning as `<think>...</think>` **inside `content`** when
-left on, which would otherwise be written straight into the translated
-chapter.
+Both examples leave thinking **enabled** — the sglang-only `thinking` field is
+not set to false, and neither is `extra_body.thinking`. Reasoning is worth
+having for consistency-critical translation work; the problem is only that
+reasoning and answer share one `max_tokens` ceiling.
+
+Measured live on the actual APIs with a real chapter passage, thinking ON:
+
+| Call | `max_tokens` | completion | reasoning | usable content |
+|---|---|---|---|---|
+| Z.AI glm-5.3, plain translate | 8,192 | 906 | 774 | 581 ch ✅ |
+| Z.AI glm-5.3, plain translate | 65,536 | 843 | 718 | 554 ch ✅ |
+| Z.AI glm-5.3, translate + cultural notes | 65,536 | 9,385 | 7,880 | 6,101 ch ✅ |
+
+So reasoning costs roughly **700–800 tokens** on a normal chapter and about
+**7.9k** on a heavy translator's-notes prompt — the second being the case
+that overruns the stock 8,192 cap and truncates. `65536` is accepted by both
+APIs and leaves wide headroom for GLM's tendency to overthink.
+
+Two consequences worth knowing:
+
+- `translate_max_output_tokens` must match. It is the per-call cap the
+  TRANSLATE stage actually sends, and it also drives chapter packing
+  (`floor(0.8 × cap) − 256`), so a bigger cap means longer chapters pack into
+  fewer parts and fewer calls. Setting provider `max_tokens` alone would NOT
+  raise it — the pipeline would still send 8,192.
+- A runaway think now has 64k to burn instead of failing fast at 8k. That is
+  the deliberate trade: a truncated translation is worse than a slow one.
+  `max_attempts` bounds retries.
+
+MiniMax inlines its reasoning as `<think>…</think>` inside `content` when
+thinking is on. `lib/client.py` strips a leading think block before the
+empty-content check, so this never reaches the translated chapter — verified
+by translating a chapter end-to-end with the output checked for tags.
+
+## Provider quirks these files encode
 
 **Z.AI Coding Plan keys only work on the coding endpoint.** Use
 `https://api.z.ai/api/coding/paas/v4`. The general endpoint
@@ -68,27 +92,27 @@ Coding Plan key sent there is rejected. The two are not interchangeable.
 **MiniMax accepts `max_tokens` as well as `max_completion_tokens`.** Their
 docs name `max_completion_tokens` for Chat Completions, but the live API
 accepts either and also tolerates both being present (which is what this
-skill sends, since the client always sets `max_tokens`). Keep the two
-`extra_body` and top-level values in sync if you change `max_tokens`.
-MiniMax ignores `presence_penalty` and `frequency_penalty`, which is why
-neither appears here.
+skill sends, since the client always sets `max_tokens`). The MiniMax example
+carries `max_completion_tokens` in `extra_body` to match the docs; keep it in
+sync with the top-level `max_tokens` if you change the budget. MiniMax
+ignores `presence_penalty` and `frequency_penalty`, which is why neither
+appears here.
 
-## Known caveat: the sglang-only `thinking` key is also sent
+## Known caveat: the sglang-only `thinking` field is still sent
 
-`thinking` (the provider-block field, not the `extra_body` one) maps to
-sglang's `chat_template_kwargs.enable_thinking`, which neither hosted API
-reads. It cannot currently be suppressed: `PROVIDER_DEFAULTS` sets it for
+The provider-block `thinking` field (distinct from any `extra_body` entry)
+maps to sglang's `chat_template_kwargs.enable_thinking`, which neither hosted
+API reads. It cannot currently be suppressed: `PROVIDER_DEFAULTS` sets it for
 every job and `client.chat` sends it whenever the key is non-`null`, so
-every request to a hosted provider carries
-`chat_template_kwargs: {"enable_thinking": false}` regardless.
+every request carries `chat_template_kwargs` regardless of what the overlay
+says.
 
-Both APIs ignore unknown body fields — verified live on the exact request
-bodies these examples produce — so it is harmless in practice. If a provider
-ever rejects it with a strict 400, the fix is to make `thinking` opt-in in
-`_with_defaults` instead of defaulted.
-
-Setting the provider-block `thinking: false` remains meaningful for a **local
-sglang server**, where it is what stops reasoning from eating the budget.
+This is harmless — both APIs ignore unknown body fields, verified live on the
+exact request bodies these examples produce — and it is also inert for the
+reasoning these models do perform, which is controlled server-side by their
+own parameters. Setting the provider-block `thinking: false` remains
+meaningful for a **local sglang server**, where it is what stops reasoning
+from eating the budget.
 
 ## Mixing the two providers
 
@@ -98,12 +122,12 @@ Nothing prevents mixing them — point one job at each:
 {
   "providers": {
     "translator": { "base_url": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.3",
-                    "api_key_env": "ZAI_API_KEY",
-                    "extra_body": { "thinking": { "type": "disabled" } } },
+                    "api_key_env": "ZAI_API_KEY", "max_tokens": 65536 },
     "annotator":  { "base_url": "https://api.minimax.io/v1", "model": "MiniMax-M3",
-                    "api_key_env": "MINIMAX_API_KEY",
-                    "extra_body": { "thinking": { "type": "disabled" } } }
-  }
+                    "api_key_env": "MINIMAX_API_KEY", "max_tokens": 65536,
+                    "extra_body": { "max_completion_tokens": 65536 } }
+  },
+  "translate_max_output_tokens": 65536
 }
 ```
 

@@ -6,10 +6,7 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 1.0,
       "top_p": 0.95,
-      "max_tokens": 16384,
-      "extra_body": {
-        "thinking": { "type": "disabled" }
-      }
+      "max_tokens": 65536
     },
     "glossary": {
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -17,10 +14,7 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
-      "max_tokens": 8192,
-      "extra_body": {
-        "thinking": { "type": "disabled" }
-      }
+      "max_tokens": 65536
     },
     "reviewer": {
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -28,10 +22,7 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.2,
       "top_p": 0.95,
-      "max_tokens": 8192,
-      "extra_body": {
-        "thinking": { "type": "disabled" }
-      }
+      "max_tokens": 65536
     },
     "annotator": {
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -39,10 +30,7 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
-      "max_tokens": 8192,
-      "extra_body": {
-        "thinking": { "type": "disabled" }
-      }
+      "max_tokens": 65536
     },
     "recap": {
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -50,10 +38,7 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
-      "max_tokens": 8192,
-      "extra_body": {
-        "thinking": { "type": "disabled" }
-      }
+      "max_tokens": 65536
     },
     "profile": {
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -61,10 +46,7 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
-      "max_tokens": 8192,
-      "extra_body": {
-        "thinking": { "type": "disabled" }
-      }
+      "max_tokens": 65536
     },
     "consensus": {
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -72,12 +54,9 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
-      "max_tokens": 8192,
-      "extra_body": {
-        "thinking": { "type": "disabled" }
-      }
+      "max_tokens": 65536
     }
   },
-  "translate_max_output_tokens": 8192,
+  "translate_max_output_tokens": 65536,
   "max_attempts": 3
 }
