@@ -30,6 +30,18 @@ Defaults, key names, exit codes, flags, console output, or schemas that
 changed in code must be propagated to the matching docs. If code changed, run
 `uv run tests/run_all.py` and make it pass before calling the task done.
 
+## Provider routing: quality outranks quota cost
+
+The maintainer holds paid Z.AI and MiniMax coding plans and has stated that
+output QUALITY is the priority — token/credit cost is explicitly not a
+constraint. Do not "optimize" a working provider setup by collapsing a
+multi-model consensus fan-out back to a single block, demoting the
+`consensus` synthesizer to a cheaper model, or trimming `max_tokens`, unless
+asked. Prefer the strongest model per job and more candidates where it
+measurably improves output; report cost as a factor, not as a recommendation
+to downgrade. `novel-translator/config.local.EXAMPLES.md` carries the routing
+table, the credit math, and the documented cost model.
+
 ## Config-key or template changes require a new migration
 
 Any change that adds, removes, renames, or re-keys entries in the project
