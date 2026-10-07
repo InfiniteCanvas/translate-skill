@@ -288,21 +288,28 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             raise LLMError(err) from exc
         try:
             choice = payload["choices"][0]
-            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             err = f"unexpected response payload from {url}: {str(payload)[:400]}"
             if meta_hook:
                 meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
             raise LLMError(err) from exc
+        message = choice.get("message") if isinstance(choice, dict) else None
+        # A reasoning model that exhausts its budget returns finish_reason
+        # "length" with `content` ABSENT rather than empty -- reasoning_content
+        # is the only populated field. Read it with .get() so that shape falls
+        # through to the empty-content diagnostic below, which names the real
+        # cause, instead of being misreported as a malformed payload.
+        content = message.get("content") if isinstance(message, dict) else None
         # Servers without a reasoning parser may inline a leading <think>
         # block into content; strip it before the empty-content check.
         if isinstance(content, str):
             content = _THINK_BLOCK_RE.sub("", content, count=1)
         if not isinstance(content, str) or not content.strip():
-            message = choice["message"]
             reasoning = message.get("reasoning_content") if isinstance(message, dict) else None
-            hint = (" (reasoning_content present - set providers.<job>.thinking=false so the "
-                    "output budget goes to the answer)") if reasoning else ""
+            hint = (" (reasoning_content present - the budget went to thinking: lower "
+                    "providers.<job>.extra_body.reasoning_effort for a hosted reasoning "
+                    "model, or set providers.<job>.thinking=false for a local sglang "
+                    "server)") if reasoning else ""
             err = f"empty completion content from {url}{hint}"
             if meta_hook:
                 meta_hook(_response_meta(

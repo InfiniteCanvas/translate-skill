@@ -17,6 +17,14 @@ retry budget with backoff like 429/5xx, and raises LLMError when the
 budget is gone. Two consecutive guided-400s raise on the second -- the pop
 disarms the fallback, so there is no loop.
 
+chat()'s empty-completion branch has to tell two shapes apart. A reasoning
+model that exhausts its budget (MiniMax-M3.1-Flash-Preview with an
+unbounded reasoning_effort) returns finish_reason "length" with `content`
+ABSENT rather than empty -- reasoning_content is the only populated field.
+That is a budget problem, not a malformed payload, so it must reach the
+empty-content diagnostic naming the knob to turn down. Only a payload
+missing `choices` entirely is genuinely malformed.
+
 Hermetic: client.requests is swapped for a fake module object whose get()/
 post() count calls and answer from a scripted queue, and client.time for a
 stand-in whose sleep() is recorded instead of waited (the file's
@@ -416,6 +424,68 @@ def case_6_guided_400_no_loop() -> None:
         client.requests = orig
 
 
+def case_7_absent_content_vs_malformed() -> None:
+    """A reasoning model that exhausts its budget returns finish_reason
+    "length" with `content` ABSENT (not empty) and reasoning_content as the
+    only populated field -- the shape MiniMax-M3.1-Flash-Preview sends. That
+    must reach the empty-content diagnostic naming the budget knob, NOT the
+    malformed-payload message. A payload with no choices at all is still
+    malformed and still says so."""
+    # content key absent entirely, reasoning_content present
+    absent = {"choices": [{"message": {"role": "assistant",
+                                       "reasoning_content": "still planning..."},
+                           "finish_reason": "length"}],
+              "usage": {"completion_tokens": 65536,
+                        "completion_tokens_details": {"reasoning_tokens": 65536}}}
+    log, orig = install_post([absent])
+    try:
+        exc = None
+        try:
+            client.chat(PROVIDER, "hello")
+        except client.LLMError as caught:
+            exc = caught
+        check("7a absent content: reports empty completion, not malformed payload",
+              exc is not None and str(exc).startswith("empty completion content from"),
+              f"exc={exc!r}")
+        check("7b absent content: hint names the reasoning budget knob",
+              exc is not None and "reasoning_content present" in str(exc)
+              and "reasoning_effort" in str(exc), f"exc={exc!r}")
+        check("7c absent content: exactly one request, no retry storm",
+              log.n == 1, f"n={log.n}")
+    finally:
+        client.requests = orig
+
+    # no "choices" key at all -> genuinely malformed, still the old message
+    log, orig = install_post([{"id": "x", "object": "chat.completion"}])
+    try:
+        exc = None
+        try:
+            client.chat(PROVIDER, "hello")
+        except client.LLMError as caught:
+            exc = caught
+        check("7d no choices: still reported as an unexpected payload",
+              exc is not None and str(exc).startswith("unexpected response payload from"),
+              f"exc={exc!r}")
+    finally:
+        client.requests = orig
+
+    # content present but empty string -> same diagnostic, not a crash
+    log, orig = install_post([{"choices": [{"message": {"content": "",
+                                                      "reasoning_content": "thinking"},
+                                            "finish_reason": "stop"}]}])
+    try:
+        exc = None
+        try:
+            client.chat(PROVIDER, "hello")
+        except client.LLMError as caught:
+            exc = caught
+        check("7e empty-string content: same budget diagnostic",
+              exc is not None and str(exc).startswith("empty completion content from")
+              and "reasoning_effort" in str(exc), f"exc={exc!r}")
+    finally:
+        client.requests = orig
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -427,6 +497,7 @@ def main() -> int:
     case_4_guided_400_fallback()
     case_5_unrelated_400_retries_then_raises()
     case_6_guided_400_no_loop()
+    case_7_absent_content_vs_malformed()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

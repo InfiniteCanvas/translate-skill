@@ -726,12 +726,21 @@ def case_10_shipped_examples_are_valid() -> None:
         check(f"10 {name}: covers ALL {len(config.PROVIDER_JOBS)} provider jobs",
               not missing, f"jobs left on the default endpoint: {missing}")
 
-        # And every job must leave hosted thinking ON and carry a large budget.
-        # With thinking disabled the model returns empty content (measured live:
-        # reasoning_tokens 48 of a 50-token budget). With it ON, reasoning costs
-        # only ~700-800 tokens on a normal chapter and ~7.9k on a heavy
-        # translator's-note prompt, so the budget must clear that with room to
-        # spare -- 64k, verified accepted by both live APIs.
+        # Reasoning-budget invariants, each measured live against the APIs.
+        #
+        #  * MiniMax-M3 has no depth knob: reasoning_effort is silently
+        #    IGNORED by it. Left on, it inlines a <think> block into content
+        #    and spends the entire cap thinking (4096/4096 tokens,
+        #    finish_reason=length, 30s, no answer). The only thing that stops
+        #    it is extra_body.thinking.type=disabled, which answers directly
+        #    in 42s. So M3 blocks MUST disable thinking.
+        #  * MiniMax-M3.1-Flash-Preview rejects thinking:disabled with HTTP 400
+        #    ("requires adaptive thinking"), so it must stay ON and have its
+        #    depth pinned via reasoning_effort instead. Omitted means the
+        #    server default `max`, which is non-terminating on a real chapter:
+        #    measured 19m51s and zero content. `high`/`xhigh` complete it.
+        #  * Both models also ignore chat_template_kwargs.enable_thinking, so
+        #    a block relying on that is unprotected either way.
         jobs = overlay.get("providers", {})
 
         # Providers may be a single block dict or an array of blocks (the
@@ -744,13 +753,47 @@ def case_10_shipped_examples_are_valid() -> None:
                 return [b for b in job_value if isinstance(b, dict)]
             return []
 
-        no_disable = sorted(job for job, value in jobs.items()
-                            for block in _blocks(value)
-                            if (block.get("extra_body", {})
-                                .get("thinking", {})
-                                .get("type")) == "disabled")
-        check(f"10 {name}: thinking is left ON (no thinking:disabled)",
-              not no_disable, f"jobs with thinking disabled: {no_disable}")
+        def _labelled(job, block):
+            return f"{job}[{block.get('model', '?')}]"
+
+        unbounded_m3 = sorted(
+            _labelled(job, block)
+            for job, value in jobs.items()
+            for block in _blocks(value)
+            if block.get("model") == "MiniMax-M3"
+            and (block.get("extra_body", {})
+                 .get("thinking", {}).get("type")) != "disabled")
+        check(f"10 {name}: MiniMax-M3 blocks disable thinking",
+              not unbounded_m3,
+              f"MiniMax-M3 blocks left thinking on: {unbounded_m3}")
+
+        BOUNDED = {"low", "medium", "high", "xhigh", "max"}
+        unpinned_flash = sorted(
+            _labelled(job, block)
+            for job, value in jobs.items()
+            for block in _blocks(value)
+            if block.get("model") == "MiniMax-M3.1-Flash-Preview"
+            and (block.get("extra_body", {})
+                 .get("reasoning_effort")) not in BOUNDED)
+        check(f"10 {name}: Flash-Preview blocks pin reasoning_effort explicitly",
+              not unpinned_flash,
+              f"Flash-Preview blocks with no valid reasoning_effort: {unpinned_flash}")
+
+        # `max` is only safe when the cap can hold the reasoning it produces:
+        # at 65536 it does NOT converge (19m51s, finish_reason=length, no
+        # content key at all), at 256000 it converged on every measured run.
+        # So pinning `max` while leaving the old budget would reproduce the
+        # original 20-minute failure -- require the large cap to go with it.
+        underbudgeted = sorted(
+            _labelled(job, block)
+            for job, value in jobs.items()
+            for block in _blocks(value)
+            if block.get("model") == "MiniMax-M3.1-Flash-Preview"
+            and (block.get("extra_body", {}).get("reasoning_effort")) == "max"
+            and int(block.get("max_tokens", 0)) < 131072)
+        check(f"10 {name}: Flash-Preview blocks on `max` carry a >=131072 cap",
+              not underbudgeted,
+              f"`max` effort under a cap that cannot hold it: {underbudgeted}")
 
         small = sorted(f"{job}[{i}]" for job, value in jobs.items()
                        for i, block in enumerate(_blocks(value))
@@ -758,9 +801,21 @@ def case_10_shipped_examples_are_valid() -> None:
         check(f"10 {name}: every block carries the 64k output budget",
               not small, f"blocks below 65536 max_tokens: {small}")
 
-        check(f"10 {name}: translate_max_output_tokens is 64k",
-              overlay.get("translate_max_output_tokens") == 65536,
-              f"got {overlay.get('translate_max_output_tokens')!r}")
+        # translate_max_output_tokens is the per-call cap TRANSLATE actually
+        # sends (it overrides every block's own max_tokens) and it also drives
+        # chunk packing. If it exceeds the SMALLEST translator block's
+        # max_tokens, pipeline._warn_token_cap fires and the escalated
+        # corrective retry cannot raise the cap past that block -- so the two
+        # must agree. 65536 is the floor; the cap is a tuning choice above it.
+        max_out = overlay.get("translate_max_output_tokens")
+        translator_blocks = _blocks(jobs.get("translator"))
+        smallest = min((int(b.get("max_tokens", 0))
+                        for b in translator_blocks), default=0)
+        check(f"10 {name}: translate_max_output_tokens agrees with translator blocks",
+              isinstance(max_out, int) and max_out >= 65536
+              and smallest >= max_out,
+              f"translate_max_output_tokens={max_out!r} "
+              f"smallest translator max_tokens={smallest}")
 
 
 def main() -> int:

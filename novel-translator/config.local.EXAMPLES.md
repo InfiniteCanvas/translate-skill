@@ -43,19 +43,32 @@ projects pick it up at `init`; existing ones take it via `sync-config`.
 | `top_k` | int | `top_k` | Sent only when non-`null`. `-1` legitimately means "disabled". |
 | `max_tokens` | int | `max_tokens` | Always sent. |
 | `repetition_penalty` | number | `repetition_penalty` | Sent only when non-`null`. |
-| `thinking` | bool | `chat_template_kwargs.enable_thinking` | **sglang-specific.** See the caveat below. |
+| `thinking` | bool | `chat_template_kwargs.enable_thinking` | **sglang-specific — ignored by hosted APIs.** See "Reasoning budget" below; hosted reasoning is bounded with `extra_body`. |
 | `extra_body` | object | merged verbatim | Escape hatch for provider-specific parameters. Merged after the known knobs, so it can override them. |
 
 Top-level keys used here: `providers` (the map above) plus
 `translate_max_output_tokens` (per-chapter cap the pipeline passes to the
 translator call) and `max_attempts` (retries per LLM call).
 
-## Thinking is ON, and why the budget is 64k
+## Thinking, and how big the budget needs to be
 
-Both examples leave thinking **enabled** — the sglang-only `thinking` field is
-not set to false, and neither is `extra_body.thinking`. Reasoning is worth
-having for consistency-critical translation work; the problem is only that
-reasoning and answer share one `max_tokens` ceiling.
+Reasoning is worth having for consistency-critical translation work; the
+problem is that reasoning and answer share one `max_tokens` ceiling. How you
+keep the ceiling from being consumed depends on the model:
+
+- **Z.AI `glm-5.3`** — leave thinking on. It reasons ~700–800 tokens on a
+  normal chapter and ~7.9k on a heavy translator's-notes prompt, so it
+  converges well inside any of these caps.
+- **`MiniMax-M3`** — thinking **must** be disabled (`extra_body.thinking.type`).
+  It has no depth knob and would otherwise spend the entire cap thinking.
+- **`MiniMax-M3.1-Flash-Preview`** — thinking **cannot** be disabled (HTTP
+  400); depth is bounded with `extra_body.reasoning_effort` instead.
+
+Both MiniMax blocks in the mixed file set `reasoning_effort`; the MiniMax-only
+file sets `extra_body.thinking.type: "disabled"`. The sglang-only `thinking`
+field is never what turns reasoning off on a hosted model. Full mechanics,
+measured tables, and the three HTTP 400 constraints are in **Reasoning budget**
+below — read that before changing a cap or copying a provider block.
 
 Measured live on the actual APIs with a real chapter passage, thinking ON:
 
@@ -65,20 +78,25 @@ Measured live on the actual APIs with a real chapter passage, thinking ON:
 | Z.AI glm-5.3, plain translate | 65,536 | 843 | 718 | 554 ch ✅ |
 | Z.AI glm-5.3, translate + cultural notes | 65,536 | 9,385 | 7,880 | 6,101 ch ✅ |
 
-So reasoning costs roughly **700–800 tokens** on a normal chapter and about
-**7.9k** on a heavy translator's-notes prompt — the second being the case
-that overruns the stock 8,192 cap and truncates. `65536` is accepted by both
-APIs and leaves wide headroom for GLM's tendency to overthink.
+So GLM's reasoning costs roughly **700–800 tokens** on a normal chapter and
+about **7.9k** on a heavy translator's-notes prompt — the second being the case
+that overruns the stock 8,192 cap and truncates.
 
 Two consequences worth knowing:
 
-- `translate_max_output_tokens` must match. It is the per-call cap the
-  TRANSLATE stage actually sends, and it also drives chapter packing
-  (`floor(0.8 × cap) − 256`), so a bigger cap means longer chapters pack into
-  fewer parts and fewer calls. Setting provider `max_tokens` alone would NOT
-  raise it — the pipeline would still send 8,192.
-- A runaway think now has 64k to burn instead of failing fast at 8k. That is
-  the deliberate trade: a truncated translation is worse than a slow one.
+- `translate_max_output_tokens` must match the translator blocks. It is the
+  per-call cap the TRANSLATE stage actually sends, it **overrides each block's
+  own `max_tokens`**, and it also drives chapter packing
+  (`floor(0.8 × cap) − 256`). Setting provider `max_tokens` alone would NOT
+  raise it — the pipeline would still send 8,192. The mixed file sets all three
+  (`max_tokens`, `max_completion_tokens`, `translate_max_output_tokens`) to
+  256000 so the `max`-depth reasoning has room to converge; the others stay at
+  64k, which is ample for GLM and for the smaller jobs.
+- More budget delays truncation but does not prevent exhaustion. For GLM that
+  is the right trade — bounded reasoning, so a runaway still converges. For
+  MiniMax an unbounded think can consume any budget and return no translation
+  at all, so the cap has to be large enough for the chosen
+  `reasoning_effort`; 65,536 is not enough for `max`, 256,000 is.
   `max_attempts` bounds retries.
 
 MiniMax inlines its reasoning as `<think>…</think>` inside `content` when
@@ -102,21 +120,121 @@ sync with the top-level `max_tokens` if you change the budget. MiniMax
 ignores `presence_penalty` and `frequency_penalty`, which is why neither
 appears here.
 
-## Known caveat: the sglang-only `thinking` field is still sent
+## Reasoning budget: the one setting that actually matters
 
-The provider-block `thinking` field (distinct from any `extra_body` entry)
-maps to sglang's `chat_template_kwargs.enable_thinking`, which neither hosted
-API reads. It cannot currently be suppressed: `PROVIDER_DEFAULTS` sets it for
-every job and `client.chat` sends it whenever the key is non-`null`, so
-every request carries `chat_template_kwargs` regardless of what the overlay
-says.
+**The provider-block `thinking` field does NOT control hosted-model
+reasoning.** It maps to sglang's `chat_template_kwargs.enable_thinking`,
+which both hosted APIs ignore. `PROVIDER_DEFAULTS` sets it for every job and
+`client.chat` sends it whenever the key is non-`null`, so every request
+carries `chat_template_kwargs` regardless of the overlay. That is harmless —
+both APIs ignore unknown body fields — but it is inert for hosted reasoning,
+which is controlled by different parameters. The provider-block `thinking:
+false` remains meaningful only for a **local sglang server**.
 
-This is harmless — both APIs ignore unknown body fields, verified live on the
-exact request bodies these examples produce — and it is also inert for the
-reasoning these models do perform, which is controlled server-side by their
-own parameters. Setting the provider-block `thinking: false` remains
-meaningful for a **local sglang server**, where it is what stops reasoning
-from eating the budget.
+Do not trust a smoke test here: a trivial prompt appears to show
+`chat_template_kwargs` working (reasoning drops to zero), while a real chapter
+prompt reasons at full depth regardless. That discrepancy hid a 20-minute
+per-call failure before it was caught.
+
+### `MiniMax-M3.1-Flash-Preview`: bound depth with `reasoning_effort`
+
+Thinking **cannot be switched off** on this model. All three attempts are
+hard-rejected with HTTP 400: `thinking: {"type": "disabled"}` (*"requires
+adaptive thinking"*), `reasoning_effort: "none"`, and `reasoning_split: false`
+(*"requires reasoning_split=true"*). `reasoning_split` is an output-format
+switch anyway — it does not enable or disable thinking.
+
+The knob is `reasoning_effort` (`low` | `medium` | `high` | `xhigh` | `max`),
+and **its default is `max`**. Omit it and every call silently runs at maximum
+depth. Measured live on a real 66-line chapter translation with the
+translator's JSON schema, `temperature` 1.0:
+
+**At a 65,536 cap:**
+
+| `reasoning_effort` | reasoning tokens | wall | result |
+|---|---|---|---|
+| `low` | 35 | 26s | 66 lines ✅ |
+| `medium` | 910 | 36s | 66 lines ✅ |
+| `high` | 1,855 | 51s | 66 lines ✅ |
+| `xhigh` | 9,047 (4,503–9,047 across runs) | 73–143s | 66 lines ✅ |
+| omitted (= `max`) | 65,536, still planning | 19m51s | **nothing** ❌ |
+
+**At a 256,000 cap:**
+
+| `reasoning_effort` | reasoning chars | wall | result |
+|---|---|---|---|
+| **`max`** | 239,573 / 94,736 across runs | 260–578s | 66 lines ✅ |
+| `xhigh` | (unchanged — fits in 64k) | 73–143s | 66 lines ✅ |
+
+The lesson is about **cap, not effort**. `max` is not more thorough, it is
+*longer* — and 65,536 tokens is not long enough to hold it, so the run dies
+still in the planning stage having emitted no `{`. Give `max` a cap that can
+contain its reasoning and it converges every time measured, producing the
+highest-quality output of any setting: terminology table up front, per-line
+drafting, per-line self-review, JSON-safety validation. `xhigh` produces the
+same shape of work at roughly a fifth of the reasoning. Neither `response_format`
+nor `max_completion_tokens` changes any of this.
+
+Because `temperature` is 1.0, reasoning volume varies run to run — `xhigh`
+landed anywhere from 4,503 to 9,047 tokens and `max` from 94,736 to 239,573
+chars. Both completed every time at these caps; the earlier failures were
+cap-bound, not effort-bound.
+
+**The mixed file therefore runs the translator at `max` with a 256,000 cap**
+(`max_tokens`, `max_completion_tokens`, and `translate_max_output_tokens` all
+256000), which is the best measured output quality. The smaller jobs keep
+`xhigh` at 64k — they reason over far less text and stay well clear of the
+cliff at any setting. Drop the translator to `xhigh` if you would rather trade
+some quality for a ~74s call instead of ~5–10min.
+
+Two consequences of raising the translator cap:
+
+- `translate_max_output_tokens` is the per-call cap TRANSLATE actually sends
+  and it **overrides each block's own `max_tokens`**; every translator block
+  must be raised with it or `pipeline._warn_token_cap` fires and the
+  escalated retry cannot raise the cap past the smallest block.
+- It also drives chapter packing at `floor(0.8 × cap) − 256` — about 52k
+  characters per part at 64k, **about 200k at 256k**. A chapter that
+  previously split now translates in one call. That is fine for typical
+  chapters (the measured one was ~8k characters) but means an unusually large
+  chapter is no longer split at all.
+
+Small jobs and the retry bound are unchanged: `glossary`, `recap`, `profile`
+and `annotator` stay at 64k, and `max_attempts` still bounds retries.
+
+### `MiniMax-M3`: use `thinking`, and note the different failure shape
+
+`reasoning_effort` is **ignored** by `MiniMax-M3` — verified live: setting it
+to `xhigh` behaves identically to omitting it (same runaway). M3 accepts
+`thinking: {"type": "disabled"}`, which does work and answers directly, so the
+MiniMax-only example file uses that instead.
+
+M3 also fails differently: with `reasoning_split` unset it inlines thinking
+into `content` as `<think>…</think>`, so the budget is consumed by a think
+block that sits in the answer text rather than in a separate field.
+`lib/client.py` strips a leading think block before the empty-content check,
+so this never reaches the translated chapter — verified by translating a
+chapter end-to-end with the output checked for tags.
+
+Because M3 cannot bound its reasoning depth, **use `MiniMax-M3.1-Flash-Preview`
+when you want deep thinking**; use M3 when you want a reliable direct answer.
+
+### When the budget does run out
+
+A reasoning model that exhausts its budget returns `finish_reason: "length"`
+with `content` **absent** — not empty — and `reasoning_content` as the only
+populated field. `lib/client.py` reads it with `.get()` so that shape reaches
+the empty-content diagnostic, which names the real cause:
+
+```
+empty completion content from <url> (reasoning_content present - the budget
+went to thinking: lower providers.<job>.extra_body.reasoning_effort for a
+hosted reasoning model, or set providers.<job>.thinking=false for a local
+sglang server)
+```
+
+Do not let this read as a malformed-payload or schema error. If you see it on a
+hosted model, the answer is depth, not decoding.
 
 ## Routing a two-plan setup
 

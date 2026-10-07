@@ -513,7 +513,12 @@ background build too. Builds produce no git commits — `export/`,
   card — quality across temperatures is subjective; the user tunes this).
   A per-provider `thinking` flag defaults to false (sglang
   `chat_template_kwargs.enable_thinking`) so hybrid-thinking models spend
-  the output budget on the answer. Hosted providers authenticate with
+  the output budget on the answer. That field is **sglang-only** — hosted
+  APIs ignore it, so a hosted reasoning model still thinks at full depth
+  and can burn the whole budget without answering. Bound it in
+  `extra_body` instead (`reasoning_effort`, or `thinking: {type:
+  "disabled"}` where supported); see `config.local.EXAMPLES.md`.
+  Hosted providers authenticate with
   `api_key_env` (environment variable name) or `api_key` on the provider
   block.
 - **Templates are per project** (`templates/`). Tuning a prompt for a

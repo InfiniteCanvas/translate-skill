@@ -7,7 +7,7 @@
         "api_key_env": "ZAI_API_KEY",
         "temperature": 1.0,
         "top_p": 0.95,
-        "max_tokens": 65536
+        "max_tokens": 256000
       },
       {
         "base_url": "https://api.minimax.io/v1",
@@ -15,9 +15,10 @@
         "api_key_env": "MINIMAX_API_KEY",
         "temperature": 1.0,
         "top_p": 0.95,
-        "max_tokens": 65536,
+        "max_tokens": 256000,
         "extra_body": {
-          "max_completion_tokens": 65536
+          "max_completion_tokens": 256000,
+          "reasoning_effort": "max"
         }
       }
     ],
@@ -54,7 +55,8 @@
         "top_p": 0.95,
         "max_tokens": 65536,
         "extra_body": {
-          "max_completion_tokens": 65536
+          "max_completion_tokens": 65536,
+          "reasoning_effort": "xhigh"
         }
       }
     ],
@@ -83,6 +85,6 @@
       "max_tokens": 65536
     }
   },
-  "translate_max_output_tokens": 65536,
+  "translate_max_output_tokens": 256000,
   "max_attempts": 3
 }

@@ -684,7 +684,13 @@ to exit`; details land in
 - `thinking` per provider (default false) maps to sglang
   `chat_template_kwargs.enable_thinking`; set true per job for
   hybrid-thinking experiments. Symptom of thinking-on: ~minutes-long
-  calls returning empty content.
+  calls returning empty content. This flag is **sglang-only and is ignored
+  by hosted providers** — a hosted reasoning model (e.g. MiniMax
+  `M3.1-Flash-Preview`) thinks at full depth regardless and can spend an
+  entire 64k budget without emitting a single character. Bound it through
+  `extra_body` instead: `reasoning_effort` (default is `max`, which is
+  non-terminating on a full chapter), or `thinking: {type: "disabled"}`
+  for models that accept it. See `config.local.EXAMPLES.md`.
 - Hosted providers: any job can point at a 3rd-party OpenAI-compatible
   endpoint (e.g. put `reviewer` on GLM via `base_url`/`model`) with
   `api_key_env` (name of an environment variable holding the key --

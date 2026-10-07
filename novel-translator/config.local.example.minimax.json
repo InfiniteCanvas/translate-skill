@@ -8,7 +8,8 @@
       "top_p": 0.95,
       "max_tokens": 65536,
       "extra_body": {
-        "max_completion_tokens": 65536
+        "max_completion_tokens": 65536,
+        "thinking": {"type": "disabled"}
       }
     },
     "glossary": {
@@ -19,7 +20,8 @@
       "top_p": 0.95,
       "max_tokens": 65536,
       "extra_body": {
-        "max_completion_tokens": 65536
+        "max_completion_tokens": 65536,
+        "thinking": {"type": "disabled"}
       }
     },
     "reviewer": {
@@ -30,7 +32,8 @@
       "top_p": 0.95,
       "max_tokens": 65536,
       "extra_body": {
-        "max_completion_tokens": 65536
+        "max_completion_tokens": 65536,
+        "thinking": {"type": "disabled"}
       }
     },
     "annotator": {
@@ -41,7 +44,8 @@
       "top_p": 0.95,
       "max_tokens": 65536,
       "extra_body": {
-        "max_completion_tokens": 65536
+        "max_completion_tokens": 65536,
+        "thinking": {"type": "disabled"}
       }
     },
     "recap": {
@@ -52,7 +56,8 @@
       "top_p": 0.95,
       "max_tokens": 65536,
       "extra_body": {
-        "max_completion_tokens": 65536
+        "max_completion_tokens": 65536,
+        "thinking": {"type": "disabled"}
       }
     },
     "profile": {
@@ -63,7 +68,8 @@
       "top_p": 0.95,
       "max_tokens": 65536,
       "extra_body": {
-        "max_completion_tokens": 65536
+        "max_completion_tokens": 65536,
+        "thinking": {"type": "disabled"}
       }
     },
     "consensus": {
@@ -74,7 +80,8 @@
       "top_p": 0.95,
       "max_tokens": 65536,
       "extra_body": {
-        "max_completion_tokens": 65536
+        "max_completion_tokens": 65536,
+        "thinking": {"type": "disabled"}
       }
     }
   },
