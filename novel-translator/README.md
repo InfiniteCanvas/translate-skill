@@ -117,7 +117,17 @@ through uv automatically):
    version stamp untouched; a missing repository is backfilled), so
    `migrate --force` refreshes stale
    templates on current projects too. Each applied step is committed
-   once it lands (`migrate: vNNN <description>`). The newest step, v009,
+   once it lands (`migrate: vNNN <description>`). The newest step, v012,
+   **rewrites nothing** (DESCRIPTION: `decouple translate_max_output_tokens
+   from provider max_tokens (the key is now a ceiling a block can lower, not
+   an override; report mismatched translator pairs)`). It reads the raw config
+   and reports: where `translate_max_output_tokens` exceeds the tightest
+   `providers.translator` block, the block now wins as a hard ceiling and
+   chapters pack to the block instead — so a chapter already mid-translation
+   re-packs and restarts, and the line says so and tells you which number to
+   change. It rewrites nothing because a resolution-rule change has no
+   old-default sentinel to match on the way v009 had: neither number is wrong,
+   they just no longer mean the same thing. Before it, v009
    raises the translation output budget (DESCRIPTION: `raise the
    translation output budget to 64k (translate_max_output_tokens
    8192->65536 and provider max_tokens 16384->65536, together)`):
@@ -719,13 +729,18 @@ to exit`; details land in
 - Thresholds: `min_term_coverage` (advisory usage floor; a term with >= 2
   source occurrences and zero renderings becomes a drift signal for the
   FAITH reviewer), `tn_gap_chapters`, `max_attempts`,
-  `translate_max_output_tokens` (per-call output cap and the packing
+  `translate_max_output_tokens` (the per-call output CEILING and the packing
   budget: the whole chapter goes in one call while its expected output
-  fits `floor(0.8 × translate_max_output_tokens) − 256`, and longer
-  chapters split into parts that each fit that budget; a
-  truncating part retries once at ~1.5x, capped by the smallest
-  `max_tokens` across the translator's blocks (the minimum governs
-  packing and retries so no model in the array truncates its part); a
+  fits `floor(0.8 × pack_cap) − 256`, and longer
+  chapters split into parts that each fit that budget. Since v012
+  `pack_cap` is `min(ceiling, the smallest max_tokens across the translator's
+  blocks)`, so no model in the array truncates its part, and each block is SENT
+  `min(ceiling, its own max_tokens)` — a block's `max_tokens` is a hard
+  provider limit the pipeline may lower but never raise, so a block below the
+  ceiling wins and that is a supported configuration, not a defect; a
+  truncating part retries once at `max(ceiling, ~1.5x pack_cap)` bounded by the
+  smallest block, which never drops below the first attempt's cap; a translator
+  block below 8192 cannot be packed into at all and warns; a
   single line too big for even that fails fast with
   feedback to split or shorten it), `style_sample_chapters` / `style_sample_chars`
   (only used by `--style auto`), `contextual_glossary_cap`.

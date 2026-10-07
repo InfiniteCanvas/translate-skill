@@ -29,11 +29,12 @@ contains exactly one glossary_cleanup event with chapter
 term"}], kept == []; and the manifest marks the chapter translated.
 
 Three further run_chapter cases share the harness: the truncating-chunk
-escalation (a provider max_tokens far below translate_max_output_tokens --
-the corrective retry after a cut mid-JSON response goes out at max_out,
-never at the smaller provider cap, and the below-provider-cap config warn
-prints exactly once across a multi-chapter run; pipeline._escalated_cap is
-additionally checked directly); the zero-line source guard (a source
+escalation (a translator block below translate_max_output_tokens -- the
+supported ceiling-binding shape since v012, where the corrective retry must
+still go out at the ceiling and never below the first attempt; the once-per-run
+config note prints exactly once across a multi-chapter run, and
+pipeline._escalated_cap is additionally checked directly, including the
+de-escalation regression); the zero-line source guard (a source
 chapter with no body content is marked needs-review with the warn line and
 NO LLM interaction, instead of assembling a content-free translation); and
 the post-assemble manifest save guard (a PermissionError on that save
@@ -306,18 +307,25 @@ def make_cap_project(root: Path, name: str) -> Path:
 
 def case_truncated_retry_cap() -> None:
     """The corrective retry for a TRUNCATED chunk never re-sends at a
-    smaller cap than the first attempt, and the below-provider-cap config
-    warn prints exactly once across a multi-chapter run. The provider
-    max_tokens (100) sits far below translate_max_output_tokens (the default):
-    the first TRANSLATE response is cut mid-JSON, the retry must go out at
-    max_out (escalated >= max_out), and chapter 2's run must not repeat the
-    warn. _escalated_cap is additionally checked directly. The expected text
-    interpolates config.DEFAULTS rather than hardcoding 8192, so raising the
-    default (v009) cannot silently strand this check."""
+    smaller cap than the first attempt, and the once-per-run config note
+    prints exactly once across a multi-chapter run.
+
+    The fixture is the real-world shape: a translator array whose tightest
+    block (128000) sits below translate_max_output_tokens (256000). Since v012
+    that is a SUPPORTED configuration, not a defect -- the block's own limit
+    wins for SIZING while the ceiling is still what gets sent, so
+    client.chat lowers it per block.
+
+    The trap this case exists to catch: escalated used to be computed from the
+    packing cap, so with the ceiling binding it collapsed to 128000 and the
+    retry went out at HALF the first attempt's cap -- verbatim the self-harm
+    v009 was written to prevent. The first TRANSLATE response is cut
+    mid-JSON; the retry must go out at the same 256000, never lower."""
     with tempfile.TemporaryDirectory() as td:
         proj = make_cap_project(Path(td), "proj")
         cfg = config.load_config(proj)
-        cfg["providers"]["translator"][0]["max_tokens"] = 100
+        cfg["translate_max_output_tokens"] = 256000
+        cfg["providers"]["translator"][0]["max_tokens"] = 128000
         # _run_path is process-global and pins the FIRST project that logs;
         # reset it so this sandbox's logs/ owns the run's trace.
         logger._run_path = None
@@ -355,30 +363,44 @@ def case_truncated_retry_cap() -> None:
         finally:
             pipeline._chat = orig
 
-        warn = ("[warn] config: providers.translator.max_tokens (100) is "
-                f"below translate_max_output_tokens "
-                f"({config.DEFAULTS['translate_max_output_tokens']}) - retries "
-                "cannot raise the output cap")
+        note = ("[info] config: translation output cap is 128000, not "
+                "translate_max_output_tokens (256000) - the tightest "
+                "providers.translator block caps it there; chapters pack to "
+                "128000")
         check("5a cap: both chapters translate",
               exc1 is None and outcome1 == "translated"
               and exc2 is None and outcome2 == "translated",
               f"outcomes={outcome1}/{outcome2} exc={exc1!r}/{exc2!r}")
-        max_out = config.DEFAULTS["translate_max_output_tokens"]
-        check("5b cap: truncated first response retried at max_out, not the "
-              "smaller provider cap",
-              calls == [max_out, max_out, max_out], f"calls={calls}")
-        check("5c cap: warn prints once across the two-chapter run",
-              out1.count(warn) == 1 and warn not in out2, f"out1={out1!r}")
-        check("5d cap: helper keeps escalated >= max_out",
-              pipeline._escalated_cap(max_out, 100) == max_out
-              and pipeline._escalated_cap(max_out, max_out * 2)
-              == int(round(max_out * 1.5))
-              and pipeline._escalated_cap(1000, 1200) == 1200
-              and pipeline._escalated_cap(1000, 500) == 1000,
-              f"caps={pipeline._escalated_cap(max_out, 100)},"
-              f"{pipeline._escalated_cap(max_out, max_out * 2)},"
-              f"{pipeline._escalated_cap(1000, 1200)},"
-              f"{pipeline._escalated_cap(1000, 500)}")
+        # The sent cap is the CEILING, not the tightest block. If the pipeline
+        # clamped the shared scalar down to 128000 here, every block would lose
+        # its own headroom -- the uniform clamp, which costs a reasoning model
+        # the budget it needs to converge. client.chat lowers it per block.
+        check("5b cap: sent cap is the ceiling, not the tightest provider cap",
+              calls == [256000, 256000, 256000], f"calls={calls}")
+        check("5c cap: truncated retry never re-sends BELOW the first attempt",
+              len(calls) >= 2 and calls[0] == calls[1],
+              f"first={calls[0] if calls else None} second={calls[1] if len(calls) > 1 else None}")
+        check("5d cap: config note prints once across the two-chapter run",
+              out1.count(note) == 1 and note not in out2, f"out1={out1!r}")
+        # _escalated_cap(pack_cap, provider_max, wire_cap). The FIRST case is
+        # the regression this whole change guards: guard keyed on pack_cap
+        # gives 128000 here, i.e. a retry at HALF the first attempt.
+        check("5e cap: helper never de-escalates below the sent cap",
+              pipeline._escalated_cap(128000, 128000, 256000) == 256000
+              and pipeline._escalated_cap(500, 65536, 500) == 750
+              and pipeline._escalated_cap(1000, 1200, 1000) == 1200
+              and pipeline._escalated_cap(1000, 500, 1000) == 1000,
+              f"caps={pipeline._escalated_cap(128000, 128000, 256000)},"
+              f"{pipeline._escalated_cap(500, 65536, 500)},"
+              f"{pipeline._escalated_cap(1000, 1200, 1000)},"
+              f"{pipeline._escalated_cap(1000, 500, 1000)}")
+        # The shipped default pair must not regress: no ceiling binding, so the
+        # ~1.5x escalation still fires exactly as it did before v012.
+        dflt = config.DEFAULTS["translate_max_output_tokens"]
+        check("5f cap: shipped defaults keep their 1.5x escalation",
+              pipeline._escalated_cap(dflt, config.DEFAULT_MAX_TOKENS, dflt)
+              == dflt,
+              f"default={dflt} esc={pipeline._escalated_cap(dflt, config.DEFAULT_MAX_TOKENS, dflt)}")
 
 
 def make_empty_source_project(root: Path, name: str) -> Path:

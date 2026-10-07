@@ -47,8 +47,10 @@ projects pick it up at `init`; existing ones take it via `sync-config`.
 | `extra_body` | object | merged verbatim | Escape hatch for provider-specific parameters. Merged after the known knobs, so it can override them. |
 
 Top-level keys used here: `providers` (the map above) plus
-`translate_max_output_tokens` (per-chapter cap the pipeline passes to the
-translator call) and `max_attempts` (retries per LLM call).
+`translate_max_output_tokens` (the output CEILING the pipeline asks the
+translator call for; each block is then clamped to its own `max_tokens`, so
+where a block is lower the block wins) and `max_attempts` (retries per LLM
+call).
 
 ## Thinking, and how big the budget needs to be
 
@@ -84,14 +86,17 @@ that overruns the stock 8,192 cap and truncates.
 
 Two consequences worth knowing:
 
-- `translate_max_output_tokens` must match the translator blocks. It is the
-  per-call cap the TRANSLATE stage actually sends, it **overrides each block's
-  own `max_tokens`**, and it also drives chapter packing
-  (`floor(0.8 × cap) − 256`). Setting provider `max_tokens` alone would NOT
-  raise it — the pipeline would still send 8,192. The mixed file sets all three
+- `translate_max_output_tokens` is a **CEILING**, not an override (since v012).
+  Each translator block's `max_tokens` is a hard provider limit the pipeline may
+  lower but never raise, so the value SENT to a block is
+  `min(ceiling, that block's max_tokens)` — computed per block. Setting provider
+  `max_tokens` alone therefore does not raise the sent cap, but it does LOWER it,
+  and where it is lower than the ceiling the block wins and chapters pack to
+  `min(ceiling, smallest block)`. The mixed file sets all three
   (`max_tokens`, `max_completion_tokens`, `translate_max_output_tokens`) to
   256000 so the `max`-depth reasoning has room to converge; the others stay at
-  64k, which is ample for GLM and for the smaller jobs.
+  64k, which is ample for GLM and for the smaller jobs. A block below 8192 cannot
+  be packed into at all.
 - More budget delays truncation but does not prevent exhaustion. For GLM that
   is the right trade — bounded reasoning, so a runaway still converges. For
   MiniMax an unbounded think can consume any budget and return no translation
@@ -116,7 +121,14 @@ docs name `max_completion_tokens` for Chat Completions, but the live API
 accepts either and also tolerates both being present (which is what this
 skill sends, since the client always sets `max_tokens`). The MiniMax example
 carries `max_completion_tokens` in `extra_body` to match the docs; keep it in
-sync with the top-level `max_tokens` if you change the budget. MiniMax
+sync with the block's own `max_tokens` if you change the budget.
+
+**`extra_body` is outside the ceiling clamp.** The client clamps `max_tokens`
+down to the block's declared limit, but `extra_body` merges *after* that and
+wins — so a stale `max_completion_tokens` can push the server-side budget back
+above what the ceiling says. When the two disagree, the request carries both
+keys and MiniMax honors whichever its docs name for the endpoint. Keep them in
+sync by hand; nothing enforces it. MiniMax
 ignores `presence_penalty` and `frequency_penalty`, which is why neither
 appears here.
 
@@ -189,11 +201,13 @@ some quality for a ~74s call instead of ~5–10min.
 
 Two consequences of raising the translator cap:
 
-- `translate_max_output_tokens` is the per-call cap TRANSLATE actually sends
-  and it **overrides each block's own `max_tokens`**; every translator block
-  must be raised with it or `pipeline._warn_token_cap` fires and the
-  escalated retry cannot raise the cap past the smallest block.
-- It also drives chapter packing at `floor(0.8 × cap) − 256` — about 52k
+- `translate_max_output_tokens` is the CEILING TRANSLATE asks for, and every
+  block must be at or above it for that ceiling to be the cap actually in force
+  — below it the block wins (a supported configuration, reported once per run as
+  `[info]`, not an error). Raising the ceiling alone does nothing while a block
+  sits below it.
+- It also drives chapter packing at `floor(0.8 × pack_cap) − 256`, where
+  `pack_cap` is `min(ceiling, smallest translator block)` — about 52k
   characters per part at 64k, **about 200k at 256k**. A chapter that
   previously split now translates in one call. That is fine for typical
   chapters (the measured one was ~8k characters) but means an unusually large
@@ -289,9 +303,10 @@ M3.1-Flash-Preview is the better pick here, with two caveats worth knowing:
   leading think block, so either is safe for the pipeline, but keeping the
   reasoning at the source is better.
 
-Note that `translate_max_output_tokens` and each block's `max_tokens` must
-stay consistent, and with a two-block translator array the SMALLEST block
-`max_tokens` governs packing — here both are 65536, so it is a non-issue.
+Note that with a two-block translator array the SMALLEST block `max_tokens`
+governs both packing and the per-block send — here both are 65536 and the
+ceiling is also 65536, so it is a non-issue. Where they differ, the block wins
+and `translate_max_output_tokens` is not the cap in force.
 
 ## Mixing the two providers
 

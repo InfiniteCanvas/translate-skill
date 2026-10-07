@@ -110,7 +110,14 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     prompt plus all surviving candidates (meta tagged {"job": "consensus",
     "consensus_for": job}). The consensus call reuses the task's json_schema
     and never caps below either the task's explicit max_tokens or the
-    consensus block's own max_tokens.
+    consensus block's own max_tokens -- it is the one call site that passes
+    enforce_ceiling=False to client.chat, so the ceiling clamp that bounds
+    every other call cannot silently shrink a merge below what the surviving
+    candidates need.
+
+    The fan-out candidates themselves ARE clamped by client.chat to their own
+    block's max_tokens, so a task cap above a block's limit can never raise
+    that block past what its provider accepts.
     """
     blocks = config.provider_list(cfg, job)
     if len(blocks) == 1:
@@ -198,10 +205,17 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     # Never below the task's explicit cap (the synthesis must fit what the
     # task's own contract allows) nor the consensus block's declared cap
     # (a deliberately raised/lowered consensus max_tokens must win).
+    # enforce_ceiling=False: this call is the ONE place allowed to exceed its
+    # block's own max_tokens. c_max is already max(task, block), so clamping
+    # it to the consensus block's declared cap would cap a full-chapter merge
+    # at the arbitrator's own budget -- which is routinely smaller than the
+    # candidates it has to merge (see config.local.example.mixed.json:
+    # translator 256000, consensus 65536).
     c_max = max(max_tokens or 0, int(cblock.get("max_tokens") or 0)) or None
     try:
         return client.chat(
             cblock, c_prompt, json_schema=json_schema, max_tokens=c_max,
+            enforce_ceiling=False,
             meta_hook=_trace_hook(project_dir, "consensus",
                                   {"consensus_for": job}, chapter))
     except Exception as exc:  # noqa: BLE001 - degrade, never fail the task

@@ -764,53 +764,126 @@ def _line_output_cost(line: str) -> int:
     return int(cjk * 1.0 + (len(line) - cjk) / 4) + 10
 
 
-# One-shot config-warn state for _warn_token_cap: a multi-chapter run shares
-# one config, so the below-provider-cap warning prints once per process.
+# One-shot config-note state for _note_token_cap: a multi-chapter run shares
+# one config, so the ceiling note prints once per process.
 _TOKEN_CAP_WARNED = False
 
-
-def _escalated_cap(max_out: int, provider_max: int) -> int:
-    """Escalated cap for a truncating chunk's corrective retry: ~1.5x the
-    normal cap, never above the provider's own max_tokens -- and never BELOW
-    the normal cap, which a provider max_tokens under
-    translate_max_output_tokens would otherwise produce (retrying a
-    truncated chunk at a smaller cap guarantees the same truncation)."""
-    return max(max_out, min(int(round(max_out * 1.5)), provider_max))
+# A translator block whose own max_tokens is below this cannot be packed
+# into: room = floor(0.8 * cap) - 256 turns negative under 320, which closes a
+# chunk on every line, and past (256 + per-line cost) _pack_chunks rejects the
+# line outright and the chapter cannot translate at all.
+MIN_TRANSLATOR_MAX_TOKENS = 8192
 
 
-def _warn_token_cap(provider_max: int, max_out: int) -> None:
-    """Print the below-provider-cap config warning exactly once per run."""
+def _escalated_cap(pack_cap: int, provider_max: int, wire_cap: int) -> int:
+    """Escalated cap for a truncating chunk's corrective retry.
+
+    Three inputs, because the pipeline now keeps two caps apart:
+    `pack_cap` sizes chunks, `wire_cap` is the ceiling handed to _chat (which
+    client.chat lowers per block), and `provider_max` is the tightest block's
+    own limit.
+
+    The retry must never go BELOW the first attempt's cap -- retrying a
+    truncated chunk at a smaller cap guarantees the same truncation and burns
+    the attempt. The guard is keyed on `wire_cap`, the value the first attempt
+    actually sent, NOT on `pack_cap`: when the ceiling binds (top level above
+    the tightest block) those two differ, and keying on pack_cap turns a ~1.5x
+    escalation into a halving. `provider_max` still bounds how far the
+    escalation can reach on its own.
+
+    Note that when provider_max <= wire_cap the escalation is a no-op: there is
+    nothing above the ceiling to escalate into, which is correct -- the chunk
+    already fits what every block can return.
+    """
+    return max(wire_cap, min(int(round(pack_cap * 1.5)), provider_max))
+
+
+def _note_token_cap(provider_max: int, wire_cap: int, pack_cap: int) -> None:
+    """Note once per run that the translator ceiling is bound by a block.
+
+    A translator `max_tokens` below `translate_max_output_tokens` is no longer
+    a misconfiguration: the block's own limit simply wins, and chunks are
+    packed to fit it. But the user set the top-level number deliberately, so
+    say once that it is not the number actually in force, and what is.
+    """
     global _TOKEN_CAP_WARNED
-    if _TOKEN_CAP_WARNED or provider_max >= max_out:
+    if _TOKEN_CAP_WARNED or provider_max >= wire_cap:
         return
     _TOKEN_CAP_WARNED = True
-    print(f"[warn] config: providers.translator.max_tokens ({provider_max}) is "
-          f"below translate_max_output_tokens ({max_out}) - retries cannot "
-          "raise the output cap")
+    print(f"[info] config: translation output cap is "
+          f"{provider_max}, not translate_max_output_tokens ({wire_cap}) - "
+          f"the tightest providers.translator block caps it there; chapters "
+          f"pack to {pack_cap}")
 
 
-def _pack_chunks(source_lines: list[str], max_out: int,
-                 escalated: int) -> list[tuple[int, int, int]]:
+def _check_translator_caps(blocks: list, wire_cap: int) -> None:
+    """Warn once per run about two translator caps that cost output quality.
+
+    1. A block below MIN_TRANSLATOR_MAX_TOKENS cannot be packed into at all
+       -- _pack_chunks would fragment the chapter into one line per chunk and
+       then reject lines outright. That is a hard error, not a tuning choice.
+
+    2. A REASONING block that the ceiling lowers below its own declared
+       max_tokens may stop converging. `reasoning_effort` draws from the same
+       budget as the answer, so capping a `high`/`max` model too low can burn
+       the whole cap thinking and return finish_reason=length with no content.
+       This is measured, not hypothetical: Flash-Preview at `max` under a
+       64k cap ran ~19m51s and returned nothing.
+    """
+    low: list[str] = []
+    squeezed: list[str] = []
+    for b in blocks:
+        block_max = int(b.get("max_tokens") or config.DEFAULT_MAX_TOKENS)
+        label = str(b.get("model") or b.get("base_url") or "?")
+        if block_max < MIN_TRANSLATOR_MAX_TOKENS:
+            low.append(f"{label} @ {block_max}")
+        effort = (b.get("extra_body") or {}).get("reasoning_effort")
+        effective = min(wire_cap, block_max)
+        if effort in ("high", "xhigh", "max") and effective < block_max:
+            squeezed.append(f"{label} ({effort}) @ {effective} of {block_max}")
+    if low:
+        print(f"[warn] config: providers.translator max_tokens below "
+              f"{MIN_TRANSLATOR_MAX_TOKENS} - chapters cannot be packed into "
+              f"them: {', '.join(low)}")
+    if squeezed:
+        print(f"[warn] config: translate_max_output_tokens caps a reasoning "
+              f"translator below its own max_tokens, which can stop it "
+              f"converging (reasoning draws from the same budget as the "
+              f"answer): {', '.join(squeezed)}")
+
+
+def _pack_chunks(source_lines: list[str], pack_cap: int, escalated: int,
+                 wire_cap: int) -> list[tuple[int, int, int]]:
     """Greedy per-line token-budget packing of the chapter into chunks.
 
     Chunks are sized by _line_output_cost (the per-line output cost),
-    against budget = floor(0.8 * max_out) -- the 0.8 headroom absorbs
+    against budget = floor(0.8 * pack_cap) -- the 0.8 headroom absorbs
     estimate error -- minus the 256 per-chunk overhead: a chunk closes when
     the next line would overflow that room, and always takes >= 1 line (no
-    empty chunks). A single line whose cost exceeds the whole budget cannot
-    share a chunk with anything (guaranteed truncation at max_out), so it is
-    isolated as a singleton called directly at the escalated cap.
+    empty chunks). `pack_cap` is min(translate_max_output_tokens, the
+    tightest translator block's max_tokens), so a chunk is sized to what
+    EVERY block in the array can return.
 
-    Deterministic given (source_lines, max_out, escalated): the same source
-    and config always reproduce identical bounds, which the feedback slicing
-    (_feedback_section's [lo, hi)) and crash resume both rely on.
+    A single line whose cost exceeds the whole budget cannot share a chunk
+    with anything (guaranteed truncation), so it is isolated as a singleton
+    called directly at the escalated cap.
+
+    `pack_cap` and `wire_cap` are deliberately separate arguments: `pack_cap`
+    is the SIZING budget, while the third tuple element -- the cap actually
+    sent -- comes from `wire_cap`, the shared ceiling that client.chat then
+    lowers per block. Collapsing them into one number is what let a chapter
+    be packed for 256k and sent to a provider that can only return 128k.
+
+    Deterministic given (source_lines, pack_cap, escalated, wire_cap): the
+    same source and config always reproduce identical bounds, which the
+    feedback slicing (_feedback_section's [lo, hi)) and crash resume rely on.
 
     Returns [(lo, hi, first_call_max_tokens), ...] with half-open line
     bounds. Raises ValueError naming the offending line when one line's
     estimated output cannot fit even the escalated cap (the caller turns it
     into normal TRANSLATE attempt feedback -- no LLM call is burned).
     """
-    budget = max_out * 4 // 5  # floor(0.8 * max_out) headroom
+    budget = pack_cap * 4 // 5  # floor(0.8 * pack_cap) headroom
     room = budget - 256
     plan: list[tuple[int, int, int]] = []
     lo = 0
@@ -824,14 +897,14 @@ def _pack_chunks(source_lines: list[str], max_out: int,
                 "split or shorten the line manually"
             )
         if i > lo and cost + c > room:
-            plan.append((lo, i, escalated if cost > budget else max_out))
+            plan.append((lo, i, escalated if cost > budget else wire_cap))
             lo = i
             cost = c
         else:
             cost += c
     if lo < len(source_lines):
         plan.append((lo, len(source_lines),
-                     escalated if cost > budget else max_out))
+                     escalated if cost > budget else wire_cap))
     return plan
 
 
@@ -1241,22 +1314,37 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 # Whole-chapter translation by default: the model sees the
                 # novel's full context, which beats fragmenting it. Only the
                 # OUTPUT is constrained: when the expected translated output
-                # exceeds translate_max_output_tokens, the chapter splits
-                # into token-budget-packed parts (each still carrying style
+                # exceeds the packing budget, the chapter splits into
+                # token-budget-packed parts (each still carrying style
                 # background and the previous part's tail; the numbered-line
                 # protocol and the corrective retry keep the line contract
                 # either way).
+                #
+                # Two caps, not one. `translate_max_output_tokens` is a
+                # CEILING the pipeline asks for; a provider block's own
+                # max_tokens is a CEILING the provider accepts, and it wins
+                # where it is lower (client.chat clamps per block). So:
+                #   pack_cap  = what EVERY block can return -> sizing
+                #   wire_cap  = the shared ceiling -> sent, then lowered per block
                 max_out = int(_cfg_value(cfg, "translate_max_output_tokens"))
+                translator_blocks = config.provider_list(cfg, "translator")
                 # Model arrays: the first block no longer speaks for the
-                # whole job -- pack against the SMALLEST max_tokens across
-                # blocks so no model in the array truncates its part.
+                # whole job -- a block's own max_tokens is a hard limit the
+                # pipeline must not raise, so pack against the SMALLEST across
+                # blocks. A block that omits max_tokens contributes
+                # DEFAULT_MAX_TOKENS, which is deliberate: an omission is
+                # "unset", not "unlimited", and silently treating it as
+                # unlimited would let one forgotten key size the whole job.
                 provider_max = min(
                     int(b.get("max_tokens") or config.DEFAULT_MAX_TOKENS)
-                    for b in config.provider_list(cfg, "translator")
+                    for b in translator_blocks
                 )
-                _warn_token_cap(provider_max, max_out)
-                escalated = _escalated_cap(max_out, provider_max)
-                plan = _pack_chunks(source_lines, max_out, escalated)
+                _check_translator_caps(translator_blocks, wire_cap=max_out)
+                pack_cap = min(max_out, provider_max)
+                _note_token_cap(provider_max, max_out, pack_cap)
+                escalated = _escalated_cap(pack_cap, provider_max, max_out)
+                plan = _pack_chunks(source_lines, pack_cap, escalated,
+                                    max_out)
                 n_chunks = len(plan)
                 src_total = len(source_lines)
                 # Per-chunk persistence (crash resume): validated chunk

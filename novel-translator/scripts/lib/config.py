@@ -34,10 +34,15 @@ DEFAULTS: dict = {
     # (GLM-5.3, MiniMax-M3) draw from THIS SAME budget, measured live at
     # ~700-1300 reasoning tokens for a plain chapter but ~10462 for a
     # translator's-notes prompt -- an overthinking GLM would otherwise hit the
-    # old 8192 ceiling with the answer truncated away. Must stay <= the
-    # translator blocks' max_tokens (pipeline._escalated_cap clamps the
-    # truncation retry to it; a lower value would make the retry smaller than
-    # the attempt it is retrying and guarantee the same failure).
+    # old 8192 ceiling with the answer truncated away.
+    #
+    # This is a CEILING, not an override. A translator block's own max_tokens
+    # is a hard provider limit the pipeline may never raise, and where it is
+    # lower it wins: client.chat clamps the sent cap down per block, and
+    # pipeline packs to min(this, the tightest block) so no model in the array
+    # truncates its part. Setting this above a block's cap is therefore
+    # supported, not a misconfiguration -- it just means the block wins and
+    # this number is not the cap in force.
     "translate_max_output_tokens": 65536,
     # Style-profile generation at init: how many chapters to sample and
     # roughly how many source characters to include in the prompt.
@@ -90,13 +95,15 @@ DEFAULTS: dict = {
 }
 
 DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"
-# Every provider job's max_tokens default. Kept >= DEFAULTS'
-# translate_max_output_tokens on purpose: the truncation-retry cap is
-# min(escalated, min block max_tokens), so a provider default BELOW the
-# translate cap would clamp the corrective retry below the first attempt --
-# the exact defect v009 was written to close. A local server that cannot
-# generate 64k should set its own lower value per project; this is the
-# ceiling, not a request to always emit the maximum.
+# Every provider job's max_tokens default. Used as the `or`-fallback for a
+# block that omits or nulls the key -- provider max_tokens is NOT
+# schema-validated (see references/file-formats.md), and "unset" must mean
+# "this default", never "unlimited": an omission on one translator block
+# otherwise contributes nothing to pipeline's provider_max minimum and lets a
+# single forgotten key size the whole job. It is a fallback, not a clamp --
+# nothing reads it as an upper bound. A local server that cannot generate 64k
+# should set its own lower value per project, but not below
+# pipeline.MIN_TRANSLATOR_MAX_TOKENS, under which chapters cannot be packed.
 DEFAULT_MAX_TOKENS = 65536
 
 # Skill-level settings overlay, copied into every project `init` creates and

@@ -157,10 +157,12 @@ class FakeChat:
     def __call__(self, provider_cfg: dict, prompt: str,
                  json_schema: dict | None = None,
                  max_tokens: int | None = None,
-                 meta_hook=None) -> str:
+                 meta_hook=None,
+                 enforce_ceiling: bool = True) -> str:
         self.calls.append({"block": provider_cfg, "prompt": prompt,
                            "json_schema": json_schema,
                            "max_tokens": max_tokens,
+                           "enforce_ceiling": enforce_ceiling,
                            "meta_hook": meta_hook})
         if prompt != TASK_PROMPT:
             # The consensus arbitration prompt (whatever template built it
@@ -306,6 +308,19 @@ def case_b_two_blocks() -> None:
         check("b7 two blocks: consensus max_tokens never drops below the task cap",
               len(con) == 1 and con[0]["max_tokens"] == 4096,
               f"max_tokens={con[0]['max_tokens'] if con else None!r}")
+        # The synthesis is the ONE call site allowed to exceed its block's own
+        # max_tokens. Without the opt-out, client.chat's ceiling clamp would
+        # cap this merge at 512 -- a third of what the candidates need -- and
+        # the fake here could not catch it, because it replaces client.chat
+        # outright. Assert the flag, not just the arithmetic.
+        check("b8 two blocks: synthesis opts out of the client ceiling clamp",
+              len(con) == 1 and con[0]["enforce_ceiling"] is False,
+              f"enforce_ceiling={con[0]['enforce_ceiling'] if con else None!r}")
+        fan = [c for c in fake.calls if c["prompt"] == TASK_PROMPT]
+        check("b9 two blocks: fan-out candidates stay clamped",
+              len(fan) == 2 and all(c["enforce_ceiling"] is True for c in fan),
+              f"n={len(fan)} "
+              f"flags={[c['enforce_ceiling'] for c in fan]!r}")
 
 
 def case_c_meta_keys() -> None:

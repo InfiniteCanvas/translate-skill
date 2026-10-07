@@ -86,7 +86,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
-from migrations import v002, v004, v005, v006, v007, v008, v010, v011  # noqa: E402
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -1514,13 +1514,100 @@ def case_13_v011() -> None:
               isinstance(v011.DESCRIPTION, str)
               and "\n" not in v011.DESCRIPTION, "")
 
-        # v011 is the chain head: chain() is ascending, so the head is the
+        # v012 is the chain head: chain() is ascending, so the head is the
         # LAST entry, and current_version() is what init/migrate actually use.
-        check("13k v011: v011 is the chain head",
-              migrations.chain()[-1].VERSION == 11
-              and migrations.current_version() == 11,
+        check("13k v012 is the chain head",
+              migrations.chain()[-1].VERSION == 12
+              and migrations.current_version() == 12,
               f"chain_head={migrations.chain()[-1].VERSION} "
               f"current={migrations.current_version()}")
+
+        check("13l v012: VERSION matches the filename", v012.VERSION == 12, "")
+        check("13m v012: DESCRIPTION is one line",
+              isinstance(v012.DESCRIPTION, str)
+              and "\n" not in v012.DESCRIPTION, "")
+
+
+def case_14_v012() -> None:
+    """v012 is REPORT-ONLY. It reads the raw config and explains the new
+    ceiling semantics; it never rewrites a value.
+
+    That is the deliberate departure from v009. v009 could rewrite because it
+    knew the exact old default (16384 / 8192) and anything else was a user
+    choice. A resolution-rule change has no such sentinel: the pair is not
+    wrong, it just no longer MEANS the same thing, and either side is a
+    legitimate configuration. Rewriting a user's chosen numbers because their
+    relationship changed would be the silent edit v009's own docstring warns
+    against. So v012 reports and leaves the file byte-identical.
+    """
+    import json as _json
+
+    def make(root: Path, name: str, top: int, caps: list[int]) -> Path:
+        proj = root / name
+        proj.mkdir(parents=True)
+        (proj / "config.json").write_text(_json.dumps({
+            "translate_max_output_tokens": top,
+            "providers": {"translator": [
+                {"base_url": "http://fake:1/v1", "model": f"m{i}",
+                 "max_tokens": c} for i, c in enumerate(caps)]},
+            "version": 11,
+        }, indent=2) + "\n", encoding="utf-8")
+        return proj
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+
+        # The maintainer's real shape: ceiling above the tightest block.
+        proj = make(root, "mismatch", 256000, [128000, 256000])
+        before = (proj / "config.json").read_text(encoding="utf-8")
+        out = v012.migrate(proj, src)
+        after = (proj / "config.json").read_text(encoding="utf-8")
+        report = "\n".join(out)
+        check("14a v012: a ceiling above the tightest block is reported",
+              any("exceeds the tightest" in line for line in out), f"out={out}")
+        check("14b v012: the report names BOTH numbers and what changed",
+              "256000" in report and "128000" in report
+              and "pack to 128000" in report, f"report={report}")
+        check("14c v012: the report says what the user can do about it",
+              "Raise that block's max_tokens" in report
+              and "Nothing was rewritten" in report, f"report={report}")
+        check("14d v012: config.json is byte-identical (report-only)",
+              before == after, "config.json was rewritten")
+        check("14e v012: idempotent -- a second run reports the same thing",
+              v012.migrate(proj, src) == out, f"{v012.migrate(proj, src)!r}")
+
+        # The agreeing shape: [ok], still untouched.
+        proj_ok = make(root, "agree", 65536, [65536])
+        out_ok = v012.migrate(proj_ok, src)
+        check("14f v012: an agreeing pair reports [ok] and rewrites nothing",
+              any(line.startswith("[ok]") for line in out_ok)
+              and json.loads((proj_ok / "config.json")
+                             .read_text(encoding="utf-8"))["version"] == 11,
+              f"out={out_ok}")
+
+        # A block too small to pack into gets its own, different advice.
+        proj_low = make(root, "low", 65536, [100])
+        out_low = v012.migrate(proj_low, src)
+        check("14g v012: an unpackable block reports the packing floor, not the ceiling",
+              any("cannot be packed" in line for line in out_low)
+              and "exceeds the tightest" not in "\n".join(out_low),
+              f"out={out_low}")
+
+        # A legacy single-dict providers.translator must not raise.
+        proj_legacy = root / "legacy"
+        proj_legacy.mkdir()
+        (proj_legacy / "config.json").write_text(_json.dumps({
+            "translate_max_output_tokens": 256000,
+            "providers": {"translator": {"base_url": "http://fake:1/v1",
+                                         "model": "m0", "max_tokens": 128000}},
+            "version": 11,
+        }, indent=2) + "\n", encoding="utf-8")
+        out_legacy = v012.migrate(proj_legacy, src)
+        check("14h v012: a legacy single-dict translator block is tolerated",
+              any("exceeds the tightest" in line for line in out_legacy),
+              f"out={out_legacy}")
 
 
 def main() -> int:
@@ -1541,6 +1628,7 @@ def main() -> int:
     case_11_v008()
     case_12_v010()
     case_13_v011()
+    case_14_v012()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

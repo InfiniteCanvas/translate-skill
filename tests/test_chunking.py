@@ -6,14 +6,26 @@ persistence/resume via state["chunks"].
 Packing replaces the old line-count-balanced (divmod) splitter: chunks are
 sized by _line_output_cost (CJK x1.0, other chars /4, +10 per line; +256
 once per chunk) against
-budget = floor(0.8 * translate_max_output_tokens), each chunk taking >= 1
+budget = floor(0.8 * pack_cap), each chunk taking >= 1
 line. A single line whose cost exceeds the budget is isolated as a
 singleton chunk called directly at the escalated cap
-(min(round(1.5 * max_out), providers.translator.max_tokens)); a line that
+(max(wire_cap, min(round(1.5 * pack_cap), providers.translator max_tokens)));
+a line that
 cannot fit even the escalated cap fails fast with actionable feedback and
 ZERO LLM calls. Packing is deterministic given (source, config), which the
 feedback slicing (the _feedback_section [lo, hi) slice of the rejected
 snapshot) and the crash resume both depend on.
+
+Two caps, deliberately distinct since v012:
+  pack_cap = min(translate_max_output_tokens, the tightest translator block's
+                max_tokens) -- the SIZING budget, so no block truncates its part
+  wire_cap = translate_max_output_tokens -- the ceiling SENT, which client.chat
+                then lowers per block to that block's own max_tokens
+Collapsing them is what let a chapter be packed for 256k and sent to a
+provider that returns 128k. In these fixtures the provider blocks resolve to
+DEFAULT_MAX_TOKENS, far above the cap, so the ceiling never binds and
+pack_cap == wire_cap == MAX_OUT; the split is exercised in
+test_token_cap_ceiling.py.
 
 Covered: (1) packing determinism and shape (multi-chapter source -> non-
 empty chunks whose estimated cost fits the budget, bounds identical across
@@ -69,8 +81,11 @@ from lib import config, pipeline, project  # noqa: E402
 PASSED = 0
 FAILED: list[str] = []
 
-# Packing math for every multi-chunk fixture here: max_out 500 ->
-# budget 400, room 144, escalated min(round(750), 16384) = 750.
+# Packing math for every multi-chunk fixture here: pack_cap 500 ->
+# budget 400, room 144, escalated max(500, min(round(750), 65536)) = 750.
+# The provider blocks here are unspecified, so they resolve to
+# config.DEFAULT_MAX_TOKENS (65536) -- far above the cap, which is why
+# pack_cap == wire_cap == 500 and the ceiling never binds.
 MAX_OUT = 500
 ESCALATED = 750
 LINE = "中" * 20  # per-line cost 30 (20 CJK + 10 wrapper)
@@ -225,8 +240,11 @@ def case_1_packing() -> None:
     computations; a small source is exactly one chunk; the per-line cost
     itself is pinned (LINE -> 30, the 10-line chapter -> 300)."""
     big = [LINE] * 10  # cost 30/line, room 144 -> 4 lines per chunk
-    plan = pipeline._pack_chunks(big, MAX_OUT, ESCALATED)
-    again = pipeline._pack_chunks(big, MAX_OUT, ESCALATED)
+    # pack_cap == wire_cap == MAX_OUT here: this fixture's provider blocks
+    # resolve to DEFAULT_MAX_TOKENS, well above the cap, so the ceiling never
+    # binds and the two are the same number.
+    plan = pipeline._pack_chunks(big, MAX_OUT, ESCALATED, MAX_OUT)
+    again = pipeline._pack_chunks(big, MAX_OUT, ESCALATED, MAX_OUT)
     check("1a packing: bounds identical across two computations",
           plan == again, f"plan={plan} again={again}")
     check("1b packing: multi-chapter source splits (4/4/2)",
@@ -246,7 +264,7 @@ def case_1_packing() -> None:
           [lo for lo, _hi, _cap in plan] == [0, 4, 8] and plan[-1][1] == 10,
           f"plan={plan}")
     small = ["第一行。", "第二行。", "第三行。"]
-    plan_small = pipeline._pack_chunks(small, MAX_OUT, ESCALATED)
+    plan_small = pipeline._pack_chunks(small, MAX_OUT, ESCALATED, MAX_OUT)
     check("1f packing: small source -> exactly 1 chunk",
           [(lo, hi) for lo, hi, _cap in plan_small] == [(0, 3)],
           f"plan={plan_small}")
@@ -256,7 +274,7 @@ def case_1_packing() -> None:
           f"LINE={pipeline._line_output_cost(LINE)}")
     check("1h packing: whole chapter under the budget -> one chunk",
           [(lo, hi) for lo, hi, _cap in
-           pipeline._pack_chunks(small, 8192, 12288)] == [(0, 3)])
+           pipeline._pack_chunks(small, 8192, 12288, 8192)] == [(0, 3)])
 
 
 def case_2_oversized_fail_fast() -> None:

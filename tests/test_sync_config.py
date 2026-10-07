@@ -801,21 +801,27 @@ def case_10_shipped_examples_are_valid() -> None:
         check(f"10 {name}: every block carries the 64k output budget",
               not small, f"blocks below 65536 max_tokens: {small}")
 
-        # translate_max_output_tokens is the per-call cap TRANSLATE actually
-        # sends (it overrides every block's own max_tokens) and it also drives
-        # chunk packing. If it exceeds the SMALLEST translator block's
-        # max_tokens, pipeline._warn_token_cap fires and the escalated
-        # corrective retry cannot raise the cap past that block -- so the two
-        # must agree. 65536 is the floor; the cap is a tuning choice above it.
+        # Since v012 translate_max_output_tokens is a CEILING, not an override:
+        # client.chat clamps the sent cap down to each block's own max_tokens,
+        # and pipeline packs to min(ceiling, tightest block) so no model in the
+        # array truncates its part. So a translator block BELOW the ceiling is
+        # a supported configuration, not a defect -- the old
+        # `smallest >= max_out` check is now INVERTED, and enforcing it would
+        # forbid exactly the shape this change exists to support.
+        # What still must hold: the ceiling is a sane int, and no translator
+        # block is so small that chapters cannot be packed into it
+        # (pipeline.MIN_TRANSLATOR_MAX_TOKENS).
         max_out = overlay.get("translate_max_output_tokens")
         translator_blocks = _blocks(jobs.get("translator"))
         smallest = min((int(b.get("max_tokens", 0))
                         for b in translator_blocks), default=0)
-        check(f"10 {name}: translate_max_output_tokens agrees with translator blocks",
+        from lib import pipeline as _pl
+        check(f"10 {name}: translate_max_output_tokens is a usable ceiling",
               isinstance(max_out, int) and max_out >= 65536
-              and smallest >= max_out,
+              and smallest >= _pl.MIN_TRANSLATOR_MAX_TOKENS,
               f"translate_max_output_tokens={max_out!r} "
-              f"smallest translator max_tokens={smallest}")
+              f"smallest translator max_tokens={smallest} "
+              f"(floor {_pl.MIN_TRANSLATOR_MAX_TOKENS})")
 
 
 def main() -> int:

@@ -233,7 +233,7 @@ LLM call.
   "contextual_glossary_cap": 200, // safety valve only — every glossary term present in the chapter goes in
   "max_new_terms_per_chapter": 15,
   "max_notes_per_chapter": 10,
-  "translate_max_output_tokens": 65536, // per-call OUTPUT cap + packing budget for splitting: parts close past floor(0.8*this)-256 of per-line estimated cost; input context is never limited. 64k, raised in v009 from 8192 so a reasoning model drawing from the same budget (measured ~10.5k on GLM-5.3's translator's-notes pass) does not truncate the answer; must stay <= the translator blocks' max_tokens
+  "translate_max_output_tokens": 65536, // per-call OUTPUT CEILING + packing budget for splitting: parts close past floor(0.8*pack_cap)-256 of per-line estimated cost, where pack_cap = min(this, the smallest providers.translator max_tokens); input context is never limited. This is a CEILING, not an override — a block's own max_tokens is a hard provider limit the pipeline may lower but never raise, so a block below this value simply wins and this number is not the cap in force. 64k, raised in v009 from 8192 so a reasoning model drawing from the same budget (measured ~10.5k on GLM-5.3's translator's-notes pass) does not truncate the answer. A translator block below 8192 cannot be packed into at all.
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation (--style auto only)
   "style_sample_chars": 12000,   // rough source-character budget for the sample (--style auto only)
   "log_orchestration": true,    // tier-1 structural events (see § Two-tier trace logs); false leaves the chapter tier-2 files and both indexes untouched
@@ -310,14 +310,20 @@ LLM call.
   block (object) or an array of blocks`, `providers.{job} must not be an
   empty array`, `providers.{job}[{i}] must be an object`, and
   `providers.consensus must list exactly one model (got {n})`.
-- A translator `max_tokens` below `translate_max_output_tokens` draws a
-  once-per-run warning — `[warn] config: providers.translator.max_tokens
-  (N) is below translate_max_output_tokens (M) - retries cannot raise the
-  output cap` — the truncation-retry escalation caps at the provider's
-  `max_tokens`, so retries cannot raise the output cap past it. With a
-  multi-block translator array the SMALLEST `max_tokens` across blocks
-  governs: chunk packing packs against it (so no model in the array
-  truncates its part), and the warning's N is that minimum.
+- A translator `max_tokens` below `translate_max_output_tokens` is a SUPPORTED
+  configuration since v012, not a defect: the block's own limit wins. Each
+  translator block's `max_tokens` is a hard ceiling the pipeline may lower but
+  never raise, and where it is lower the block governs. Chunk packing packs
+  against the SMALLEST `max_tokens` across blocks (so no model in the array
+  truncates its part), and the once-per-run note
+  `[info] config: translation output cap is N, not
+  translate_max_output_tokens (M) - the tightest providers.translator block
+  caps it there; chapters pack to N` reports the effective cap, with N the
+  minimum across blocks. Two `[warn]` lines still fire, because both cost
+  output quality rather than merely reporting a choice: a translator block
+  below 8192 cannot be packed into at all, and a `reasoning_effort` high/xhigh/
+  max block that the ceiling lowers below its own declared `max_tokens` may stop
+  converging (reasoning draws from the same budget as the answer).
 - Downgrade caveat: skill versions before v8 silently ignore an array
   `providers.<job>` value (the job falls back to its defaults), so moving
   a project back to an older skill after using multi-model arrays means
@@ -980,6 +986,22 @@ actually wants (is `0042a` chapter 43? a second part?), so the TOC decides.
 This step changes no config key and delegates only to
 `common.sync_templates` (idempotent: a second run renames nothing and reports
 only the still-deferred extras).
+`v012` (DESCRIPTION: `decouple translate_max_output_tokens from provider
+max_tokens (the key is now a ceiling a block can lower, not an override; report
+mismatched translator pairs)`) is **report-only** and rewrites nothing. It reads
+the raw config and, where `translate_max_output_tokens` exceeds the tightest
+`providers.translator` block, reports that the block now wins as a hard ceiling
+and chapters pack to it instead — naming both numbers, the new per-part budget,
+and the fact that a chapter already mid-translation will re-pack and restart. A
+block below 8192 gets its own line instead, since chapters cannot be packed into
+it at all. This step's departure from the rest of the chain is deliberate: v009
+could rewrite because it knew the exact old default (16384 / 8192) and anything
+else was a user choice. A resolution-rule change has no such sentinel — neither
+number is wrong, they just no longer mean the same thing, and either side is a
+legitimate configuration — so rewriting a user's chosen numbers because their
+*relationship* changed would be exactly the silent edit v009's own docstring
+warns against. It is idempotent by construction: it reads, reports, writes
+nothing.
 `v011` (DESCRIPTION: `two-tier log layout (new log_orchestration,
 log_prompt_bodies, log_chapter_keep_runs; log_llm_keep_runs 5->10)`) folds
 `config.DEFAULTS` in for the three NEW keys, and rewrites
@@ -1398,25 +1420,37 @@ from `story_state.json` — the previous chapter's entry — next; plus the
 previous chunk's final lines for chunks 2+; the section is empty when no
 background or recap is set and the chunk has no predecessor).
 
-**Whole-chapter translation**: only the OUTPUT is constrained. Each translate
-call sends `max_tokens = translate_max_output_tokens` (default 65536 since
-v009, up from the old 8192 — reasoning-capable hosted models share this
-budget with the answer); chapters whose EXPECTED output fits the packing
-budget below are
+**Whole-chapter translation**: only the OUTPUT is constrained. Two distinct
+caps, since v012:
+
+- **the ceiling** — `translate_max_output_tokens` (default 65536 since v009, up
+  from the old 8192 — reasoning-capable hosted models share this budget with the
+  answer). This is the value each translate call ASKS for;
+- **the block cap** — each translator block's own `max_tokens`, a hard provider
+  limit the pipeline may lower but never raise.
+
+The sent value is `min(ceiling, that block's max_tokens)`, computed per block —
+so a 256000 ceiling over `[128000, 256000]` sends 128000 to the first model and
+256000 to the second. Chapters whose EXPECTED output fits the packing budget
+below are
 translated in ONE call — the model sees the chapter's full context (input is
 never limited by this). Longer chapters split by greedy per-line token-budget
 packing: each source line costs its CJK chars + other chars/4 + 10 (the
 numbered-JSON wrapper), parts close when the next line would exceed
-floor(0.8 × the cap) − 256 (the 0.8 headroom absorbs estimate error; the 256
-is the per-part JSON overhead; every part takes ≥ 1 line), with style
-background and the previous part's final lines included as input context.
+floor(0.8 × pack_cap) − 256, where **pack_cap = min(ceiling, the smallest
+`max_tokens` across the translator array)** (the 0.8 headroom absorbs estimate
+error; the 256 is the per-part JSON overhead; every part takes ≥ 1 line), with
+style background and the previous part's final lines included as input context.
 Packing is deterministic given (source, config), so part bounds — and with
 them the `[Rejected Previous Attempt]` feedback slices — reproduce exactly
 across attempts and resumes. A part whose response looks truncated (missing
-line indices, or a response cut mid-JSON) retries once at an escalated cap
-(min(round(1.5 × cap), the smallest `max_tokens` across the translator
-array's blocks — packing and the escalation budget against the minimum so
-no model in the array truncates its part)); other shape
+line indices, or a response cut mid-JSON) retries once at
+`max(ceiling, min(round(1.5 × pack_cap), the smallest block max_tokens))` — the
+guard is keyed on the ceiling, the value the first attempt actually sent, so
+the retry can never go below it; when the smallest block is at or below the
+ceiling there is nothing above to escalate into and the retry re-sends at the
+same cap, which is correct because the part already fits what every block can
+return. Other shape
 problems retry at the same cap. A single source line whose estimated output
 exceeds even the escalated cap fails fast with actionable feedback before any
 model call (split or shorten the line by hand); a line over the packing

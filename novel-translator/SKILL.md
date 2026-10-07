@@ -213,14 +213,21 @@ sorted by frequency):
    numbered-line protocol plus the corrective retry keep the
    one-line-in/one-line-out contract intact; a part whose response looks
    truncated (missing line indices / cut JSON) retries once at an escalated
-   cap (~1.5x, never above the smallest `max_tokens` across the
-   translator's blocks), other shape
-   problems at the same cap. A translator `max_tokens` below
-   `translate_max_output_tokens` warns once per run (`[warn] config:
-   providers.translator.max_tokens (N) is below translate_max_output_tokens
-   (M) - retries cannot raise the output cap`; with a multi-block
+   cap (`max(ceiling, min(~1.5x pack_cap, the smallest `max_tokens` across the
+   translator's blocks))`, other shape
+   problems at the same cap. Since v012 `translate_max_output_tokens` is a
+   CEILING, not an override: each translator block's `max_tokens` is a hard
+   provider limit the pipeline may lower but never raise, the sent value is
+   `min(ceiling, that block's max_tokens)` per block, and chapters pack to
+   `min(ceiling, smallest block)`. A block below the ceiling therefore wins and
+   is supported — it draws a once-per-run note, not a warning
+   (`[info] config: translation output cap is N, not
+   translate_max_output_tokens (M) ...`; with a multi-block
    translator array, N is the smallest `max_tokens` across blocks — the
-   minimum governs packing so no model truncates its part). A source line whose
+   minimum governs packing so no model truncates its part). Two `[warn]` lines
+   still apply: a translator block below 8192 cannot be packed into, and a
+   `reasoning_effort` high/xhigh/max block that the ceiling squeezes below its
+   own `max_tokens` may stop converging. A source line whose
    estimated output exceeds
    even the escalated cap fails fast with actionable feedback
    (`TRANSLATE failed: ... source line N alone exceeds the output budget
@@ -612,7 +619,13 @@ background build too. Builds produce no git commits — `export/`,
   `Chapter_0042a.md` → `CHAPTER_0042.md`, clobbering a real chapter. If you see
   that warning, read the TOC, give each extra chapter its own number, rename to
   `CHAPTER_NNNN.md`, and update `chapters.json`, `story_state.json`, `draft/`,
-  `translated/` and `notes/` to match. A template that
+  `translated/` and `notes/` to match. v012 is report-only (DESCRIPTION: `decouple
+  translate_max_output_tokens from provider max_tokens (the key is now a ceiling
+  a block can lower, not an override; report mismatched translator pairs)`): it
+  rewrites nothing and only explains a mismatched pair, because a resolution
+  change has no old-default sentinel to rewrite against. Where it reports one,
+  a chapter already mid-translation re-packs to the tightest block and restarts —
+  tell the operator before resuming a batch. A template that
   exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:

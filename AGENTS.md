@@ -52,8 +52,7 @@ migration script in `novel-translator/scripts/migrations/` building on the
 latest one:
 
 - Name it `vNNN.py`, with NNN = highest existing version + 1 (currently
-  `v001.py`, `v002.py`, `v003.py`, `v004.py`, `v005.py`, `v006.py`,
-  `v007.py`, `v008.py`, `v009.py`, so the next is `v010.py`).
+  `v001.py` … `v012.py`, so the next is `v013.py`).
 - The module must define `VERSION` (int, equal to the NNN in the filename),
   `DESCRIPTION` (one line), and
   `migrate(project_dir, templates_src, dry_run=False, force=False, confirm=None) -> list[str]`
@@ -68,5 +67,11 @@ latest one:
   ones during migrate; the new migration is still required by this rule, and
   it is also the place for anything that helper can't do (renames, removals,
   config-side counterparts).
+- A change that alters only the *resolution rule* for existing keys — none
+  added, removed, renamed or re-keyed — does not literally trigger this rule,
+  but `v009` set the precedent of shipping one anyway to leave an upgrade
+  record. `v012` did the same and is deliberately **report-only**: a resolution
+  change has no old-default sentinel to match on, so it rewrites nothing and
+  only explains the new semantics and its packing consequence.
 - The normative contract is `references/file-formats.md` § "Migrations"; if
   the contract itself changes, update that section too (see the rule above).

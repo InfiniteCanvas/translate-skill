@@ -127,9 +127,33 @@ def probe(provider_cfg: dict, timeout: int = 30) -> str:
         raise LLMError(f"probe got an unexpected payload from {url}: {resp.text[:200]}") from exc
 
 
+def _resolve_cap(provider_cfg: dict, max_tokens: int | None,
+                 enforce_ceiling: bool) -> int:
+    """The output cap this request actually sends.
+
+    A caller-supplied `max_tokens` is a CEILING, not an instruction: it may
+    lower a block's own max_tokens but never raise it, because a provider's
+    real limit is not negotiable. `enforce_ceiling=False` is the deliberate
+    opt-out, used only by the consensus synthesis (consensus.chat), which
+    must be able to exceed its own block's cap to merge full-size candidates
+    -- consensus.chat computes max(task cap, block cap) on purpose.
+
+    Provider `max_tokens` is NOT schema-validated (references/file-formats.md:
+    provider sampling knobs are read per request and not validated), so it can
+    arrive as null or a non-int. `or DEFAULT_MAX_TOKENS` is the repo-wide idiom
+    (pipeline._provider_max, consensus.chat) and keeps null/0 meaning "unset",
+    exactly as the previous `max_tokens or provider_cfg.get(...)` did.
+    """
+    block_max = int(provider_cfg.get("max_tokens") or config.DEFAULT_MAX_TOKENS)
+    if not max_tokens:
+        return block_max
+    return min(int(max_tokens), block_max) if enforce_ceiling else int(max_tokens)
+
+
 def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
          max_tokens: int | None = None,
-         meta_hook: Callable[[dict], None] | None = None) -> str:
+         meta_hook: Callable[[dict], None] | None = None,
+         enforce_ceiling: bool = True) -> str:
     """One chat completion against an OpenAI-compatible server; returns
     choices[0].message.content.strip().
 
@@ -155,6 +179,11 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     pair up as two JSONL lines per call -- a call that hits the 400 fallback
     (retry without response_format) adds one extra "llm_request" line for
     the retried request.
+
+    `max_tokens` is the caller's ceiling and is clamped DOWN to the block's
+    own max_tokens (see _resolve_cap); it can never raise a block above its
+    declared limit. `enforce_ceiling=False` disables that clamp and exists for
+    the consensus synthesis only.
     """
     base_url = _v1_url(str(provider_cfg["base_url"]))
     url = base_url + "/chat/completions"
@@ -167,8 +196,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
         # Temperature comes from the provider block only -- every job bakes
         # its sampling profile into config defaults (translator 0.7, etc.).
         "temperature": provider_cfg.get("temperature", 0.2),
-        "max_tokens": max_tokens or provider_cfg.get(
-            "max_tokens", config.DEFAULT_MAX_TOKENS),
+        "max_tokens": _resolve_cap(provider_cfg, max_tokens, enforce_ceiling),
     }
     # Optional sampling knobs: a key is sent only when the provider block
     # carries it with a non-None value (top_k may legitimately be -1,
