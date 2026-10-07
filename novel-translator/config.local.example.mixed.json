@@ -7,7 +7,8 @@
         "api_key_env": "ZAI_API_KEY",
         "temperature": 1.0,
         "top_p": 0.95,
-        "max_tokens": 128000
+        "max_tokens": 128000,
+        "max_tokens_limit": 131072
       },
       {
         "base_url": "https://api.minimax.io/v1",
@@ -28,7 +29,8 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
-      "max_tokens": 65536
+      "max_tokens": 128000,
+      "max_tokens_limit": 131072
     },
     "reviewer": {
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -36,7 +38,8 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.2,
       "top_p": 0.95,
-      "max_tokens": 65536
+      "max_tokens": 128000,
+      "max_tokens_limit": 131072
     },
     "annotator": [
       {
@@ -45,7 +48,8 @@
         "api_key_env": "ZAI_API_KEY",
         "temperature": 0.6,
         "top_p": 0.95,
-        "max_tokens": 65536
+        "max_tokens": 128000,
+        "max_tokens_limit": 131072
       },
       {
         "base_url": "https://api.minimax.io/v1",
@@ -66,7 +70,8 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
-      "max_tokens": 65536
+      "max_tokens": 128000,
+      "max_tokens_limit": 131072
     },
     "profile": {
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -74,7 +79,8 @@
       "api_key_env": "ZAI_API_KEY",
       "temperature": 0.6,
       "top_p": 0.95,
-      "max_tokens": 65536
+      "max_tokens": 128000,
+      "max_tokens_limit": 131072
     },
     "consensus": {
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -83,6 +89,7 @@
       "temperature": 0.6,
       "top_p": 0.95,
       "max_tokens": 128000,
+      "max_tokens_limit": 131072,
       "max_tokens_limit": 131072
     }
   },

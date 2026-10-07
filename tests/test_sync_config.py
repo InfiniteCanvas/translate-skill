@@ -823,6 +823,27 @@ def case_10_shipped_examples_are_valid() -> None:
               f"smallest translator max_tokens={smallest} "
               f"(floor {_pl.MIN_TRANSLATOR_MAX_TOKENS})")
 
+        # The consensus merge is the ONE call allowed past its own block's
+        # max_tokens: consensus.chat raises it to max(task cap, block cap) so
+        # an under-provisioned arbitrator can still combine large candidates.
+        # That is safe only when the block declares `max_tokens_limit` -- its
+        # provider's real ceiling. Without it, an example whose ceiling sits
+        # above the block's own cap is a shipped 400: this is exactly how
+        # config.local.example.zai.json reproduced the original bug, since
+        # every one of its blocks is Z.AI (wall 131072) and `consensus`
+        # inherits translator[0].
+        cblocks = _blocks(jobs.get("consensus")) or _blocks(jobs.get("translator"))
+        unprotected: list[str] = []
+        for cb in cblocks[:1]:
+            declared = int(cb.get("max_tokens") or 0)
+            synthesis = max(int(max_out or 0), declared)
+            if synthesis > declared and not cb.get("max_tokens_limit"):
+                unprotected.append(
+                    f"max(ceiling {max_out}, block {declared}) = {synthesis} "
+                    f"with no max_tokens_limit")
+        check(f"10 {name}: the consensus merge cannot over-send its provider",
+              not unprotected, f"unsprotected consensus block(s): {unprotected}")
+
 
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)

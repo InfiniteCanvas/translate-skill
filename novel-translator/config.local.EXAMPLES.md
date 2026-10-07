@@ -89,16 +89,27 @@ Two consequences worth knowing:
 - `translate_max_output_tokens` is a **CEILING**, not an override (since v012).
   Each translator block's `max_tokens` is a hard provider limit the pipeline may
   lower but never raise, so the value SENT to a block is
-  `min(ceiling, that block's max_tokens)` — computed per block. Setting provider
-  `max_tokens` alone therefore does not raise the sent cap, but it does LOWER it,
-  and where it is lower than the ceiling the block wins and chapters pack to
-  `min(ceiling, smallest block)`. The mixed file sets all three
-  (`max_tokens`, `max_completion_tokens`, `translate_max_output_tokens`) to
-  256000 so the `max`-depth reasoning has room to converge; the others stay at
-  64k, which is ample for GLM and for the smaller jobs. A block below 8192 cannot
-  be packed into at all.
+  `min(ceiling, that block's effective cap)` — computed per block. Setting
+  provider `max_tokens` alone therefore does not raise the sent cap, but it does
+  LOWER it, and where it is lower than the ceiling the block wins and chapters
+  pack to `min(ceiling, smallest block)`. A block below 8192 cannot be packed
+  into at all.
+- **The caps, as shipped.** All three files set the ceiling to 256000. What a
+  block actually receives is whatever that provider will accept:
+
+  | Provider | `max_tokens` | `max_tokens_limit` | why |
+  |---|---|---|---|
+  | `MiniMax-M3.1-Flash-Preview`, `MiniMax-M3` | 256000 | — | the tested-converging cap for `max` reasoning (below) |
+  | `glm-5.3`, `glm-5.3-flash` (Z.AI) | 128000 | 131072 | Z.AI refuses anything above 131072 with `code 1210` |
+
+  So in the mixed file the ceiling is 256000, the MiniMax blocks actually get
+  256000, and every GLM block gets 128000 — the ceiling is never the cap in
+  force, and that is correct rather than a misconfiguration. The
+  `max_tokens_limit` on the GLM blocks is not redundant with `max_tokens`; see
+  `max_tokens_limit` below for why a provider limit has to be a separate key.
 - More budget delays truncation but does not prevent exhaustion. For GLM that
-  is the right trade — bounded reasoning, so a runaway still converges. For
+  is the right trade — bounded reasoning, so a runaway still converges, and
+  131072 is a wall rather than a choice. For
   MiniMax an unbounded think can consume any budget and return no translation
   at all, so the cap has to be large enough for the chosen
   `reasoning_effort`; 65,536 is not enough for `max`, 256,000 is.
@@ -194,10 +205,10 @@ cap-bound, not effort-bound.
 
 **The mixed file therefore runs the translator at `max` with a 256,000 cap**
 (`max_tokens`, `max_completion_tokens`, and `translate_max_output_tokens` all
-256000), which is the best measured output quality. The smaller jobs keep
-`xhigh` at 64k — they reason over far less text and stay well clear of the
-cliff at any setting. Drop the translator to `xhigh` if you would rather trade
-some quality for a ~74s call instead of ~5–10min.
+256000), which is the best measured output quality. The smaller jobs run on
+GLM blocks at 128000 — their ceiling — so they have ample headroom without ever
+reaching the provider wall. Drop the translator to `xhigh` if you would rather
+trade some quality for a ~74s call instead of ~5–10min.
 
 Two consequences of raising the translator cap:
 
@@ -214,12 +225,14 @@ Two consequences of raising the translator cap:
   one (about 52k characters per part), **not** "about 200k at 256k". Only the
   MiniMax translator block actually receives the 256,000.
 
-Small jobs and the retry bound are unchanged: `glossary`, `recap`, `profile`
-and `annotator` stay at 64k, and `max_attempts` still bounds retries.
+Small jobs and the retry bound are unchanged in kind: `glossary`, `recap`,
+`profile` and `annotator` all run on GLM blocks at their 128000 ceiling (and
+`annotator`'s MiniMax block at 256000), and `max_attempts` still bounds
+retries.
 
 ### `max_tokens_limit`: when a block's `max_tokens` IS the provider's wall
 
-The mixed file's `consensus` block declares `"max_tokens_limit": 131072`
+Every Z.AI block in all three files declares `"max_tokens_limit": 131072`
 alongside `"max_tokens": 128000`, and it is worth knowing why, because the two
 keys look redundant and are not.
 
@@ -345,9 +358,11 @@ M3.1-Flash-Preview is the better pick here, with two caveats worth knowing:
   reasoning at the source is better.
 
 Note that with a two-block translator array the SMALLEST block `max_tokens`
-governs both packing and the per-block send — here both are 65536 and the
-ceiling is also 65536, so it is a non-issue. Where they differ, the block wins
-and `translate_max_output_tokens` is not the cap in force.
+governs both packing and the per-block send. In the shipped mixed file that is
+the GLM block at 128000 (wall 131072), so chapters pack to
+`min(256000, 128000)` = 128000 and only the MiniMax block ever sees 256000.
+Where a block sits below the ceiling, the block wins and
+`translate_max_output_tokens` is not the cap in force.
 
 ## Mixing the two providers
 
@@ -357,13 +372,15 @@ Nothing prevents mixing them on any job — point one job at each:
 {
   "providers": {
     "translator": { "base_url": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.3",
-                    "api_key_env": "ZAI_API_KEY", "max_tokens": 65536 },
+                    "api_key_env": "ZAI_API_KEY", "max_tokens": 128000,
+                    "max_tokens_limit": 131072 },
     "annotator":  { "base_url": "https://api.minimax.io/v1",
                     "model": "MiniMax-M3.1-Flash-Preview",
-                    "api_key_env": "MINIMAX_API_KEY", "max_tokens": 65536,
-                    "extra_body": { "max_completion_tokens": 65536 } }
+                    "api_key_env": "MINIMAX_API_KEY", "max_tokens": 256000,
+                    "extra_body": { "max_completion_tokens": 256000,
+                                    "reasoning_effort": "max" } }
   },
-  "translate_max_output_tokens": 65536
+  "translate_max_output_tokens": 256000
 }
 ```
 
