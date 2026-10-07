@@ -242,9 +242,11 @@ def _entry_number(entry: dict) -> int:
 def _entry_keys(entry: dict) -> set[str]:
     """Acceptable normalized name tokens for a manifest entry.
 
-    Chapter_NNNN.md has no suffix any more, so there is nothing to strip here.
-    _name_matches still tolerates a trailing ".xxx" on the SPEC side (a typed
-    "Chapter_0007.zh.md" from the retired convention), which is a user-typing
+    CHAPTER_NNNN.md has no suffix any more, so there is nothing to strip here.
+    The keys stay lowercase because _name_matches lowercases the spec first,
+    which is what lets a user type "chapter_7" for CHAPTER_0007.md.
+    _name_matches also tolerates a trailing ".xxx" on the SPEC side (a typed
+    "CHAPTER_0007.zh.md" from the retired convention), which is a user-typing
     convenience and costs nothing -- but the manifest field it used to read
     from is gone."""
     file_l = str(entry.get("file", "")).strip().lower()
@@ -269,12 +271,12 @@ def _name_matches(item: str, entry: dict) -> bool:
 
 
 def parse_range(spec: str, manifest: list[dict]) -> list[str]:
-    """Resolve a spec ("1,3-5,Chapter_0007.md") to file names in manifest order.
+    """Resolve a spec ("1,3-5,CHAPTER_0007.md") to file names in manifest order.
 
     Items may be chapter numbers ("7"), inclusive ranges ("3-5"), or exact
-    file names (an item like "Chapter_0007.zh.md" -- a retired source-naming
+    file names (an item like "CHAPTER_0007.zh.md" -- a retired source-naming
     convention -- still
-    matches the manifest's "Chapter_0007.md"). Raises PipelineError when
+    matches the manifest's "CHAPTER_0007.md"). Raises PipelineError when
     nothing matches an item.
     """
     if not manifest:
@@ -893,14 +895,14 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     """Run the staged pipeline for one chapter.
 
     Returns "translated", "needs-review", or "skipped". Prints progress lines
-    prefixed with "[Chapter_NNNN] ".
+    prefixed with "[CHAPTER_NNNN] ".
     """
     paths = project.paths(project_dir)
     manifest = project.load_manifest(project_dir)
     entry = project.find_entry(manifest, file)
     if entry is None:
         raise PipelineError(f"{file}: no manifest entry (run 'init' or 'status' first)")
-    tag = f"[Chapter_{int(entry['number']):04d}]"
+    tag = f"[CHAPTER_{int(entry['number']):04d}]"
     stem = Path(file).stem
 
     if entry.get("status") == "translated" and not force:
@@ -1545,7 +1547,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
 
 def _chapter_subject(file: str, outcome: str) -> str:
     """Commit subject for one finished chapter; the number comes from the
-    Chapter_NNNN filename (manifest order would re-read chapters.json)."""
+    CHAPTER_NNNN filename (manifest order would re-read chapters.json)."""
     match = project.CHAPTER_RE.match(file)
     number = int(match.group(1)) if match else 0
     return f"translate: chapter {number:04d} ({outcome})"

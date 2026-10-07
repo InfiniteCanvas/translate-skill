@@ -25,7 +25,7 @@ drift comparison.
 ├── tn_history.json      translation-note history (powers the 10-chapter rule)
 ├── story_state.json     rolling story-so-far recaps (one entry per chapter; injected as translator context)
 ├── review-report.md     indexed review findings (`review glossary`: machine-applicable vs needs-manual-review sections; `review notes`: advisory note-quality findings; frontmatter counts; regenerated per run by whichever tier ran last)
-├── source/              Chapter_NNNN.md — untouched source chapters
+├── source/              CHAPTER_NNNN.md — untouched source chapters
 ├── draft/               working area per chapter (see Draft artifacts)
 ├── translated/          finalized chapters, exactly what the epub is built from
 ├── notes/               translator's-note sidecars (notes/<stem>.json) + dropped-candidate review artifacts (notes/<stem>.dropped.json)
@@ -38,22 +38,22 @@ drift comparison.
 └── logs/                llm-*-<command>-<pid>.jsonl (one LLM trace per project per CLI invocation, newest log_llm_keep_runs kept); epub-build.log (background epub-build output)
 ```
 
-Chapter file names must match `Chapter_NNNN.md` and nothing else: **exactly 4**
-zero-padded ASCII digits, no suffix (matching is case-insensitive). Padding is
-fixed so one chapter cannot be spelled two ways, and the 3-digit
-`Chapter_001.md` is rejected; the former letter-suffix spelling for
+Chapter file names must match `CHAPTER_NNNN.md` and nothing else: **exactly 4**
+zero-padded ASCII digits, no suffix, EXACT case (the pattern carries no
+re.IGNORECASE). One spelling only: no chapter can be written two ways, and
+the 3-digit `Chapter_001.md` is rejected; the former letter-suffix spelling for
 extras/bonus chapters (`Chapter_0042a.md`) was removed as unused and is now a
 reported near-miss. Chapter order = position in the file list sorted
 numerically by the parsed number — with fixed padding that is also plain name
-order, so `Chapter_0999.md` sorts before
-`Chapter_1000.md`; that order
+order, so `CHAPTER_0999.md` sorts before
+`CHAPTER_1000.md`; that order
 is written into each source file's frontmatter and into `chapters.json` as
 `order` (0-based), and ALL chapter-distance logic (the translation-note gap)
 measures distance in `order` units. The manifest is rebuilt by `init` and
 `sync`; `sync` re-scans `source/` for added/removed files and preserves
 statuses by file name. Both commands print a `[warn]` for each `source/` file
 that looks like a chapter but does not match (short padding, a letter suffix,
-`.zh`, a missing `Chapter_` prefix, non-ASCII digits, a wrong
+`.zh`, a missing `CHAPTER_` prefix, non-ASCII digits, a wrong
 extension); non-chapter files are never reported and a warning never fails the
 command. See `references/ingestion.md`.
 
@@ -173,7 +173,7 @@ the translated copy. The body is split on `\n` and translated as an indexed
 JSON array — one source line in, one translated line out, always the same
 count. This is the anti-hallucination backbone of the whole pipeline. A
 body with no content lines (empty file, or nothing but blank lines) never
-enters the pipeline: `[Chapter_NNNN] [warn] <file>: source chapter has no
+enters the pipeline: `[CHAPTER_NNNN] [warn] <file>: source chapter has no
 content - marked needs-review` — the chapter is marked `needs-review`, no
 LLM call.
 
@@ -402,9 +402,9 @@ fails the build.
 
 ```jsonc
 [
-  { "file": "Chapter_0001.md", "number": 1, "order": 0,
+  { "file": "CHAPTER_0001.md", "number": 1, "order": 0,
     "status": "translated", "title": "山边小村" },
-  { "file": "Chapter_0002.md", "number": 2, "order": 1,
+  { "file": "CHAPTER_0002.md", "number": 2, "order": 1,
     "status": "pending", "title": "青牛镇" }
 ]
 ```
@@ -816,7 +816,7 @@ kinds:
 
 ## Notes findings
 
-### [1] warn / restates / Chapter_0042.md / 灵根
+### [1] warn / restates / CHAPTER_0042.md / 灵根
 
 - Note: Spirit root: innate cultivation aptitude.
 - Line: 17
@@ -938,10 +938,11 @@ reversible by setting it back, after which `migrate` is a no-op. It reads
 and writes the RAW config (not load_config's merged form) so the report names
 the numbers that actually moved, and delegates the unchanged template sync
 to `common.sync_templates` (idempotent). `v010` (DESCRIPTION: `rename source
-chapters to the fixed 4-digit, canonical-case form (Chapter_001.md ->
-Chapter_0001.md), carrying chapters.json, story_state.json and the per-chapter
+chapters to the fixed 4-digit, all-caps canonical form (Chapter_001.md ->
+CHAPTER_0001.md), carrying chapters.json, story_state.json and the per-chapter
 artifacts`) renames `source/` files to the one form `CHAPTER_RE` accepts —
-`Chapter_NNNN.md`, exactly 4 digits — so short padding, non-canonical case and
+`CHAPTER_NNNN.md`, exactly 4 digits, exact case — so short padding, non-canonical
+case and
 the removed letter suffix stop being silently dropped. A rename orphans
 everything keyed on the file name, so the step moves
 the whole set: the source file, `translated/<file>`, every `draft/<stem>.*` and
@@ -957,7 +958,7 @@ skipped with a `[warn]` naming the clash. **Extra chapters are deliberately not
 renamed** — a retired suffix name like `Chapter_0042a.md` produces a `[warn]`
 listing every one and telling the operator to hand the decision to their agent.
 With the suffix gone, the mechanical rename would be `Chapter_0042a.md` →
-`Chapter_0042.md`, which a real chapter may already own: renaming would
+`CHAPTER_0042.md`, which a real chapter may already own: renaming would
 clobber it. There is also no mechanical answer to what number an extra
 actually wants (is `0042a` chapter 43? a second part?), so the TOC decides.
 This step changes no config key and delegates only to
@@ -1014,7 +1015,7 @@ note-gap tracking` line so the reset is never silent.
 ```jsonc
 {
   "chapters": {
-    "Chapter_0042": {
+    "CHAPTER_0042": {
       "recap": "Lin Feng reached Foundation Establishment under Elder Wu's tutelage...",  // running recap, <= 120 words, target language, third person
       "updated_at": "2026-09-30T12:00:00+00:00"   // UTC ISO-8601, seconds
     }
@@ -1026,18 +1027,18 @@ The rolling "story so far" recap: one entry per translated chapter, keyed
 by the file stem. After a chapter's ASSEMBLE succeeds, ONE `recap`-provider
 call (`templates/recap.md`) condenses the previous recap plus the
 just-translated chapter into a fresh ≤ 120-word recap stored as the
-chapter's own entry (console: `[Chapter_NNNN] [init] recap`); the next
+chapter's own entry (console: `[CHAPTER_NNNN] [init] recap`); the next
 chapter's TRANSLATE / FAITH / TN_GENERATE prompts receive it inside their
 `[Background Information]` frame, as `Story so far (auto-generated recap
 of the preceding chapters):` followed by the text. When the predecessor's
 entry is missing — chapters translated before the feature existed, or a
 crash that landed between ASSEMBLE and the record — it is backfilled with
 exactly ONE extra recap call before translation starts (console:
-`[Chapter_NNNN] [init] recap (backfill Chapter_PPPP.md)`), anchored on the
+`[CHAPTER_NNNN] [init] recap (backfill CHAPTER_PPPP.md)`), anchored on the
 nearest EARLIER existing entry, never a recursive chain. Failures are
 advisory and never fail or gate a chapter —
-`[Chapter_NNNN] [warn] recap backfill failed for <prev>: <reason>` /
-`[Chapter_NNNN] [warn] recap generation failed for <file>: <reason>` — the
+`[CHAPTER_NNNN] [warn] recap backfill failed for <prev>: <reason>` /
+`[CHAPTER_NNNN] [warn] recap generation failed for <file>: <reason>` — the
 chapter translates without a recap and the next run retries the backfill.
 `updated_at` is managed by the tool. Reads are BOM-tolerant; a malformed
 file is discarded — recaps start fresh, never a crash — with one
@@ -1060,7 +1061,7 @@ run_chapter returns); there is no separate commit.
 
 ```jsonc
 {
-  "chapter": "Chapter_0042.md",
+  "chapter": "CHAPTER_0042.md",
   "updated_at": "2026-09-06T12:00:00+00:00",
   "notes": [
     { "line": 17, "term": "筑基", "category": "cultural",
@@ -1070,8 +1071,8 @@ run_chapter returns); there is no separate commit.
 }
 ```
 
-One JSON sidecar per translated chapter (`notes/Chapter_0042.json` for
-`translated/Chapter_0042.md`), holding the translator's notes the epub
+One JSON sidecar per translated chapter (`notes/CHAPTER_0042.json` for
+`translated/CHAPTER_0042.md`), holding the translator's notes the epub
 renders as footnotes — the chapter markdown itself stays clean. Written by
 the pipeline's ASSEMBLE stage and by the `tn` command; read per chapter by
 `build-epub`, which falls back to parsing legacy baked-in `[^N]` markers
@@ -1105,7 +1106,7 @@ no notes`.
 
 ```jsonc
 {
-  "chapter": "Chapter_0042.md",
+  "chapter": "CHAPTER_0042.md",
   "updated_at": "2026-09-06T12:00:00+00:00",
   "dropped": [
     { "line": 3, "term": "清明", "note": "Tomb-sweeping festival.",
@@ -1140,24 +1141,24 @@ epub builder does not read it.** The matching TN_DEDUP console line,
 verbatim:
 
 ```
-[Chapter_0042] [ok] notes: 7 kept (cultural 3, idiom 2, wordplay 1, other 1); 4 dropped (3 low-confidence, 1 overflow) -> notes/Chapter_0042.dropped.json
+[CHAPTER_0042] [ok] notes: 7 kept (cultural 3, idiom 2, wordplay 1, other 1); 4 dropped (3 low-confidence, 1 overflow) -> notes/CHAPTER_0042.dropped.json
 ```
 
 Categories count non-zero entries in the fixed order
 `cultural, idiom, wordplay, honorific, unit, other` (all-"other" keeps
-show `other K`); a zero-keep chapter prints `[Chapter_0042] [ok] notes: 0
+show `other K`); a zero-keep chapter prints `[CHAPTER_0042] [ok] notes: 0
 kept` with no parenthetical, and a zero-drop chapter ends the line at the
 kept clause (no dropped segment, no file pointer).
 
 ## Draft artifacts (`draft/`)
 
-For `Chapter_0001.md` the pipeline creates:
+For `CHAPTER_0001.md` the pipeline creates:
 
 | File | Contents |
 |---|---|
-| `Chapter_0001.md` | human-readable current translation draft (frontmatter + lines) |
-| `Chapter_0001.lines.json` | `{"title": "...", "lines": [...]}` — written per attempt as a debug artifact; nothing reads it back |
-| `Chapter_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "chunks": [[...], ...] or null, "feedback": [...], "notes": [...], "rejected": [...], "updated_at", "pipeline"}` — `pipeline` is the state-schema version; `title`/`lines` hold the draft translation (crash-resume past TRANSLATE); `chunks` holds per-part TRANSLATE progress (below) |
+| `CHAPTER_0001.md` | human-readable current translation draft (frontmatter + lines) |
+| `CHAPTER_0001.lines.json` | `{"title": "...", "lines": [...]}` — written per attempt as a debug artifact; nothing reads it back |
+| `CHAPTER_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "chunks": [[...], ...] or null, "feedback": [...], "notes": [...], "rejected": [...], "updated_at", "pipeline"}` — `pipeline` is the state-schema version; `title`/`lines` hold the draft translation (crash-resume past TRANSLATE); `chunks` holds per-part TRANSLATE progress (below) |
 
 `stage` is one of `TRANSLATE, VALIDATE, BALANCE, FAITH, GLOSSARY_EXPAND,
 TN_GENERATE, TN_DEDUP, ASSEMBLE`. `feedback` accumulates everything the gates
@@ -1175,7 +1176,7 @@ appended and saved to the state file immediately after each part validates
 the full `lines` list lands). A crash or Ctrl-C mid-TRANSLATE loses at most
 the
 in-flight part — the rerun recomputes the (deterministic) packing, prints
-`[Chapter_NNNN] [init] resuming translation at part k/n (m lines already
+`[CHAPTER_NNNN] [init] resuming translation at part k/n (m lines already
 done)`, and calls only the remaining parts (the stashed `title` rides along,
 so it is not lost either; when all n parts are already done the loop is
 skipped entirely). Cleared to `[]` whenever a gate rejects an attempt (the
@@ -1352,7 +1353,7 @@ robust extraction as fallback:
   every proposal whose source does not match an existing entry (by source
   or variant) passes the client-side significance gate FIRST: its source
   (plus its proposed variants) is counted across the whole source corpus
-  (all `source/Chapter_*.md` bodies joined) and it is dropped below
+  (all `source/CHAPTER_*.md` bodies joined) and it is dropped below
   `min_term_occurrences` occurrences (default 3; 0 disables the gate, and
   an unreadable corpus fails it open) with `[glossary] skip '<src>' - <N>
   occurrence(s) across the novel (min <M>)`. Only gate-passing proposals
@@ -1375,7 +1376,7 @@ robust extraction as fallback:
   proposal with an UNKNOWN category is coerced to `other` with the
   console line `[glossary] warn unknown category '<cat>' for
   '<source>' - coerced to 'other'` (in-pipeline lines carry the
-  `[Chapter_NNNN]` tag prefix like the other stage lines). That
+  `[CHAPTER_NNNN]` tag prefix like the other stage lines). That
   coercion is proposal-side, not storage-side — the glossary.json
   `category` enum (above) legitimately includes `unit` — and it is a
   different surface from `review glossary`'s unknown-category heuristic

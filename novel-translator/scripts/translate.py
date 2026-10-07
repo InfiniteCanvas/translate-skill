@@ -170,15 +170,15 @@ def _report_ignored_chapters(project_dir: Path) -> None:
     """Warn about source/ files that look like chapters but were not discovered.
 
     discovery() is deliberately silent about non-matching files -- source/
-    legitimately holds more than chapters -- but a name like Chapter_0007.zh.md
-    or Chapter_001.md (3-digit, no longer accepted) vanishing from the manifest
+    legitimately holds more than chapters -- but a name like CHAPTER_0007.zh.md
+    or CHAPTER_001.md (3-digit, no longer accepted) vanishing from the manifest
     is data loss with no signal. Every such file gets a [warn] naming it and the
     reason, plus the count, so an operator sees the gap without hand-counting
     the manifest against a table of contents."""
     ignored = project.ignored_chapters(project_dir)
     for name, reason in ignored:
         print(f"[warn] source/{name}: ignored - {reason} "
-              "(rename to Chapter_NNNN.md - 4 digits)")
+              "(rename to CHAPTER_NNNN.md - 4 digits)")
     if ignored:
         print(f"[warn] {len(ignored)} source file(s) look like chapters but "
               "were not added to the manifest")
@@ -201,8 +201,8 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     if not chapters:
         raise CliError(
             f"no source chapters found in {src_dir}: files must be named "
-            "'Chapter_NNNN.md' (exactly 4 zero-padded digits), e.g. "
-            "Chapter_0001.md"
+            "'CHAPTER_NNNN.md' (exactly 4 zero-padded digits), e.g. "
+            "CHAPTER_0001.md"
         )
     print(f"[init] found {len(chapters)} source chapter(s)")
 
@@ -1728,7 +1728,7 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="run the translation pipeline on chapters")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--chapters", metavar="SPEC",
-                   help="chapter spec, e.g. 1,3-5,Chapter_0007.md")
+                   help="chapter spec, e.g. 1,3-5,CHAPTER_0007.md")
     g.add_argument("--next", type=int, metavar="N", help="next N untranslated chapters")
     p.add_argument("--force", action="store_true", help="retranslate even if already translated")
     p.set_defaults(func=cmd_translate)
@@ -1737,7 +1737,7 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="wipe chapter artifacts and translate from scratch")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--chapters", metavar="SPEC",
-                   help="chapter spec, e.g. 1,3-5,Chapter_0007.md")
+                   help="chapter spec, e.g. 1,3-5,CHAPTER_0007.md")
     g.add_argument("--failed", action="store_true",
                    help="retry every needs-review chapter (max attempts reached)")
     p.set_defaults(func=cmd_retry)
@@ -1752,7 +1752,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "tn", parents=[common], allow_abbrev=False,
         help="re-evaluate translator's notes on already-translated chapters (writes the notes/ sidecar)")
     p.add_argument("--chapters", metavar="SPEC", required=True,
-                   help="chapter spec, e.g. 1,3-5,Chapter_0007.md")
+                   help="chapter spec, e.g. 1,3-5,CHAPTER_0007.md")
     p.add_argument("--dry-run", action="store_true",
                    help="run the annotator evaluation but write nothing (LLM calls still happen)")
     p.add_argument("--no-build", action="store_true",
@@ -1768,7 +1768,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type=int, default=None, metavar="N",
                    help="(subject=glossary|notes) entries per model review call (default: config review_batch_size)")
     p.add_argument("--chapters", metavar="SPEC", default=None,
-                   help="(subject=notes) chapter spec, e.g. 1,3-5,Chapter_0007.md (default: every chapter with a notes sidecar)")
+                   help="(subject=notes) chapter spec, e.g. 1,3-5,CHAPTER_0007.md (default: every chapter with a notes sidecar)")
     p.add_argument("--glossary", metavar="PATH", default=None,
                    help="(subject=fix) path to the review report (default: config review_report_path)")
     p.add_argument("--dry-run", action="store_true",

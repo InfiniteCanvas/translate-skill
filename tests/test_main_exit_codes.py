@@ -127,7 +127,7 @@ def case_1_bad_frontmatter_is_fail_exit_2() -> None:
         root = Path(td)
         source = root / "source"
         source.mkdir(parents=True)
-        (source / "Chapter_0001.md").write_text(
+        (source / "CHAPTER_0001.md").write_text(
             "---\n"
             "chapter_title: [unclosed\n"
             "---\n"
@@ -145,7 +145,7 @@ def case_1_bad_frontmatter_is_fail_exit_2() -> None:
               f"stderr={proc.stderr!r}")
         check("1c bad frontmatter: no traceback", "Traceback" not in combined)
         check("1d bad frontmatter: the count guard names the failure",
-              "cannot count" in combined and "Chapter_0001.md" in combined,
+              "cannot count" in combined and "CHAPTER_0001.md" in combined,
               f"combined={combined!r}")
 
 
@@ -157,7 +157,7 @@ def case_2_healthy_project_exits_0() -> None:
         root = Path(td)
         source = root / "source"
         source.mkdir(parents=True)
-        (source / "Chapter_0001.md").write_text(
+        (source / "CHAPTER_0001.md").write_text(
             "第一章\n\n灵根初现。他又感到体内的灵根跳动，灵根温暖。\n",
             encoding="utf-8", newline="\n",
         )
@@ -205,7 +205,7 @@ def case_3_null_numeric_config_is_fail_exit_2() -> None:
         )
         source = root / "source"
         source.mkdir(parents=True)
-        (source / "Chapter_0001.md").write_text(
+        (source / "CHAPTER_0001.md").write_text(
             "灵根初现。他又感到体内的灵根跳动，灵根温暖。\n",
             encoding="utf-8", newline="\n",
         )
@@ -235,7 +235,7 @@ def case_3_null_numeric_config_is_fail_exit_2() -> None:
               f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
         source = root / "source"
         source.mkdir(parents=True)
-        (source / "Chapter_0001.md").write_text(
+        (source / "CHAPTER_0001.md").write_text(
             "灵根初现。他又感到体内的灵根跳动，灵根温暖。\n",
             encoding="utf-8", newline="\n",
         )

@@ -213,10 +213,10 @@ def case_1_anchor_resolution() -> None:
     # A: matching index + anchor -> resolves at the stored line
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
-        write_sidecar(root, "Chapter_0001.md", [dict(NOTE_A), dict(NOTE_B)])
+        write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A), dict(NOTE_B)])
         result, prompts = run_with_fake_chat(root, [{"findings": []}])
         check("1a anchor: both notes became units", result["units"] == 2,
               f"units={result['units']}")
@@ -235,10 +235,10 @@ def case_1_anchor_resolution() -> None:
         drifted = TRANSLATED_MD.replace(
             "Alpha line with 灵根.", "New zeroth line.\nAlpha line with 灵根.")
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD, "translated_md": drifted},
         ])
-        write_sidecar(root, "Chapter_0001.md", [dict(NOTE_A)])
+        write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A)])
         result, prompts = run_with_fake_chat(root, [{"findings": []}])
         unit = unit_from_prompt(prompts[0], 0) if prompts else {}
         check("1c anchor: drifted index recovered by anchor (line 0 -> 1)",
@@ -253,10 +253,10 @@ def case_1_anchor_resolution() -> None:
         rewritten = TRANSLATED_MD.replace(
             "Alpha line with 灵根.", "Completely different prose now.")
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD, "translated_md": rewritten},
         ])
-        write_sidecar(root, "Chapter_0001.md", [dict(NOTE_A)])
+        write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A)])
         result, prompts = run_with_fake_chat(root, [])
         fs = result["findings"]
         check("1d anchor: unresolvable -> exactly one misanchored finding",
@@ -298,10 +298,10 @@ def case_2_source_pairing_and_context() -> None:
             "源一。\n源二。\n源三。\n源四。\n"
         )
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": aligned_source, "translated_md": five_line_body},
         ])
-        write_sidecar(root, "Chapter_0001.md", [
+        write_sidecar(root, "CHAPTER_0001.md", [
             {"line": 2, "term": "灵根", "note": "n", "category": "cultural",
              "anchor": "Three."},
         ])
@@ -339,10 +339,10 @@ def case_2_source_pairing_and_context() -> None:
             "源一。\n"
         )
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": short_source, "translated_md": five_line_body},
         ])
-        write_sidecar(root, "Chapter_0001.md", [
+        write_sidecar(root, "CHAPTER_0001.md", [
             {"line": 2, "term": "灵根", "note": "n", "category": "other",
              "anchor": "Three."},
         ])
@@ -362,10 +362,10 @@ def case_3_closed_vocab_validation() -> None:
     normalized); only the valid row survives."""
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
-        write_sidecar(root, "Chapter_0001.md", [dict(NOTE_A), dict(NOTE_B)])
+        write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A), dict(NOTE_B)])
         rows = {"findings": [
             {"idx": 0, "kind": "restates", "severity": "warn",
              "reason": "note paraphrases the line", "suggestion": ""},
@@ -390,7 +390,7 @@ def case_3_closed_vocab_validation() -> None:
                   fs[0]["idx"] == 0 and fs[0]["kind"] == "restates"
                   and fs[0]["severity"] == "warn"
                   and fs[0]["origin"] == "model"
-                  and fs[0]["chapter"] == "Chapter_0001.md"
+                  and fs[0]["chapter"] == "CHAPTER_0001.md"
                   and fs[0]["term"] == "灵根",
                   f"finding={fs[0]}")
 
@@ -400,18 +400,18 @@ def case_4_batching() -> None:
     batch_size: 5 units / batch 2 -> 3 batches, 3 calls."""
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD,
              "translated_md": TRANSLATED_MD.replace("灵根", "灵根A")},
-            {"file": "Chapter_0002.md", "order": 1,
+            {"file": "CHAPTER_0002.md", "order": 1,
              "source_md": SOURCE_MD,
              "translated_md": TRANSLATED_MD.replace("灵根", "灵根B")},
         ])
-        write_sidecar(root, "Chapter_0001.md", [
+        write_sidecar(root, "CHAPTER_0001.md", [
             {"line": 0, "term": f"词一{i}", "note": f"note {i}", "category": "other",
              "anchor": "Alpha line with 灵根A."} for i in (1, 2, 3)
         ])
-        write_sidecar(root, "Chapter_0002.md", [
+        write_sidecar(root, "CHAPTER_0002.md", [
             {"line": 0, "term": f"词二{i}", "note": f"note {i}", "category": "other",
              "anchor": "Alpha line with 灵根B."} for i in (4, 5)
         ])
@@ -439,8 +439,8 @@ def case_4_batching() -> None:
               "")
         check("4e batching: idx maps findings back to the right chapter",
               {(f["chapter"], f["term"]) for f in result["findings"]}
-              == {("Chapter_0001.md", "词一1"), ("Chapter_0001.md", "词一3"),
-                  ("Chapter_0002.md", "词二5")},
+              == {("CHAPTER_0001.md", "词一1"), ("CHAPTER_0001.md", "词一3"),
+                  ("CHAPTER_0002.md", "词二5")},
               f"findings={result['findings']}")
 
         # batch failure resilience (mirrors review.py): one failed batch is
@@ -465,17 +465,17 @@ def case_5_chapter_selection() -> None:
     default = every chapter with a sidecar; missing translated file warns."""
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
-            {"file": "Chapter_0002.md", "order": 1,
+            {"file": "CHAPTER_0002.md", "order": 1,
              "source_md": SOURCE_MD,
              "translated_md": TRANSLATED_MD.replace("灵根", "灵根B")},
             # chapter 3 has files but NO sidecar
-            {"file": "Chapter_0003.md", "order": 2,
+            {"file": "CHAPTER_0003.md", "order": 2,
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
-        write_sidecar(root, "Chapter_0001.md", [dict(NOTE_A)])
-        write_sidecar(root, "Chapter_0002.md", [
+        write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A)])
+        write_sidecar(root, "CHAPTER_0002.md", [
             {"line": 0, "term": "词二", "note": "note two", "category": "other",
              "anchor": "Alpha line with 灵根B."},
         ])
@@ -484,7 +484,7 @@ def case_5_chapter_selection() -> None:
         result, prompts = run_with_fake_chat(root, [{"findings": []}],
                                              chapters="2")
         check("5a selection: --chapters 2 audits chapter 2 only",
-              result["chapters"] == ["Chapter_0002.md"]
+              result["chapters"] == ["CHAPTER_0002.md"]
               and '"term": "词二"' in prompts[0]
               and '"term": "灵根"' not in prompts[0],
               f"chapters={result['chapters']}")
@@ -494,33 +494,33 @@ def case_5_chapter_selection() -> None:
         result, prompts = run_with_fake_chat(root, [{"findings": []}],
                                              chapters="1-3")
         check("5b selection: chapters without sidecars skipped silently",
-              result["chapters"] == ["Chapter_0001.md", "Chapter_0002.md"]
+              result["chapters"] == ["CHAPTER_0001.md", "CHAPTER_0002.md"]
               and result["skipped"] == [] and len(prompts) == 1,
               f"chapters={result['chapters']} skipped={result['skipped']}")
 
         # default: every chapter with a sidecar
         result, prompts = run_with_fake_chat(root, [{"findings": []}, {"findings": []}])
         check("5c selection: default = every chapter with a sidecar",
-              result["chapters"] == ["Chapter_0001.md", "Chapter_0002.md"],
+              result["chapters"] == ["CHAPTER_0001.md", "CHAPTER_0002.md"],
               f"chapters={result['chapters']}")
 
     # a sidecar whose translated file is missing: warn and skip
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "source_md": SOURCE_MD},
-            {"file": "Chapter_0002.md", "order": 1,
+            {"file": "CHAPTER_0001.md", "order": 0, "source_md": SOURCE_MD},
+            {"file": "CHAPTER_0002.md", "order": 1,
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
-        write_sidecar(root, "Chapter_0001.md", [dict(NOTE_A)])
-        write_sidecar(root, "Chapter_0002.md", [dict(NOTE_B)])
+        write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A)])
+        write_sidecar(root, "CHAPTER_0002.md", [dict(NOTE_B)])
         result, prompts = run_with_fake_chat(root, [{"findings": []}])
         check("5d selection: missing translated chapter warns and skips",
-              result["chapters"] == ["Chapter_0002.md"]
-              and result["skipped"] == ["Chapter_0001.md"],
+              result["chapters"] == ["CHAPTER_0002.md"]
+              and result["skipped"] == ["CHAPTER_0001.md"],
               f"result={result}")
         check("5e selection: skipped chapter sends no units",
               len(prompts) == 1 and "Beta line." in prompts[0]
-              and '"chapter": "Chapter_0001.md"' not in prompts[0]
+              and '"chapter": "CHAPTER_0001.md"' not in prompts[0]
               and '"term": "灵根"' not in prompts[0],
               f"prompt={prompts[0][:200]!r}")
 
@@ -533,17 +533,17 @@ def case_6_report() -> None:
         rewritten = TRANSLATED_MD.replace(
             "Alpha line with 灵根.", "Completely different prose now.")
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD, "translated_md": rewritten},
-            {"file": "Chapter_0002.md", "order": 1,
+            {"file": "CHAPTER_0002.md", "order": 1,
              "source_md": SOURCE_MD,
              "translated_md": TRANSLATED_MD.replace("灵根", "灵根B")},
         ])
-        write_sidecar(root, "Chapter_0001.md", [
+        write_sidecar(root, "CHAPTER_0001.md", [
             {"line": 0, "term": "失锚", "note": "Orphaned note.",
              "category": "other", "anchor": "Alpha line with 灵根."},
         ])
-        write_sidecar(root, "Chapter_0002.md", [
+        write_sidecar(root, "CHAPTER_0002.md", [
             {"line": 0, "term": "灵根B", "note": "Spirit root: innate aptitude.",
              "category": "cultural", "anchor": "Alpha line with 灵根B."},
             {"line": 1, "term": "筑基",
@@ -587,9 +587,9 @@ def case_6_report() -> None:
         check("6d report: findings section renders chapter/term/kind/severity "
               "(warn-first, then reading order)",
               "## Notes findings" in text
-              and "### [1] warn / misanchored / Chapter_0001.md / 失锚" in text
-              and "### [2] warn / restates / Chapter_0002.md / 灵根B" in text
-              and "### [3] info / overexplains / Chapter_0002.md / 筑基" in text,
+              and "### [1] warn / misanchored / CHAPTER_0001.md / 失锚" in text
+              and "### [2] warn / restates / CHAPTER_0002.md / 灵根B" in text
+              and "### [3] info / overexplains / CHAPTER_0002.md / 筑基" in text,
               "finding headings wrong")
         check("6e report: reason/suggestion/tier bullets present",
               "- Reason: the note paraphrases the translated line" in text
@@ -614,10 +614,10 @@ def case_6_report() -> None:
         # a genuinely clean run (all notes resolve, model returns nothing)
         with tempfile.TemporaryDirectory() as td2:
             clean_root = make_project(td2, [
-                {"file": "Chapter_0001.md", "order": 0,
+                {"file": "CHAPTER_0001.md", "order": 0,
                  "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
             ])
-            write_sidecar(clean_root, "Chapter_0001.md",
+            write_sidecar(clean_root, "CHAPTER_0001.md",
                           [dict(NOTE_A), dict(NOTE_B)])
             count = run_full_with_fake_chat(clean_root, [])
             check("6i report: clean run -> zero findings, all-zero tallies",
@@ -632,7 +632,7 @@ def case_6_report() -> None:
         # no sidecars anywhere -> nothing written, mirroring the empty glossary
         with tempfile.TemporaryDirectory() as td2:
             bare = make_project(td2, [
-                {"file": "Chapter_0001.md", "order": 0,
+                {"file": "CHAPTER_0001.md", "order": 0,
                  "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
             ])
             count = run_full_with_fake_chat(bare, [])
@@ -648,10 +648,10 @@ def case_7_cli_smoke() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
-        write_sidecar(root, "Chapter_0001.md", [dict(NOTE_A), dict(NOTE_B)])
+        write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A), dict(NOTE_B)])
         write_lf(root / "config.json",
                  json.dumps({"source_lang": "zh", "target_lang": "en"}) + "\n")
         rows = {"findings": [
@@ -718,9 +718,9 @@ def case_8_all_skipped_console() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
             # sidecar present, translated file missing -> warn + skip
-            {"file": "Chapter_0001.md", "order": 0, "source_md": SOURCE_MD},
+            {"file": "CHAPTER_0001.md", "order": 0, "source_md": SOURCE_MD},
         ])
-        write_sidecar(root, "Chapter_0001.md", [dict(NOTE_A)])
+        write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A)])
         out = io.StringIO()
         with redirect_stdout(out):
             code = review_notes.review_notes(root, review_cfg())
@@ -737,7 +737,7 @@ def case_8_all_skipped_console() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0,
+            {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])  # no sidecar anywhere
         out = io.StringIO()

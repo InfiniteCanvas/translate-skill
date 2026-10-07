@@ -99,7 +99,7 @@ def case_1_round_trip() -> None:
             {"line": 1, "term": "灵石", "note": "Spirit stones: currency and fuel.",
              "category": "cultural"},
         ]
-        kept = tn.save_notes(root, "Chapter_0001.md", lines, notes)
+        kept = tn.save_notes(root, "CHAPTER_0001.md", lines, notes)
 
         check("1a round-trip: kept has exactly the two valid notes",
               len(kept) == 2, f"kept={kept}")
@@ -119,9 +119,9 @@ def case_1_round_trip() -> None:
               kept[1]["anchor"] == long_line.strip()[:80],
               f"len={len(kept[1]['anchor'])}")
 
-        path = tn.notes_path(root, "Chapter_0001.md")
+        path = tn.notes_path(root, "CHAPTER_0001.md")
         check("1g round-trip: sidecar at notes/<stem>.json",
-              path == root / "notes" / "Chapter_0001.json" and path.is_file(),
+              path == root / "notes" / "CHAPTER_0001.json" and path.is_file(),
               f"path={path}")
         raw = path.read_bytes()
         check("1h round-trip: file ends with a trailing newline",
@@ -133,14 +133,14 @@ def case_1_round_trip() -> None:
         document = json.loads(text)
         check("1j round-trip: document shape {chapter, updated_at, notes}",
               set(document) == {"chapter", "updated_at", "notes"}
-              and document["chapter"] == "Chapter_0001.md"
+              and document["chapter"] == "CHAPTER_0001.md"
               and isinstance(document["updated_at"], str) and document["updated_at"],
               f"document keys={sorted(document)}")
         check("1k round-trip: document notes == kept list",
               document["notes"] == kept, f"doc={document['notes']}")
 
         check("1l round-trip: load_notes returns the same list",
-              tn.load_notes(root, "Chapter_0001.md") == kept, "")
+              tn.load_notes(root, "CHAPTER_0001.md") == kept, "")
 
 
 def case_2_invalid_entries() -> None:
@@ -160,12 +160,12 @@ def case_2_invalid_entries() -> None:
             {"line": 0, "term": "t", "note": "   "},        # whitespace-only note
             {"line": 1, "term": "筑基", "note": "Second realm."},  # valid
         ]
-        kept = tn.save_notes(root, "Chapter_0001.md", lines, notes)
+        kept = tn.save_notes(root, "CHAPTER_0001.md", lines, notes)
         check("2a invalid: only the one valid entry kept",
               len(kept) == 1 and kept[0]["term"] == "筑基"
               and kept[0]["anchor"] == "Line one.", f"kept={kept}")
         document = json.loads(
-            (root / "notes" / "Chapter_0001.json").read_text(encoding="utf-8"))
+            (root / "notes" / "CHAPTER_0001.json").read_text(encoding="utf-8"))
         check("2b invalid: sidecar on disk holds exactly the kept entry",
               document["notes"] == kept, f"doc={document['notes']}")
 
@@ -175,25 +175,25 @@ def case_3_empty_kept_deletes() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         lines = ["Line zero.", "Line one."]
-        path = tn.notes_path(root, "Chapter_0001.md")
+        path = tn.notes_path(root, "CHAPTER_0001.md")
 
         # notes=[] on a fresh project: nothing to delete, still no file
-        kept = tn.save_notes(root, "Chapter_0001.md", lines, [])
+        kept = tn.save_notes(root, "CHAPTER_0001.md", lines, [])
         check("3a empty: notes=[] returns [] and writes nothing",
               kept == [] and not path.exists(), f"kept={kept}")
 
         # pre-existing file removed by notes=[]
-        tn.save_notes(root, "Chapter_0001.md", lines,
+        tn.save_notes(root, "CHAPTER_0001.md", lines,
                       [{"line": 0, "term": "t", "note": "n"}])
         check("3b empty: pre-existing sidecar in place", path.is_file(), "")
-        kept = tn.save_notes(root, "Chapter_0001.md", lines, [])
+        kept = tn.save_notes(root, "CHAPTER_0001.md", lines, [])
         check("3c empty: notes=[] DELETES the pre-existing sidecar",
               kept == [] and not path.exists(), f"kept={kept}")
 
         # all-invalid input removes it too
-        tn.save_notes(root, "Chapter_0001.md", lines,
+        tn.save_notes(root, "CHAPTER_0001.md", lines,
                       [{"line": 0, "term": "t", "note": "n"}])
-        kept = tn.save_notes(root, "Chapter_0001.md", lines,
+        kept = tn.save_notes(root, "CHAPTER_0001.md", lines,
                              [{"line": 99, "term": "t", "note": "n"}])
         check("3d empty: all-invalid input DELETES the pre-existing sidecar",
               kept == [] and not path.exists(), f"kept={kept}")
@@ -204,33 +204,33 @@ def case_4_load_leniency() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         check("4a load: missing file -> []",
-              tn.load_notes(root, "Chapter_0001.md") == [], "")
+              tn.load_notes(root, "CHAPTER_0001.md") == [], "")
 
-        path = tn.notes_path(root, "Chapter_0001.md")
+        path = tn.notes_path(root, "CHAPTER_0001.md")
         write_lf(path, "{ not json")
         check("4b load: malformed JSON -> []",
-              tn.load_notes(root, "Chapter_0001.md") == [], "")
+              tn.load_notes(root, "CHAPTER_0001.md") == [], "")
 
-        write_lf(path, json.dumps({"chapter": "Chapter_0001.md"}))
+        write_lf(path, json.dumps({"chapter": "CHAPTER_0001.md"}))
         check("4c load: missing 'notes' key -> []",
-              tn.load_notes(root, "Chapter_0001.md") == [], "")
+              tn.load_notes(root, "CHAPTER_0001.md") == [], "")
 
         write_lf(path, json.dumps({"notes": {"line": 0}}))
         check("4d load: notes not a list -> []",
-              tn.load_notes(root, "Chapter_0001.md") == [], "")
+              tn.load_notes(root, "CHAPTER_0001.md") == [], "")
 
         write_lf(path, json.dumps([{"line": 0}]))
         check("4e load: document not an object -> []",
-              tn.load_notes(root, "Chapter_0001.md") == [], "")
+              tn.load_notes(root, "CHAPTER_0001.md") == [], "")
 
         write_lf(path, json.dumps({"notes": [{"line": 0}, "junk"]}))
         check("4f load: non-dict entry inside notes -> []",
-              tn.load_notes(root, "Chapter_0001.md") == [], "")
+              tn.load_notes(root, "CHAPTER_0001.md") == [], "")
 
         write_lf(path, json.dumps(
             {"notes": [{"line": 0, "term": "t", "note": "n", "anchor": "a"}]}))
         check("4g load: well-formed sidecar loads as-is",
-              tn.load_notes(root, "Chapter_0001.md")
+              tn.load_notes(root, "CHAPTER_0001.md")
               == [{"line": 0, "term": "t", "note": "n", "anchor": "a"}], "")
 
 
@@ -310,7 +310,7 @@ def case_6_assemble_clean() -> None:
     """assemble.assemble writes clean markdown: no markers, no TN section."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        out_path = root / "translated" / "Chapter_0007.md"
+        out_path = root / "translated" / "CHAPTER_0007.md"
         assemble.assemble(
             out_path,
             {"chapter_title": "第二章 外门", "order": 6},
@@ -361,23 +361,23 @@ def case_7_loud_discard() -> None:
                      " - resetting note-gap tracking\n", f"out={out!r}")
 
         # notes sidecar: JSON syntax error -> [] + one warn
-        path = tn.notes_path(root, "Chapter_0001.md")
+        path = tn.notes_path(root, "CHAPTER_0001.md")
         write_lf(path, "{not json")
-        n, out = capture(tn.load_notes, root, "Chapter_0001.md")
+        n, out = capture(tn.load_notes, root, "CHAPTER_0001.md")
         check("7e notes: JSON syntax error -> [] (lenient default holds)",
               n == [], f"n={n}")
         check("7f notes: exactly one unreadable warn (JSONDecodeError)",
-              out == "[warn] Chapter_0001.json unreadable (JSONDecodeError)"
+              out == "[warn] CHAPTER_0001.json unreadable (JSONDecodeError)"
                      " - treating as no notes\n", f"out={out!r}")
 
         # a JSON document without a valid notes list -> 'invalid notes'
         write_lf(path, "[]")
-        n, out = capture(tn.load_notes, root, "Chapter_0001.md")
+        n, out = capture(tn.load_notes, root, "CHAPTER_0001.md")
         check("7g notes: non-object document -> []",
               n == [], f"n={n}")
         check("7h notes: the warn names the reason in parentheses "
               "(invalid notes)",
-              out == "[warn] Chapter_0001.json unreadable (invalid notes)"
+              out == "[warn] CHAPTER_0001.json unreadable (invalid notes)"
                      " - treating as no notes\n", f"out={out!r}")
 
 

@@ -379,7 +379,7 @@ def case_6_init_applies_overlay() -> None:
         project = root / "proj"
         source = project / "source"
         source.mkdir(parents=True)
-        (source / "Chapter_0001.md").write_text(
+        (source / "CHAPTER_0001.md").write_text(
             "第一章\nbody\n", encoding="utf-8", newline="\n")
 
         args = argparse.Namespace(
@@ -434,7 +434,7 @@ def case_7_init_without_overlay_is_unchanged() -> None:
         project = root / "proj"
         source = project / "source"
         source.mkdir(parents=True)
-        (source / "Chapter_0001.md").write_text(
+        (source / "CHAPTER_0001.md").write_text(
             "第一章\nbody\n", encoding="utf-8", newline="\n")
 
         args = argparse.Namespace(
@@ -632,7 +632,7 @@ def case_9_corrupt_overlay_is_a_clean_error() -> None:
 
         project = root / "proj"
         (project / "source").mkdir(parents=True)
-        (project / "source" / "Chapter_0001.md").write_text(
+        (project / "source" / "CHAPTER_0001.md").write_text(
             "第一章\nbody\n", encoding="utf-8", newline="\n")
 
         args = argparse.Namespace(

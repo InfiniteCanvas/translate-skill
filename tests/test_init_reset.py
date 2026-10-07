@@ -112,8 +112,8 @@ def write_source(root: Path, name: str, text: str) -> None:
 def make_state_fixture(root: Path) -> None:
     """A half-dead project: source chapters and the three model-grown
     state files survive; config.json is gone."""
-    write_source(root, "Chapter_0001.md", "第一章 灵根初现\n\n林凡睁开双眼。\n")
-    write_source(root, "Chapter_0002.md", "第二章 青云宗\n\n他踏上修行路。\n")
+    write_source(root, "CHAPTER_0001.md", "第一章 灵根初现\n\n林凡睁开双眼。\n")
+    write_source(root, "CHAPTER_0002.md", "第二章 青云宗\n\n他踏上修行路。\n")
     (root / "glossary.json").write_text(GLOSSARY_2, encoding="utf-8", newline="\n")
     (root / "tn_history.json").write_text(TN_HISTORY, encoding="utf-8", newline="\n")
     (root / "story_state.json").write_text(STORY_STATE, encoding="utf-8", newline="\n")
@@ -200,7 +200,7 @@ def case_3_fresh_init_is_silent() -> None:
     empty."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        write_source(root, "Chapter_0001.md", "第一章\n\n林凡睁开双眼。\n")
+        write_source(root, "CHAPTER_0001.md", "第一章\n\n林凡睁开双眼。\n")
 
         rc, out = run_init(root, force=False)
 
@@ -217,7 +217,7 @@ def case_3_fresh_init_is_silent() -> None:
         rc2 = None
         with tempfile.TemporaryDirectory() as td2:
             fresh2 = Path(td2)
-            write_source(fresh2, "Chapter_0001.md", "第一章\n\n林凡睁开双眼。\n")
+            write_source(fresh2, "CHAPTER_0001.md", "第一章\n\n林凡睁开双眼。\n")
             rc2, out2 = run_init(fresh2, force=True)
             check("3g fresh --force init: no resetting line either",
                   rc2 == 0 and "--force: resetting" not in out2, f"rc={rc2}")

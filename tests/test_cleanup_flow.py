@@ -16,7 +16,7 @@ count zero (the drift), the fake cleanup verdict retires the term, and the
 deferred retirement lands only after the SUCCESS faithfulness verdict.
 
 Covered: the run completes with outcome "translated"; the exact console
-line `[Chapter_0001] [glossary] retired mundane term '灵石' (mundane mock
+line `[CHAPTER_0001] [glossary] retired mundane term '灵石' (mundane mock
 term)` prints between the FAITH and GLOSSARY_EXPAND init lines; glossary.json
 after the run is exactly {"terms": [], "retired": ["灵石"]} (whole-file
 equality -- the deferred retire and the GLOSSARY_EXPAND save must agree),
@@ -24,7 +24,7 @@ find() no longer resolves 灵石, and retired_sources() == {"灵石"}; the
 per-invocation trace (logs/llm-*.jsonl, filtered by event type, never by
 line index -- the run also writes attempt and balance_advisory events)
 contains exactly one glossary_cleanup event with chapter
-"Chapter_0001.md", removed == [{"source": "灵石", "reason": "mundane mock
+"CHAPTER_0001.md", removed == [{"source": "灵石", "reason": "mundane mock
 term"}], kept == []; and the manifest marks the chapter translated.
 
 Three further run_chapter cases share the harness: the truncating-chunk
@@ -170,10 +170,10 @@ def make_project(root: Path, name: str) -> Path:
         (proj / d).mkdir()
     # No frontmatter, no trailing newline: read_chapter returns the text
     # verbatim, so the body is exactly the three lines.
-    (proj / "source" / "Chapter_0001.md").write_text(
+    (proj / "source" / "CHAPTER_0001.md").write_text(
         "他捡起一块灵石。\n灵石发光了。\n第三行。", encoding="utf-8", newline="\n")
     (proj / "chapters.json").write_text(
-        json.dumps([{"file": "Chapter_0001.md", "number": 1, "suffix": "",
+        json.dumps([{"file": "CHAPTER_0001.md", "number": 1, "suffix": "",
                      "order": 0, "status": "pending"}],
                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     glossary.save(proj, {"terms": [{
@@ -187,21 +187,21 @@ def make_project(root: Path, name: str) -> Path:
 
 
 RETIRED_LINE = (
-    "[Chapter_0001] [glossary] retired mundane term '灵石' (mundane mock term)\n"
+    "[CHAPTER_0001] [glossary] retired mundane term '灵石' (mundane mock term)\n"
 )
 
 # The run's full console output is deterministic: eight lines, the retired
 # line landing between the FAITH and GLOSSARY_EXPAND init lines.
 EXPECTED_OUTPUT = (
-    "[Chapter_0001] [init] TRANSLATE (attempt 1)\n"
-    "[Chapter_0001] [init] FAITH\n"
+    "[CHAPTER_0001] [init] TRANSLATE (attempt 1)\n"
+    "[CHAPTER_0001] [init] FAITH\n"
     + RETIRED_LINE +
-    "[Chapter_0001] [init] GLOSSARY_EXPAND\n"
-    "[Chapter_0001] [init] TN_GENERATE\n"
-    "[Chapter_0001] [ok] notes: 0 kept\n"
-    "[Chapter_0001] [ok] translated -> Chapter_0001.md "
+    "[CHAPTER_0001] [init] GLOSSARY_EXPAND\n"
+    "[CHAPTER_0001] [init] TN_GENERATE\n"
+    "[CHAPTER_0001] [ok] notes: 0 kept\n"
+    "[CHAPTER_0001] [ok] translated -> CHAPTER_0001.md "
     "(title: Mock Chapter Title, notes: 0)\n"
-    "[Chapter_0001] [init] recap\n"
+    "[CHAPTER_0001] [init] recap\n"
 )
 
 
@@ -218,7 +218,7 @@ def case_cleanup_flow() -> None:
         pipeline._chat = fake_chat
         try:
             outcome, out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md", cfg)
+                pipeline.run_chapter, proj, "CHAPTER_0001.md", cfg)
         finally:
             pipeline._chat = orig
 
@@ -229,7 +229,7 @@ def case_cleanup_flow() -> None:
         check("1b run: the exact retired-mundane-term console line",
               RETIRED_LINE in out, f"out={out!r}")
         check("1c run: the translated summary line printed",
-              "[Chapter_0001] [ok] translated ->" in out, f"out={out!r}")
+              "[CHAPTER_0001] [ok] translated ->" in out, f"out={out!r}")
         check("1d run: full deterministic console output (8 lines, retired "
               "line after FAITH init, before GLOSSARY_EXPAND init)",
               out == EXPECTED_OUTPUT, f"out={out!r}")
@@ -261,7 +261,7 @@ def case_cleanup_flow() -> None:
         check("3c trace: chapter/removed/kept exactly as _apply_pending_cleanup "
               "writes them",
               len(cleanups) == 1
-              and cleanups[0].get("chapter") == "Chapter_0001.md"
+              and cleanups[0].get("chapter") == "CHAPTER_0001.md"
               and cleanups[0].get("removed")
               == [{"source": "灵石", "reason": "mundane mock term"}]
               and cleanups[0].get("kept") == [],
@@ -269,11 +269,11 @@ def case_cleanup_flow() -> None:
 
         # ---- run outcome effects
         manifest = project.load_manifest(proj)
-        entry = project.find_entry(manifest, "Chapter_0001.md") or {}
+        entry = project.find_entry(manifest, "CHAPTER_0001.md") or {}
         check("4a outcome: manifest marks the chapter translated",
               entry.get("status") == "translated", f"entry={entry!r}")
-        check("4b outcome: translated/Chapter_0001.md assembled",
-              (proj / "translated" / "Chapter_0001.md").is_file())
+        check("4b outcome: translated/CHAPTER_0001.md assembled",
+              (proj / "translated" / "CHAPTER_0001.md").is_file())
 
 
 def make_cap_project(root: Path, name: str) -> Path:
@@ -288,10 +288,10 @@ def make_cap_project(root: Path, name: str) -> Path:
     for i in (1, 2):
         # No trailing newline: read_chapter returns the text verbatim, so
         # the body is exactly one line (make_project's convention).
-        (proj / "source" / f"Chapter_000{i}.md").write_text(
+        (proj / "source" / f"CHAPTER_000{i}.md").write_text(
             f"第{i}行正文。", encoding="utf-8", newline="\n")
     (proj / "chapters.json").write_text(
-        json.dumps([{"file": f"Chapter_000{i}.md", "number": i, "suffix": "",
+        json.dumps([{"file": f"CHAPTER_000{i}.md", "number": i, "suffix": "",
                      "order": i - 1, "status": "pending"}
                     for i in (1, 2)],
                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -345,9 +345,9 @@ def case_truncated_retry_cap() -> None:
         pipeline._chat = fake
         try:
             outcome1, out1, exc1 = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md", cfg)
+                pipeline.run_chapter, proj, "CHAPTER_0001.md", cfg)
             outcome2, out2, exc2 = capture(
-                pipeline.run_chapter, proj, "Chapter_0002.md", cfg)
+                pipeline.run_chapter, proj, "CHAPTER_0002.md", cfg)
         finally:
             pipeline._chat = orig
 
@@ -384,10 +384,10 @@ def make_empty_source_project(root: Path, name: str) -> Path:
     proj.mkdir()
     for d in ("source", "translated", "draft", "notes"):
         (proj / d).mkdir()
-    (proj / "source" / "Chapter_0001.md").write_text(
+    (proj / "source" / "CHAPTER_0001.md").write_text(
         "", encoding="utf-8", newline="\n")
     (proj / "chapters.json").write_text(
-        json.dumps([{"file": "Chapter_0001.md", "number": 1, "suffix": "",
+        json.dumps([{"file": "CHAPTER_0001.md", "number": 1, "suffix": "",
                      "order": 0, "status": "pending"}],
                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (proj / "config.json").write_text(
@@ -414,7 +414,7 @@ def case_zero_line_source() -> None:
         pipeline._chat = fake
         try:
             outcome, out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md", cfg)
+                pipeline.run_chapter, proj, "CHAPTER_0001.md", cfg)
         finally:
             pipeline._chat = orig
 
@@ -422,14 +422,14 @@ def case_zero_line_source() -> None:
               exc is None and outcome == "needs-review",
               f"outcome={outcome} exc={exc!r}")
         check("6b empty source: warn line names the chapter",
-              "[Chapter_0001] [warn] Chapter_0001.md: source chapter has no "
+              "[CHAPTER_0001] [warn] CHAPTER_0001.md: source chapter has no "
               "content - marked needs-review" in out, f"out={out!r}")
         check("6c empty source: the LLM is never called",
               llm_calls == [], f"llm_calls={llm_calls}")
         check("6d empty source: no translated file, manifest needs-review",
-              not (proj / "translated" / "Chapter_0001.md").exists()
+              not (proj / "translated" / "CHAPTER_0001.md").exists()
               and (project.find_entry(project.load_manifest(proj),
-                                      "Chapter_0001.md") or {}).get("status")
+                                      "CHAPTER_0001.md") or {}).get("status")
               == "needs-review",
               f"manifest={project.load_manifest(proj)!r}")
 
@@ -460,7 +460,7 @@ def case_manifest_save_failure() -> None:
         pipeline._chat = fake_chat
         try:
             outcome, out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md", cfg)
+                pipeline.run_chapter, proj, "CHAPTER_0001.md", cfg)
         finally:
             pipeline._chat = orig
             project.save_manifest = orig_save
@@ -470,7 +470,7 @@ def case_manifest_save_failure() -> None:
               f"outcome={outcome} exc={exc!r}")
         check("7b manifest save failure: warn names the chapter and the "
               "written file",
-              "[warn] manifest update failed for Chapter_0001.md: [Errno 13] "
+              "[warn] manifest update failed for CHAPTER_0001.md: [Errno 13] "
               "mocked denied - chapter file is written; status stays "
               "in-progress" in out, f"out={out!r}")
         check("7c manifest save failure: in-progress save went through, "
@@ -478,9 +478,9 @@ def case_manifest_save_failure() -> None:
               saves == ["in-progress", "translated"], f"saves={saves}")
         check("7d manifest save failure: disk keeps in-progress, file exists",
               (project.find_entry(project.load_manifest(proj),
-                                  "Chapter_0001.md") or {}).get("status")
+                                  "CHAPTER_0001.md") or {}).get("status")
               == "in-progress"
-              and (proj / "translated" / "Chapter_0001.md").is_file(),
+              and (proj / "translated" / "CHAPTER_0001.md").is_file(),
               f"manifest={project.load_manifest(proj)!r}")
 
 
@@ -491,7 +491,7 @@ def case_notes_report_line() -> None:
     -> invalid order with their labels (low-confidence / overflow / invalid)
     and the notes/<stem>.dropped.json pointer -- and the pointer's target is
     the file tn.save_dropped really writes."""
-    tag, stem = "[Chapter_0009]", "Chapter_0009"
+    tag, stem = "[CHAPTER_0009]", "CHAPTER_0009"
     kept = [
         {"line": 3, "term": "灵根", "note": "Cultivation aptitude.",
          "category": "cultural"},
@@ -513,9 +513,9 @@ def case_notes_report_line() -> None:
     line = pipeline._notes_report_line(tag, stem, kept, dropped)
     check("8a report line: full rendered line verbatim (parenthetical, "
           "reason labels, dropped pointer)",
-          line == "[Chapter_0009] [ok] notes: 3 kept (cultural 1, idiom 2)"
+          line == "[CHAPTER_0009] [ok] notes: 3 kept (cultural 1, idiom 2)"
                   "; 3 dropped (2 low-confidence, 1 overflow) "
-                  "-> notes/Chapter_0009.dropped.json",
+                  "-> notes/CHAPTER_0009.dropped.json",
           f"line={line!r}")
 
     # All three reasons render in the fixed DROP_REASONS order, and a kept
@@ -530,16 +530,16 @@ def case_notes_report_line() -> None:
     line3 = pipeline._notes_report_line(tag, stem, kept_other, dropped3)
     check("8b report line: three reasons in the fixed order, unknown "
           "category lands in 'other'",
-          line3 == "[Chapter_0009] [ok] notes: 1 kept (other 1)"
+          line3 == "[CHAPTER_0009] [ok] notes: 1 kept (other 1)"
                    "; 4 dropped (2 low-confidence, 1 overflow, 1 invalid) "
-                   "-> notes/Chapter_0009.dropped.json",
+                   "-> notes/CHAPTER_0009.dropped.json",
           f"line3={line3!r}")
 
     # The pointer's target is the artifact save_dropped really writes.
     with tempfile.TemporaryDirectory() as td:
         proj = Path(td)
-        tn.save_dropped(proj, "Chapter_0009.md", dropped)
-        pointer = "notes/Chapter_0009.dropped.json"
+        tn.save_dropped(proj, "CHAPTER_0009.md", dropped)
+        pointer = "notes/CHAPTER_0009.dropped.json"
         check("8c report line: the dropped-file pointer target exists",
               (proj / pointer).is_file(), f"pointer={pointer}")
         document = json.loads((proj / pointer).read_text(encoding="utf-8"))

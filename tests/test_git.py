@@ -232,9 +232,9 @@ def case_3_cmd_init() -> None:
 
     def make_source(proj: Path) -> None:
         (proj / "source").mkdir(parents=True)
-        (proj / "source" / "Chapter_0001.md").write_text(
+        (proj / "source" / "CHAPTER_0001.md").write_text(
             "第一章 灵根\n正文第一行\n", encoding="utf-8", newline="\n")
-        (proj / "source" / "Chapter_0002.md").write_text(
+        (proj / "source" / "CHAPTER_0002.md").write_text(
             "第二章 筑基\n正文第一行\n", encoding="utf-8", newline="\n")
 
     def init_argv(proj: Path, *extra: str) -> list[str]:
@@ -271,7 +271,7 @@ def case_3_cmd_init() -> None:
         # the rewrite labeled as its own commit. A planted story_state.json
         # must not survive -- the reset wipes it with glossary/history.
         (proj / "story_state.json").write_text(
-            '{"chapters": {"Chapter_001": {"recap": "stale recap"}}}\n',
+            '{"chapters": {"CHAPTER_001": {"recap": "stale recap"}}}\n',
             encoding="utf-8", newline="\n")
         ns_force = translate._build_parser().parse_args(init_argv(proj, "--force"))
         buf = io.StringIO()
@@ -294,7 +294,7 @@ def case_3_cmd_init() -> None:
         # diff REAL by re-scraping a chapter bare -- its backfill lands
         # under the distinct 'init: reseed after reinitialize' subject,
         # keeping the two re-init commits from sharing one subject.
-        (proj / "source" / "Chapter_0001.md").write_text(
+        (proj / "source" / "CHAPTER_0001.md").write_text(
             "第一章 灵根\n正文第一行\n", encoding="utf-8", newline="\n")
         ns_force2 = translate._build_parser().parse_args(init_argv(proj, "--force"))
         buf = io.StringIO()

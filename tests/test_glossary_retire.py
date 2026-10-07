@@ -82,7 +82,7 @@ def make_seeded_corpus_project(td: str) -> Path:
     min_count=2 would re-add the term unless it is retired."""
     root = make_project(td)
     (root / "source").mkdir()
-    (root / "source" / "Chapter_0001.md").write_text(
+    (root / "source" / "CHAPTER_0001.md").write_text(
         "他的灵根觉醒了。\n众人议论灵根的品阶。\n", encoding="utf-8", newline="\n"
     )
     return root

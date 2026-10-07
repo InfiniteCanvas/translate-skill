@@ -145,7 +145,7 @@ def case_2_stall_killed() -> None:
         sched = make_scheduler(td)
         proc = spawn("import time; time.sleep(30)")
         sched._proc = proc
-        sched._reason = "translate Chapter_0001.md"
+        sched._reason = "translate CHAPTER_0001.md"
         orig_timeout = autobuild._REAP_TIMEOUT
         autobuild._REAP_TIMEOUT = 0.5
         try:
@@ -156,7 +156,7 @@ def case_2_stall_killed() -> None:
               exc is None, f"exc={exc!r}")
         check("2b stall: exact stalled warn line",
               out == "[warn] epub auto-build stalled, killed after 0.5s "
-                     "(after translate Chapter_0001.md) - see "
+                     "(after translate CHAPTER_0001.md) - see "
                      "logs/epub-build.log\n", f"out={out!r}")
         check("2c stall: the child is dead (poll() is not None)",
               proc.poll() is not None, f"poll={proc.poll()!r}")
@@ -254,7 +254,7 @@ def case_4_finalize_warn() -> None:
         sched = make_scheduler(td)
         fake = FakeProc(timeouts=25)
         sched._proc = fake
-        sched._reason = "translate Chapter_0002.md"
+        sched._reason = "translate CHAPTER_0002.md"
         orig_warn, orig_poll = autobuild._FINALIZE_WARN_S, autobuild._FINALIZE_POLL_S
         autobuild._FINALIZE_WARN_S = 2
         autobuild._FINALIZE_POLL_S = 0.1
@@ -274,7 +274,7 @@ def case_4_finalize_warn() -> None:
               f"out={out!r}")
         check("4d finalize-warn: build ok reported after the fake child exits",
               out.endswith("[epub-auto] build ok (after translate "
-                           "Chapter_0002.md)\n"), f"out={out!r}")
+                           "CHAPTER_0002.md)\n"), f"out={out!r}")
         check("4e finalize-warn: every wait bounded at the poll interval",
               fake.timeouts and all(t == 0.1 for t in fake.timeouts),
               f"timeouts={fake.timeouts!r}")
@@ -297,7 +297,7 @@ def case_5_finalize_stall_kill() -> None:
         sched = make_scheduler(td)
         fake = FakeProc(timeouts=10 ** 9)  # never exits on its own
         sched._proc = fake
-        sched._reason = "translate Chapter_0003.md"
+        sched._reason = "translate CHAPTER_0003.md"
         killed: list[object] = []
 
         def fake_tree_kill(proc):
@@ -321,7 +321,7 @@ def case_5_finalize_stall_kill() -> None:
               killed == [fake], f"killed={killed!r}")
         check("5c stall-kill: exact stalled warn",
               out == "[warn] epub auto-build stalled, killed after 0.3s "
-                     "(after translate Chapter_0003.md) - see "
+                     "(after translate CHAPTER_0003.md) - see "
                      "logs/epub-build.log\n", f"out={out!r}")
         check("5d stall-kill: no finalize-wait line before the stall",
               "finalize waited" not in out, f"out={out!r}")
@@ -345,7 +345,7 @@ def case_6_kill_tool_failure() -> None:
         sched = make_scheduler(td)
         fake = FakeProc(timeouts=0)
         sched._proc = fake
-        sched._reason = "translate Chapter_0004.md"
+        sched._reason = "translate CHAPTER_0004.md"
         if sys.platform == "win32":
             orig_binding = autobuild.subprocess
 
@@ -401,7 +401,7 @@ def case_7_survivor_abort() -> None:
         sched = make_scheduler(td)
         fake = FakeProc(timeouts=10 ** 9)  # never exits, even after a kill
         sched._proc = fake
-        sched._reason = "translate Chapter_0005.md"
+        sched._reason = "translate CHAPTER_0005.md"
         killed: list[object] = []
         orig_kill = autobuild._kill_tree
         autobuild._kill_tree = killed.append
@@ -437,7 +437,7 @@ def case_8_stall_tmp_sweep() -> None:
         sched = make_scheduler(td)
         fake = FakeProc(timeouts=10 ** 9)
         sched._proc = fake
-        sched._reason = "translate Chapter_0006.md"
+        sched._reason = "translate CHAPTER_0006.md"
         export = Path(td) / "export"
         export.mkdir()
         own = export / f"atomic.epub.{fake.pid}.tmp"
@@ -471,7 +471,7 @@ def case_8_stall_tmp_sweep() -> None:
               out == "[warn] removed 1 stale epub temp file(s) left by the "
                      "killed build\n"
                      "[warn] epub auto-build stalled, killed after 0.3s "
-                     "(after translate Chapter_0006.md) - see "
+                     "(after translate CHAPTER_0006.md) - see "
                      "logs/epub-build.log\n", f"out={out!r}")
         check("8e stall-sweep: scheduler idle again",
               sched._proc is None and sched._reason == "",
@@ -488,7 +488,7 @@ def case_9_survivor_keeps_tmp() -> None:
         sched = make_scheduler(td)
         fake = FakeProc(timeouts=10 ** 9)  # never exits, even after a kill
         sched._proc = fake
-        sched._reason = "translate Chapter_0007.md"
+        sched._reason = "translate CHAPTER_0007.md"
         export = Path(td) / "export"
         export.mkdir()
         own = export / f"atomic.epub.{fake.pid}.tmp"
@@ -515,7 +515,7 @@ def case_9_survivor_keeps_tmp() -> None:
               out == "[warn] epub auto-build builder survived the kill - "
                      "it may still be running\n"
                      "[warn] epub auto-build stalled, killed after 0.3s "
-                     "(after translate Chapter_0007.md) - see "
+                     "(after translate CHAPTER_0007.md) - see "
                      "logs/epub-build.log\n", f"out={out!r}")
         check("9e no-sweep: scheduler idle again",
               sched._proc is None and sched._reason == "",

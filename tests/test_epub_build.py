@@ -102,7 +102,7 @@ def write_lf(path: Path, text: str) -> None:
 
 
 CHAPTERS = {
-    "Chapter_0001.md": (
+    "CHAPTER_0001.md": (
         "---\n"
         "chapter_title: 第一章 原子\n"
         "title: Atomic One\n"
@@ -110,7 +110,7 @@ CHAPTERS = {
         "\n"
         "The first chapter body.\n"
     ),
-    "Chapter_0002.md": (
+    "CHAPTER_0002.md": (
         "---\n"
         "chapter_title: 第二章 原子\n"
         "title: Atomic Two\n"

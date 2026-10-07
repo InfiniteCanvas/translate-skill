@@ -2,9 +2,9 @@
 
 Covers project.discover's ASCII-digit rule (CHAPTER_RE spells [0-9], never
 \\d: \\d also matches full-width/Arabic-Indic decimal digits, so a
-"Chapter_０００７.md" file would be discovered and int()-collapse onto the
-real Chapter_0007 -- Unicode-digit names must NOT be discovered while ASCII
-"Chapter_0007.md" and the suffixed, differently-cased "chapter_0012b.md"
+"CHAPTER_０００７.md" file would be discovered and int()-collapse onto the
+real CHAPTER_0007 -- Unicode-digit names must NOT be discovered while ASCII
+"CHAPTER_0007.md" and the suffixed, differently-cased "chapter_0012b.md"
 still are, with re.IGNORECASE preserved for the name and the a/b suffix),
 the atomic write helpers: atomic_write_text creates a missing parent
 directory (deep paths work on the first write, round-trip their text, and
@@ -68,70 +68,78 @@ def write_lf(path: Path, text: str) -> None:
 
 
 def case_1_discovery_ascii_digits() -> None:
-    """discover() accepts exactly one spelling: "Chapter_NNNN.md", ASCII digits,
-    case-insensitive. Short-padded (3- and 2-digit), suffixed, full-width and
-    Arabic-Indic digit twins, 5-digit numbers, and wrong extensions are not
-    discovered -- and near_miss_reason() reports each of them so none vanishes.
+    """discover() accepts exactly one spelling: "CHAPTER_NNNN.md" -- all caps,
+    ASCII digits, 4 of them. The pattern carries NO re.IGNORECASE, so a
+    differently-cased prefix, a differently-cased extension, short padding, a
+    letter suffix, full-width or Arabic-Indic digits, 5-digit numbers, and
+    wrong extensions are all NOT discovered -- and near_miss_reason() reports
+    each so none of them vanishes silently.
 
     The fixture deliberately never pairs two names differing only in case
-    (chapter_0099.md vs Chapter_0099.md): on a case-insensitive filesystem they
+    (chapter_0099.md vs CHAPTER_0099.md): on a case-insensitive filesystem they
     could not coexist as two files, so the pair would test the FS, not the code.
     """
     with tempfile.TemporaryDirectory() as td:
         source = Path(td) / "source"
         source.mkdir()
         names = [
-            "Chapter_0007.md",    # discovered, number 7
-            "chapter_0099.md",    # discovered: IGNORECASE still applies to the prefix
-            "Chapter_0012.md",    # discovered, number 12
-            "Chapter_001.md",     # 3 digits: NOT discovered (padding is fixed)
-            "Chapter_12.md",      # 2 digits: NOT discovered (padding is fixed)
-            "Chapter_0042a.md",   # extras spelling: NOT discovered (suffix is gone)
-            "Chapter_0099A.md",   # 1-letter suffix: NOT discovered (suffix is gone)
-            "Chapter_０００７.md",  # full-width digits: NOT discovered
-            "Chapter_٠٠٠٧.md",    # Arabic-Indic digits: NOT discovered
-            "Chapter_12345.md",   # 5 digits: NOT discovered
-            "Chapter_0007.txt",   # wrong extension: NOT discovered
+            "CHAPTER_0007.md",    # discovered, number 7
+            "CHAPTER_0012.md",    # discovered, number 12
+            "chapter_0099.md",    # lowercase prefix: NOT discovered (case is exact)
+            "Chapter_0013.md",    # title-case prefix: NOT discovered
+            "CHAPTER_0099.MD",    # uppercase extension: NOT discovered
+            "CHAPTER_001.md",     # 3 digits: NOT discovered (padding is fixed)
+            "CHAPTER_12.md",      # 2 digits: NOT discovered (padding is fixed)
+            "CHAPTER_0042a.md",   # extras spelling: NOT discovered (suffix is gone)
+            "CHAPTER_0099A.md",   # 1-letter suffix: NOT discovered (suffix is gone)
+            "CHAPTER_０００７.md",  # full-width digits: NOT discovered
+            "CHAPTER_٠٠٠٧.md",    # Arabic-Indic digits: NOT discovered
+            "CHAPTER_12345.md",   # 5 digits: NOT discovered
+            "CHAPTER_0007.txt",   # wrong extension: NOT discovered
         ]
         for name in names:
             write_lf(source / name, "正文\n")
         found = P.discover(Path(td))
         by_name = {c.file: c for c in found}
         check("1a discover: ASCII 4-digit chapter discovered",
-              by_name.get("Chapter_0007.md") is not None
-              and by_name["Chapter_0007.md"].number == 7,
+              by_name.get("CHAPTER_0007.md") is not None
+              and by_name["CHAPTER_0007.md"].number == 7,
               f"found={[c.file for c in found]!r}")
-        check("1b discover: lowercase prefix still discovered (IGNORECASE)",
-              by_name.get("chapter_0099.md") is not None
-              and by_name["chapter_0099.md"].number == 99,
+        check("1b discover: lowercase prefix NOT discovered (case is exact)",
+              "chapter_0099.md" not in by_name,
+              f"found={[c.file for c in found]!r}")
+        check("1b2 discover: title-case prefix NOT discovered",
+              "Chapter_0013.md" not in by_name,
+              f"found={[c.file for c in found]!r}")
+        check("1b3 discover: uppercase extension NOT discovered",
+              "CHAPTER_0099.MD" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1c discover: extras/bonus suffix NOT discovered (suffix is gone)",
-              "Chapter_0042a.md" not in by_name,
+              "CHAPTER_0042a.md" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1c2 discover: single-letter suffix NOT discovered",
-              "Chapter_0099A.md" not in by_name,
+              "CHAPTER_0099A.md" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1d discover: 3-digit chapter NOT discovered (padding fixed at 4)",
-              "Chapter_001.md" not in by_name,
+              "CHAPTER_001.md" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1d2 discover: 2-digit chapter NOT discovered (padding fixed at 4)",
-              "Chapter_12.md" not in by_name,
+              "CHAPTER_12.md" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1e discover: full-width digits NOT discovered",
-              "Chapter_０００７.md" not in by_name,
+              "CHAPTER_０００７.md" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1f discover: Arabic-Indic digits NOT discovered",
-              "Chapter_٠٠٠٧.md" not in by_name,
+              "CHAPTER_٠٠٠٧.md" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1g discover: 5-digit number NOT discovered",
-              "Chapter_12345.md" not in by_name,
+              "CHAPTER_12345.md" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1h discover: wrong extension NOT discovered",
-              "Chapter_0007.txt" not in by_name,
+              "CHAPTER_0007.txt" not in by_name,
               f"found={[c.file for c in found]!r}")
-        check("1i discover: exactly the three ASCII chapters, sorted by number",
-              [c.file for c in found] == ["Chapter_0007.md", "Chapter_0012.md",
-                                          "chapter_0099.md"],
+        check("1i discover: exactly the two canonical chapters, sorted by number",
+              [c.file for c in found] == ["CHAPTER_0007.md", "CHAPTER_0012.md"],
               f"found={[c.file for c in found]!r}")
 
 
@@ -264,7 +272,7 @@ def case_4_write_chapter_atomic() -> None:
     and writing into a not-yet-existing directory succeeds (parent creation
     inherited from atomic_write_text)."""
     with tempfile.TemporaryDirectory() as td:
-        path = Path(td) / "translated" / "Chapter_0001.md"
+        path = Path(td) / "translated" / "CHAPTER_0001.md"
         P.write_chapter(path, {"chapter_title": "第一章", "order": 0},
                         "第一行\n第二行\n\n\n")
         fm, body = P.read_chapter(path)
@@ -282,7 +290,7 @@ def case_4_write_chapter_atomic() -> None:
               f"tmp={[p.name for p in path.parent.glob('*.tmp')]}")
 
     with tempfile.TemporaryDirectory() as td:
-        path = Path(td) / "translated" / "Chapter_0001.md"
+        path = Path(td) / "translated" / "CHAPTER_0001.md"
         P.write_chapter(path, {"chapter_title": "旧"}, "旧正文\n")
         before = path.read_bytes()
 
@@ -309,7 +317,7 @@ def case_4_write_chapter_atomic() -> None:
               f"tmp={[p.name for p in path.parent.glob('*.tmp')]}")
 
     with tempfile.TemporaryDirectory() as td:
-        path = Path(td) / "deep" / "translated" / "Chapter_0001.md"
+        path = Path(td) / "deep" / "translated" / "CHAPTER_0001.md"
         P.write_chapter(path, {"chapter_title": "深"}, "正文\n")
         fm, body = P.read_chapter(path)
         check("4h write_chapter: missing parent directory created",

@@ -73,21 +73,21 @@ def case_1_ordering() -> None:
     Since padding is fixed at exactly 4 digits (project.CHAPTER_RE), every
     in-range file name sorts lexicographically the same way its number sorts
     -- so this case can no longer DISTINGUISH the two strategies the way the
-    old mixed-width fixtures (Chapter_1.md vs Chapter_0010.md) did. It still
+    old mixed-width fixtures (CHAPTER_1.md vs CHAPTER_0010.md) did. It still
     pins the contract (order values are 0-based and follow the number); the
     now-unreachable lexicographic/numeric divergence is why padding was
     tightened in the first place."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        write_source(root, "Chapter_0002.md", "line one\nline two\n")
-        write_source(root, "Chapter_0010.md", "line one\nline two\n")
-        write_source(root, "Chapter_0001.md", "line one\nline two\n")
+        write_source(root, "CHAPTER_0002.md", "line one\nline two\n")
+        write_source(root, "CHAPTER_0010.md", "line one\nline two\n")
+        write_source(root, "CHAPTER_0001.md", "line one\nline two\n")
 
         manifest = project.sync_manifest(root)
 
         check("1a order: files sorted by parsed number, not name",
               [e["file"] for e in manifest]
-              == ["Chapter_0001.md", "Chapter_0002.md", "Chapter_0010.md"],
+              == ["CHAPTER_0001.md", "CHAPTER_0002.md", "CHAPTER_0010.md"],
               f"{[e['file'] for e in manifest]}")
         check("1b order: 0-based order values",
               [e["order"] for e in manifest] == [0, 1, 2],
@@ -103,22 +103,22 @@ def case_2_status_and_pickup() -> None:
     """Rebuilds preserve status by file name and pick up new files as pending."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        write_source(root, "Chapter_0001.md", "first\nbody\n")
-        write_source(root, "Chapter_0002.md", "second\nbody\n")
+        write_source(root, "CHAPTER_0001.md", "first\nbody\n")
+        write_source(root, "CHAPTER_0002.md", "second\nbody\n")
         project.sync_manifest(root)
 
         manifest = project.load_manifest(root)
-        project.set_status(manifest, "Chapter_0001.md", "translated")
+        project.set_status(manifest, "CHAPTER_0001.md", "translated")
         project.save_manifest(root, manifest)
 
-        write_source(root, "Chapter_0003.md", "third\nbody\n")
+        write_source(root, "CHAPTER_0003.md", "third\nbody\n")
         rebuilt = project.sync_manifest(root)
 
-        first = project.find_entry(rebuilt, "Chapter_0001.md")
+        first = project.find_entry(rebuilt, "CHAPTER_0001.md")
         check("2a status: translated survives the rebuild",
               first is not None and first.get("status") == "translated",
               f"entry={first}")
-        third = project.find_entry(rebuilt, "Chapter_0003.md")
+        third = project.find_entry(rebuilt, "CHAPTER_0003.md")
         check("2b pickup: new chapter enters the manifest",
               third is not None, f"files={[e['file'] for e in rebuilt]}")
         check("2c pickup: new chapter status is pending",
@@ -137,19 +137,19 @@ def case_3_removal() -> None:
     """Deleting a source file drops its manifest entry on the next rebuild."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        write_source(root, "Chapter_0001.md", "first\nbody\n")
-        write_source(root, "Chapter_0002.md", "second\nbody\n")
+        write_source(root, "CHAPTER_0001.md", "first\nbody\n")
+        write_source(root, "CHAPTER_0002.md", "second\nbody\n")
         project.sync_manifest(root)
 
-        (root / "source" / "Chapter_0002.md").unlink()
+        (root / "source" / "CHAPTER_0002.md").unlink()
         rebuilt = project.sync_manifest(root)
 
         check("3a removal: deleted file's entry is gone",
-              project.find_entry(rebuilt, "Chapter_0002.md") is None,
+              project.find_entry(rebuilt, "CHAPTER_0002.md") is None,
               f"files={[e['file'] for e in rebuilt]}")
         check("3b removal: surviving entry kept with its status",
               [(e["file"], e["status"]) for e in rebuilt]
-              == [("Chapter_0001.md", "pending")],
+              == [("CHAPTER_0001.md", "pending")],
               f"{rebuilt}")
 
 
@@ -160,23 +160,23 @@ def case_4_backfill() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         # Bare chapter: heading marker stripped from the derived title.
-        write_source(root, "Chapter_0001.md", "# 第一章 灵根\n正文第一行\n")
+        write_source(root, "CHAPTER_0001.md", "# 第一章 灵根\n正文第一行\n")
         # Per-chapter source_url must survive the novel-level default.
-        write_source(root, "Chapter_0002.md",
+        write_source(root, "CHAPTER_0002.md",
                      "---\n"
                      "source_url: https://example.com/per-chapter\n"
                      "---\n"
                      "\n"
                      "第二章 筑基\nbody\n")
         # Existing chapter_title must not be touched.
-        write_source(root, "Chapter_0003.md",
+        write_source(root, "CHAPTER_0003.md",
                      "---\n"
                      "chapter_title: Existing Title\n"
                      "---\n"
                      "\n"
                      "第三章\nbody\n")
         # Fully populated chapter: nothing to change.
-        write_source(root, "Chapter_0004.md",
+        write_source(root, "CHAPTER_0004.md",
                      "---\n"
                      f"novel_title: {NOVEL_TITLE}\n"
                      f"author: {NOVEL_AUTHOR}\n"
@@ -194,7 +194,7 @@ def case_4_backfill() -> None:
 
         check("4b return: count equals the number of changed chapters",
               changed == 3, f"changed={changed}")
-        fm1, _ = project.read_chapter(root / "source" / "Chapter_0001.md")
+        fm1, _ = project.read_chapter(root / "source" / "CHAPTER_0001.md")
         check("4c bare: novel-level keys filled",
               fm1.get("novel_title") == NOVEL_TITLE
               and fm1.get("author") == NOVEL_AUTHOR
@@ -203,7 +203,7 @@ def case_4_backfill() -> None:
         check("4d bare: chapter_title derived from the first body line",
               fm1.get("chapter_title") == "第一章 灵根",
               f"chapter_title={fm1.get('chapter_title')!r}")
-        fm2, _ = project.read_chapter(root / "source" / "Chapter_0002.md")
+        fm2, _ = project.read_chapter(root / "source" / "CHAPTER_0002.md")
         check("4e own-value: per-chapter source_url kept",
               fm2.get("source_url") == "https://example.com/per-chapter",
               f"source_url={fm2.get('source_url')!r}")
@@ -211,7 +211,7 @@ def case_4_backfill() -> None:
               fm2.get("novel_title") == NOVEL_TITLE
               and fm2.get("author") == NOVEL_AUTHOR,
               f"frontmatter={fm2}")
-        fm3, _ = project.read_chapter(root / "source" / "Chapter_0003.md")
+        fm3, _ = project.read_chapter(root / "source" / "CHAPTER_0003.md")
         check("4g existing: chapter_title untouched",
               fm3.get("chapter_title") == "Existing Title",
               f"chapter_title={fm3.get('chapter_title')!r}")
@@ -221,11 +221,11 @@ def case_5_empty_values_skipped() -> None:
     """Empty novel-level values are never written as empty keys."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        write_source(root, "Chapter_0001.md", "第一章\nbody\n")
+        write_source(root, "CHAPTER_0001.md", "第一章\nbody\n")
         changed = project.backfill_frontmatter(
             project.discover(root), "", NOVEL_AUTHOR, "")
 
-        fm, _ = project.read_chapter(root / "source" / "Chapter_0001.md")
+        fm, _ = project.read_chapter(root / "source" / "CHAPTER_0001.md")
         check("5a empty: empty novel-level values skipped",
               "novel_title" not in fm and "source_url" not in fm
               and fm.get("author") == NOVEL_AUTHOR,
@@ -241,8 +241,8 @@ def case_6_malformed_chapter_is_cli_error() -> None:
     every source file, and scraped batches routinely contain bad ones."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        write_source(root, "Chapter_0001.md", "first\nbody\n")
-        write_source(root, "Chapter_0002.md",
+        write_source(root, "CHAPTER_0001.md", "first\nbody\n")
+        write_source(root, "CHAPTER_0002.md",
                      "---\n"
                      "chapter_title: [unclosed\n"
                      "---\n"
@@ -256,7 +256,7 @@ def case_6_malformed_chapter_is_cli_error() -> None:
                   "cmd_sync returned without raising")
         except CliError as exc:
             check("6a malformed: broken frontmatter raises CliError",
-                  "Chapter_0002.md" in str(exc), f"message={exc}")
+                  "CHAPTER_0002.md" in str(exc), f"message={exc}")
 
 
 def main() -> int:

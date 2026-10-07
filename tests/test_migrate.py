@@ -1286,15 +1286,22 @@ def case_12_v010() -> None:
     --dry-run touches nothing, a second run reports [].
     """
     def make_v9_project(root: Path, name: str) -> Path:
-        """source/ holds one short-padded chapter, one already-canonical
-        chapter, and one non-canonical-case EXTRA chapter; the first has a
-        full artifact set to carry across."""
+        """A v9-era project in the OLD title-case naming.
+
+        Crucially the renames here differ ONLY IN CASE (Chapter_001.md ->
+        CHAPTER_0001.md), which is the hard path on a case-insensitive
+        filesystem: the destination already exists as the very file being
+        renamed, so a naive rename() raises and a naive exists() collision
+        check would report a phantom clash and skip itself. source/ also holds
+        one short-padded chapter, one already-canonical chapter, and a retired
+        EXTRA chapter; the first has a full artifact set to carry across."""
         proj = root / name
         (proj / "source").mkdir(parents=True)
         (proj / "draft").mkdir()
         (proj / "translated").mkdir()
         (proj / "notes").mkdir()
-        for chapter in ("Chapter_001.md", "Chapter_0002.md", "chapter_0012b.md"):
+        for chapter in ("Chapter_001.md", "Chapter_002.md", "CHAPTER_0003.md",
+                        "Chapter_0042a.md"):
             (proj / "source" / chapter).write_text("body\n", encoding="utf-8")
         (proj / "draft" / "Chapter_001.state.json").write_text("{}", encoding="utf-8")
         (proj / "draft" / "Chapter_001.md").write_text("draft\n", encoding="utf-8")
@@ -1305,14 +1312,16 @@ def case_12_v010() -> None:
         (proj / "chapters.json").write_text(json.dumps([
             {"file": "Chapter_001.md", "number": 1, "suffix": "",
              "order": 0, "status": "translated", "title": "One"},
-            {"file": "Chapter_0002.md", "number": 2, "suffix": "",
+            {"file": "Chapter_002.md", "number": 2, "suffix": "",
              "order": 1, "status": "pending", "title": "Two"},
-            {"file": "chapter_0012b.md", "number": 12, "suffix": "b",
-             "order": 2, "status": "pending", "title": "Extra"},
+            {"file": "CHAPTER_0003.md", "number": 3, "suffix": "",
+             "order": 2, "status": "pending", "title": "Three"},
+            {"file": "Chapter_0042a.md", "number": 42, "suffix": "a",
+             "order": 3, "status": "pending", "title": "Extra"},
         ], indent=2) + "\n", encoding="utf-8")
         (proj / "story_state.json").write_text(json.dumps({
             "chapters": {"Chapter_001": {"recap": "one"},
-                         "Chapter_0002": {"recap": "two"}}
+                         "Chapter_002": {"recap": "two"}}
         }, indent=2) + "\n", encoding="utf-8")
         return proj
 
@@ -1325,21 +1334,21 @@ def case_12_v010() -> None:
 
         names = sorted(p.name for p in (proj / "source").iterdir())
         check("12a v010: short-padded chapter renamed to 4 digits",
-              "Chapter_0001.md" in names and "Chapter_001.md" not in names,
+              "CHAPTER_0001.md" in names and "CHAPTER_001.md" not in names,
               f"source={names!r}")
         check("12b v010: already-canonical chapter untouched",
-              "Chapter_0002.md" in names, f"source={names!r}")
+              "CHAPTER_0002.md" in names, f"source={names!r}")
         check("12c v010: extra chapter left exactly as it was",
-              "chapter_0012b.md" in names, f"source={names!r}")
+              "Chapter_0042a.md" in names, f"source={names!r}")
 
-        check("12d v010: the rename is reported",
-              any("renamed 1 source file" in ln for ln in lines),
+        check("12d v010: the case-only rename is reported",
+              any("renamed 2 source file" in ln for ln in lines),
               f"lines={lines!r}")
         check("12e v010: the extra chapter is warned about by name",
-              any("chapter_0012b.md" in ln and ln.startswith("[warn]")
+              any("Chapter_0042a.md" in ln and ln.startswith("[warn]")
                   for ln in lines), f"lines={lines!r}")
         check("12f v010: the warning says to hand it to an agent",
-              any("agent" in ln and "Chapter_NNNN" in ln for ln in lines),
+              any("agent" in ln and "CHAPTER_NNNN" in ln for ln in lines),
               f"lines={lines!r}")
         check("12g v010: no config keys materialized (not a config step)",
               not any("materialized" in ln for ln in lines), f"lines={lines!r}")
@@ -1347,33 +1356,33 @@ def case_12_v010() -> None:
         manifest = json.loads((proj / "chapters.json").read_text(encoding="utf-8"))
         files = [e["file"] for e in manifest]
         check("12h v010: chapters.json re-pointed at the new name",
-              "Chapter_0001.md" in files and "Chapter_001.md" not in files,
+              "CHAPTER_0001.md" in files and "CHAPTER_001.md" not in files,
               f"files={files!r}")
         check("12i v010: chapters.json keeps titles and statuses",
-              any(e["file"] == "Chapter_0001.md" and e["title"] == "One"
+              any(e["file"] == "CHAPTER_0001.md" and e["title"] == "One"
                   and e["status"] == "translated" for e in manifest),
               f"manifest={manifest!r}")
         check("12j v010: the untouched entries keep their names",
-              "Chapter_0002.md" in files and "chapter_0012b.md" in files,
+              "CHAPTER_0003.md" in files and "Chapter_0042a.md" in files,
               f"files={files!r}")
 
         state = json.loads((proj / "story_state.json").read_text(encoding="utf-8"))
         check("12k v010: story_state recap re-keyed, none lost",
-              set(state["chapters"]) == {"Chapter_0001", "Chapter_0002"},
+              set(state["chapters"]) == {"CHAPTER_0001", "CHAPTER_0002"},
               f"chapters={sorted(state['chapters'])!r}")
         check("12l v010: the re-keyed recap keeps its content",
-              state["chapters"]["Chapter_0001"]["recap"] == "one",
-              f"recap={state['chapters'].get('Chapter_0001')!r}")
+              state["chapters"]["CHAPTER_0001"]["recap"] == "one",
+              f"recap={state['chapters'].get('CHAPTER_0001')!r}")
 
         check("12m v010: translated/ carried across",
-              (proj / "translated" / "Chapter_0001.md").exists()
-              and not (proj / "translated" / "Chapter_001.md").exists())
+              (proj / "translated" / "CHAPTER_0001.md").exists()
+              and not (proj / "translated" / "CHAPTER_001.md").exists())
         check("12n v010: all three draft artifacts carried across",
-              all((proj / "draft" / f"Chapter_0001{ext}").exists()
+              all((proj / "draft" / f"CHAPTER_0001{ext}").exists()
                   for ext in (".state.json", ".md", ".lines.json")))
         check("12o v010: both notes sidecars carried across",
-              (proj / "notes" / "Chapter_0001.json").exists()
-              and (proj / "notes" / "Chapter_0001.dropped.json").exists())
+              (proj / "notes" / "CHAPTER_0001.json").exists()
+              and (proj / "notes" / "CHAPTER_0001.dropped.json").exists())
         check("12p v010: the artifact count is reported",
               any("carried" in ln for ln in lines), f"lines={lines!r}")
 
@@ -1383,7 +1392,7 @@ def case_12_v010() -> None:
               snapshot(proj) == after, "files changed on the second run")
         check("12r v010: second run renames nothing but still defers the extra",
               not any("renamed" in ln for ln in again)
-              and any("chapter_0012b.md" in ln for ln in again),
+              and any("Chapter_0042a.md" in ln for ln in again),
               f"lines={again!r}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -1403,12 +1412,16 @@ def case_12_v010() -> None:
         src = root / "ship"
         src.mkdir()
         proj = make_v9_project(root, "p")
-        # Chapter_001.md and Chapter_0001.md both present: the target exists.
-        (proj / "source" / "Chapter_0001.md").write_text("other\n", encoding="utf-8")
+        # A REAL collision, and one that can actually exist as two files on a
+        # case-insensitive filesystem: the canonical CHAPTER_0001.md plus a
+        # short-padded Chapter_1.md that wants the same canonical name.
+        (proj / "source" / "CHAPTER_0001.md").write_text("keep me\n", encoding="utf-8")
+        (proj / "source" / "Chapter_1.md").write_text("short padded\n", encoding="utf-8")
         clash = v010.migrate(proj, src)
         check("12u v010: a target collision never clobbers",
-              (proj / "source" / "Chapter_0001.md").read_text(encoding="utf-8") == "other\n",
-              "the existing Chapter_0001.md was overwritten")
+              (proj / "source" / "CHAPTER_0001.md").read_text(encoding="utf-8") == "keep me\n"
+              and (proj / "source" / "Chapter_1.md").read_text(encoding="utf-8") == "short padded\n",
+              "one of the two colliding chapters was overwritten")
         check("12v v010: the collision is warned about",
               any("already exists" in ln for ln in clash), f"lines={clash!r}")
 

@@ -187,13 +187,13 @@ def case_1_happy_path() -> None:
     """Fresh annotation: sidecar written, history threaded, counts sane."""
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         chat = fake_chat_factory(
             {"notes": [{"line": 1, "term": "清明",
                         "note": "Tomb-sweeping festival."}]})
-        result = run(root, manifest, ["Chapter_0001.md"], chat)
+        result = run(root, manifest, ["CHAPTER_0001.md"], chat)
 
         check("1a happy: full result dict",
               result == {"scanned": 1, "changed": 1, "migrated": 0,
@@ -201,9 +201,9 @@ def case_1_happy_path() -> None:
                          "failed": [], "skipped": [], "dry_run": False},
               f"result={result}")
 
-        path = tn.notes_path(root, "Chapter_0001.md")
+        path = tn.notes_path(root, "CHAPTER_0001.md")
         check("1b happy: sidecar written for the chapter", path.is_file(), "")
-        notes = tn.load_notes(root, "Chapter_0001.md")
+        notes = tn.load_notes(root, "CHAPTER_0001.md")
         check("1c happy: sidecar holds the annotated note, normalized",
               len(notes) == 1 and notes[0]["term"] == "清明"
               and notes[0]["note"] == "Tomb-sweeping festival."
@@ -220,7 +220,7 @@ def case_1_happy_path() -> None:
               and history.get("清明", {}).get("times") == 1,
               f"history={history}")
         check("1f happy: translated markdown untouched (already clean)",
-              (root / "translated" / "Chapter_0001.md").read_text(encoding="utf-8")
+              (root / "translated" / "CHAPTER_0001.md").read_text(encoding="utf-8")
               == TRANSLATED_MD, "")
 
 
@@ -228,13 +228,13 @@ def case_2_legacy_migration() -> None:
     """Baked-in notes migrate: clean markdown, byte-verbatim frontmatter."""
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": LEGACY_MD},
         ])
         chat = fake_chat_factory(
             {"notes": [{"line": 1, "term": "清明",
                         "note": "Tomb-sweeping festival."}]})
-        result = run(root, manifest, ["Chapter_0001.md"], chat)
+        result = run(root, manifest, ["CHAPTER_0001.md"], chat)
 
         check("2a migration: counts (migrated 1, baseline in notes_before)",
               result["scanned"] == 1 and result["migrated"] == 1
@@ -242,7 +242,7 @@ def case_2_legacy_migration() -> None:
               and result["notes_before"] == 1 and result["notes_after"] == 1,
               f"result={result}")
 
-        text = (root / "translated" / "Chapter_0001.md").read_text(encoding="utf-8")
+        text = (root / "translated" / "CHAPTER_0001.md").read_text(encoding="utf-8")
         check("2b migration: frontmatter byte-verbatim (comment survives)",
               text.startswith(LEGACY_HEAD), f"head={text[:100]!r}")
         check("2c migration: no footnote markers left",
@@ -253,7 +253,7 @@ def case_2_legacy_migration() -> None:
               text.endswith("Legacy line one.\n")
               and "Legacy line zero." in text, f"text={text!r}")
         check("2f migration: sidecar written for the fresh note",
-              len(tn.load_notes(root, "Chapter_0001.md")) == 1, "")
+              len(tn.load_notes(root, "CHAPTER_0001.md")) == 1, "")
 
 
 def case_3_eligibility() -> None:
@@ -261,23 +261,23 @@ def case_3_eligibility() -> None:
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             # pending: files exist but status is not translated
-            {"file": "Chapter_0001.md", "order": 0, "status": "pending",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "pending",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
             # translated but the translated file is missing
-            {"file": "Chapter_0002.md", "order": 1, "status": "translated",
+            {"file": "CHAPTER_0002.md", "order": 1, "status": "translated",
              "source_md": SOURCE_MD},
         ])
         chat = fake_chat_factory({"notes": []})
-        result = run(root, manifest, ["Chapter_0001.md", "Chapter_0002.md"], chat)
+        result = run(root, manifest, ["CHAPTER_0001.md", "CHAPTER_0002.md"], chat)
 
         check("3a eligibility: both skipped, none scanned",
               result["scanned"] == 0
-              and result["skipped"] == ["Chapter_0001.md", "Chapter_0002.md"]
+              and result["skipped"] == ["CHAPTER_0001.md", "CHAPTER_0002.md"]
               and result["failed"] == [],
               f"result={result}")
         check("3b eligibility: no sidecar written",
               not (root / "notes").exists()
-              or not (root / "notes" / "Chapter_0001.json").exists(), "")
+              or not (root / "notes" / "CHAPTER_0001.json").exists(), "")
         check("3c eligibility: no history file written",
               not (root / "tn_history.json").exists(), "")
 
@@ -291,18 +291,18 @@ def case_4_gap_rule() -> None:
     #    -> suppressed, history untouched
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0006.md", "order": 5, "status": "translated",
+            {"file": "CHAPTER_0006.md", "order": 5, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         seeded = {"清明": {"note": "old note", "last_order": 0, "times": 1}}
         write_lf(root / "tn_history.json",
                  json.dumps(seeded, ensure_ascii=False, indent=2) + "\n")
-        result = run(root, manifest, ["Chapter_0006.md"],
+        result = run(root, manifest, ["CHAPTER_0006.md"],
                      fake_chat_factory(payload))
 
         check("4a gap: term within gap suppressed (no sidecar, 0 after)",
               result["notes_after"] == 0 and result["scanned"] == 1
-              and not tn.notes_path(root, "Chapter_0006.md").exists(),
+              and not tn.notes_path(root, "CHAPTER_0006.md").exists(),
               f"result={result}")
         history = json.loads((root / "tn_history.json").read_text(encoding="utf-8"))
         check("4b gap: history left unchanged by the suppression",
@@ -313,18 +313,18 @@ def case_4_gap_rule() -> None:
     # B: a history entry from THIS chapter (same order) must NOT suppress
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0006.md", "order": 5, "status": "translated",
+            {"file": "CHAPTER_0006.md", "order": 5, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         seeded = {"清明": {"note": "old note", "last_order": 5, "times": 1}}
         write_lf(root / "tn_history.json",
                  json.dumps(seeded, ensure_ascii=False, indent=2) + "\n")
-        result = run(root, manifest, ["Chapter_0006.md"],
+        result = run(root, manifest, ["CHAPTER_0006.md"],
                      fake_chat_factory(payload))
 
         check("4c gap: same-chapter history entry does not suppress",
               result["notes_after"] == 1
-              and tn.notes_path(root, "Chapter_0006.md").is_file(),
+              and tn.notes_path(root, "CHAPTER_0006.md").is_file(),
               f"result={result}")
         history = json.loads((root / "tn_history.json").read_text(encoding="utf-8"))
         check("4d gap: history re-recorded at the same order, times bumped",
@@ -337,18 +337,18 @@ def case_5_low_threshold() -> None:
     """threshold:'low' notes are dropped with the default cfg ({})."""
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         chat = fake_chat_factory(
             {"notes": [{"line": 1, "term": "清明",
                         "note": "Tomb-sweeping festival.",
                         "threshold": "low"}]})
-        result = run(root, manifest, ["Chapter_0001.md"], chat)
+        result = run(root, manifest, ["CHAPTER_0001.md"], chat)
 
         check("5a low: note dropped, no sidecar, zero after",
               result["notes_after"] == 0 and result["scanned"] == 1
-              and not tn.notes_path(root, "Chapter_0001.md").exists(),
+              and not tn.notes_path(root, "CHAPTER_0001.md").exists(),
               f"result={result}")
 
 
@@ -356,13 +356,13 @@ def case_6_dry_run() -> None:
     """dry_run evaluates fully (LLM included) but writes NOTHING."""
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": LEGACY_MD},
         ])
         chat = fake_chat_factory(
             {"notes": [{"line": 1, "term": "清明",
                         "note": "Tomb-sweeping festival."}]})
-        result = run(root, manifest, ["Chapter_0001.md"], chat, dry_run=True)
+        result = run(root, manifest, ["CHAPTER_0001.md"], chat, dry_run=True)
 
         check("6a dry-run: result flags dry_run, counts still reported",
               result["dry_run"] is True and result["scanned"] == 1
@@ -370,10 +370,10 @@ def case_6_dry_run() -> None:
               and result["notes_before"] == 1 and result["notes_after"] == 1,
               f"result={result}")
         check("6b dry-run: legacy markdown byte-unchanged (no migration write)",
-              (root / "translated" / "Chapter_0001.md").read_text(encoding="utf-8")
+              (root / "translated" / "CHAPTER_0001.md").read_text(encoding="utf-8")
               == LEGACY_MD, "")
         check("6c dry-run: no sidecar written",
-              not tn.notes_path(root, "Chapter_0001.md").exists(), "")
+              not tn.notes_path(root, "CHAPTER_0001.md").exists(), "")
         check("6d dry-run: no history file written",
               not (root / "tn_history.json").exists(), "")
 
@@ -382,36 +382,36 @@ def case_7_chat_failure() -> None:
     """Annotator exception: chapter in `failed`, existing state untouched."""
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         tn.save_notes(
-            root, "Chapter_0001.md", ["Line zero body.", "Line one body."],
+            root, "CHAPTER_0001.md", ["Line zero body.", "Line one body."],
             [{"line": 0, "term": "旧词", "note": "Old note."}],
         )
-        sidecar_bytes = tn.notes_path(root, "Chapter_0001.md").read_bytes()
+        sidecar_bytes = tn.notes_path(root, "CHAPTER_0001.md").read_bytes()
         seeded = {"旧词": {"note": "Old note.", "last_order": 0, "times": 1}}
         write_lf(root / "tn_history.json",
                  json.dumps(seeded, ensure_ascii=False, indent=2) + "\n")
         history_bytes = (root / "tn_history.json").read_bytes()
-        chapter_bytes = (root / "translated" / "Chapter_0001.md").read_bytes()
+        chapter_bytes = (root / "translated" / "CHAPTER_0001.md").read_bytes()
 
         def broken_chat(prompt: str) -> str:
             raise RuntimeError("endpoint down")
 
-        result = run(root, manifest, ["Chapter_0001.md"], broken_chat)
+        result = run(root, manifest, ["CHAPTER_0001.md"], broken_chat)
 
         check("7a failure: file recorded in failed, nothing re-annotated",
-              result["failed"] == ["Chapter_0001.md"]
+              result["failed"] == ["CHAPTER_0001.md"]
               and result["notes_after"] == 0 and result["scanned"] == 1,
               f"result={result}")
         check("7b failure: pre-existing sidecar byte-unchanged",
-              tn.notes_path(root, "Chapter_0001.md").read_bytes()
+              tn.notes_path(root, "CHAPTER_0001.md").read_bytes()
               == sidecar_bytes, "")
         check("7c failure: history byte-unchanged",
               (root / "tn_history.json").read_bytes() == history_bytes, "")
         check("7d failure: chapter markdown byte-unchanged",
-              (root / "translated" / "Chapter_0001.md").read_bytes()
+              (root / "translated" / "CHAPTER_0001.md").read_bytes()
               == chapter_bytes, "")
 
 
@@ -420,12 +420,12 @@ def case_8_manifest_order() -> None:
     gap rule suppresses the same term in the immediately following chapter."""
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD,
              "translated_md": TRANSLATED_MD.replace(
                  "Line zero body.", "Alpha line zero.").replace(
                  "Line one body.", "Alpha line one.")},
-            {"file": "Chapter_0002.md", "order": 1, "status": "translated",
+            {"file": "CHAPTER_0002.md", "order": 1, "status": "translated",
              "source_md": SOURCE_MD,
              "translated_md": TRANSLATED_MD.replace(
                  "Line zero body.", "Beta line zero.").replace(
@@ -436,7 +436,7 @@ def case_8_manifest_order() -> None:
             {"notes": [{"line": 1, "term": "清明",
                         "note": "Tomb-sweeping festival."}]}, sink=prompts)
         # deliberately out of manifest order
-        result = run(root, manifest, ["Chapter_0002.md", "Chapter_0001.md"], chat)
+        result = run(root, manifest, ["CHAPTER_0002.md", "CHAPTER_0001.md"], chat)
 
         check("8a order: both chapters processed (2 LLM calls)",
               result["scanned"] == 2 and len(prompts) == 2,
@@ -447,8 +447,8 @@ def case_8_manifest_order() -> None:
         check("8c order: second prompt is chapter 2",
               "Beta line one." in prompts[1], "")
         check("8d order: same term kept in ch1, gap-suppressed in ch2",
-              tn.notes_path(root, "Chapter_0001.md").is_file()
-              and not tn.notes_path(root, "Chapter_0002.md").exists()
+              tn.notes_path(root, "CHAPTER_0001.md").is_file()
+              and not tn.notes_path(root, "CHAPTER_0002.md").exists()
               and result["notes_after"] == 1,
               f"result={result}")
         history = json.loads((root / "tn_history.json").read_text(encoding="utf-8"))
@@ -464,25 +464,25 @@ def case_9_legacy_failure_no_migration() -> None:
     stripping them before the annotator succeeded would destroy them."""
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": LEGACY_MD},
         ])
-        chapter_bytes = (root / "translated" / "Chapter_0001.md").read_bytes()
+        chapter_bytes = (root / "translated" / "CHAPTER_0001.md").read_bytes()
 
         def broken_chat(prompt: str) -> str:
             raise RuntimeError("endpoint down")
 
-        result = run(root, manifest, ["Chapter_0001.md"], broken_chat)
+        result = run(root, manifest, ["CHAPTER_0001.md"], broken_chat)
 
         check("9a legacy failure: recorded in failed, no migration counted",
-              result["failed"] == ["Chapter_0001.md"]
+              result["failed"] == ["CHAPTER_0001.md"]
               and result["migrated"] == 0 and result["changed"] == 0,
               f"result={result}")
         check("9b legacy failure: chapter markdown byte-unchanged",
-              (root / "translated" / "Chapter_0001.md").read_bytes()
+              (root / "translated" / "CHAPTER_0001.md").read_bytes()
               == chapter_bytes, "")
         check("9c legacy failure: no sidecar, no history written",
-              not tn.notes_path(root, "Chapter_0001.md").exists()
+              not tn.notes_path(root, "CHAPTER_0001.md").exists()
               and not (root / "tn_history.json").exists(), "")
 
 
@@ -493,25 +493,25 @@ def case_10_bad_yaml_continues() -> None:
     bad_md = "---\nchapter_title: [unclosed\n---\n\nLine zero body.\n"
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": bad_md},
-            {"file": "Chapter_0002.md", "order": 1, "status": "translated",
+            {"file": "CHAPTER_0002.md", "order": 1, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         chat = fake_chat_factory(
             {"notes": [{"line": 1, "term": "清明",
                         "note": "Tomb-sweeping festival."}]})
-        result = run(root, manifest, ["Chapter_0001.md", "Chapter_0002.md"], chat)
+        result = run(root, manifest, ["CHAPTER_0001.md", "CHAPTER_0002.md"], chat)
 
         check("10a bad yaml: broken chapter in failed, good one processed",
-              result["failed"] == ["Chapter_0001.md"]
+              result["failed"] == ["CHAPTER_0001.md"]
               and result["skipped"] == [] and result["scanned"] == 2
               and result["notes_after"] == 1,
               f"result={result}")
         check("10b bad yaml: good chapter's sidecar written",
-              tn.notes_path(root, "Chapter_0002.md").is_file(), "")
+              tn.notes_path(root, "CHAPTER_0002.md").is_file(), "")
         check("10c bad yaml: broken chapter left on disk untouched",
-              (root / "translated" / "Chapter_0001.md").read_text(
+              (root / "translated" / "CHAPTER_0001.md").read_text(
                   encoding="utf-8") == bad_md, "")
 
 
@@ -527,18 +527,18 @@ def case_11_retry_wipe_sidecar() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "needs-review",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "needs-review",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         write_lf(root / "config.json", '{"providers": {}}\n')
         write_lf(root / "glossary.json", '{"terms": [], "retired": []}\n')
-        write_lf(root / "draft" / "Chapter_0001.state.json", "{}\n")
+        write_lf(root / "draft" / "CHAPTER_0001.state.json", "{}\n")
         tn.save_notes(
-            root, "Chapter_0001.md", ["Line zero body.", "Line one body."],
+            root, "CHAPTER_0001.md", ["Line zero body.", "Line one body."],
             [{"line": 0, "term": "旧词", "note": "Old note."}],
         )
         tn.save_dropped(
-            root, "Chapter_0001.md",
+            root, "CHAPTER_0001.md",
             [{"line": 0, "term": "旧词", "note": "Old note.", "category": "other",
               "threshold": "low", "reason": "low_threshold"}],
         )
@@ -549,7 +549,7 @@ def case_11_retry_wipe_sidecar() -> None:
                              "skipped": []})
         try:
             code = translate.cmd_retry(
-                argparse.Namespace(failed=False, chapters="Chapter_0001.md"),
+                argparse.Namespace(failed=False, chapters="CHAPTER_0001.md"),
                 root,
             )
         finally:
@@ -558,13 +558,13 @@ def case_11_retry_wipe_sidecar() -> None:
         check("11a retry wipe: exits 0 without crashing", code == 0,
               f"code={code}")
         check("11b retry wipe: translated file removed",
-              not (root / "translated" / "Chapter_0001.md").exists(), "")
+              not (root / "translated" / "CHAPTER_0001.md").exists(), "")
         check("11c retry wipe: draft state removed",
-              not (root / "draft" / "Chapter_0001.state.json").exists(), "")
+              not (root / "draft" / "CHAPTER_0001.state.json").exists(), "")
         check("11d retry wipe: notes sidecar removed",
-              not tn.notes_path(root, "Chapter_0001.md").exists(), "")
+              not tn.notes_path(root, "CHAPTER_0001.md").exists(), "")
         check("11e retry wipe: dropped-candidates artifact removed",
-              not tn.dropped_path(root, "Chapter_0001.md").exists(), "")
+              not tn.dropped_path(root, "CHAPTER_0001.md").exists(), "")
         saved = json.loads((root / "chapters.json").read_text(encoding="utf-8"))
         check("11f retry wipe: manifest status reset to pending",
               saved[0]["status"] == "pending", f"status={saved[0].get('status')}")
@@ -580,14 +580,14 @@ def case_12_history_only_drift_commits() -> None:
     guard); the drift half always runs."""
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         # Pre-existing sidecar + history whose content matches the stub
         # chat's payload exactly; last_order == the chapter's own order so
         # the gap rule never suppresses the re-annotated note.
         note = {"line": 1, "term": "清明", "note": "Tomb-sweeping festival."}
-        tn.save_notes(root, "Chapter_0001.md",
+        tn.save_notes(root, "CHAPTER_0001.md",
                       ["Line zero body.", "Line one body."], [note])
         seeded = {"清明": {"note": note["note"], "last_order": 0, "times": 1}}
         write_lf(root / "tn_history.json",
@@ -601,7 +601,7 @@ def case_12_history_only_drift_commits() -> None:
             print("note: git not found on PATH; skipping the commit checks")
 
         chat = fake_chat_factory({"notes": [dict(note)]})
-        result = run(root, manifest, ["Chapter_0001.md"], chat)
+        result = run(root, manifest, ["CHAPTER_0001.md"], chat)
 
         check("12a drift: identical notes -> changed == 0",
               result["scanned"] == 1 and result["changed"] == 0
@@ -633,20 +633,20 @@ def case_13_recap_parity() -> None:
     #    PREDECESSOR's recap, never the chapter's own
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
-            {"file": "Chapter_0002.md", "order": 1, "status": "translated",
+            {"file": "CHAPTER_0002.md", "order": 1, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         state = {"chapters": {
-            "Chapter_0001": {"recap": "Recap alpha for chapter one."},
-            "Chapter_0002": {"recap": "Recap beta for chapter two."},
+            "CHAPTER_0001": {"recap": "Recap alpha for chapter one."},
+            "CHAPTER_0002": {"recap": "Recap beta for chapter two."},
         }}
         write_lf(root / "story_state.json",
                  json.dumps(state, ensure_ascii=False, indent=2) + "\n")
         state_bytes = (root / "story_state.json").read_bytes()
         prompts: list[str] = []
-        result = run(root, manifest, ["Chapter_0002.md"],
+        result = run(root, manifest, ["CHAPTER_0002.md"],
                      fake_chat_factory(payload, sink=prompts))
 
         check("13a recap: chapter 2 re-checked (1 LLM call)",
@@ -668,13 +668,13 @@ def case_13_recap_parity() -> None:
     #    sandbox project has no novel background either)
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
-            {"file": "Chapter_0002.md", "order": 1, "status": "translated",
+            {"file": "CHAPTER_0002.md", "order": 1, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         prompts = []
-        result = run(root, manifest, ["Chapter_0002.md"],
+        result = run(root, manifest, ["CHAPTER_0002.md"],
                      fake_chat_factory(payload, sink=prompts))
 
         check("13g no-state: re-check runs, no recap label in the prompt",
@@ -686,19 +686,19 @@ def case_13_recap_parity() -> None:
     # C: first chapter -> no recap part even with a state present
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
-            {"file": "Chapter_0002.md", "order": 1, "status": "translated",
+            {"file": "CHAPTER_0002.md", "order": 1, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         state = {"chapters": {
-            "Chapter_0001": {"recap": "Recap alpha for chapter one."},
-            "Chapter_0002": {"recap": "Recap beta for chapter two."},
+            "CHAPTER_0001": {"recap": "Recap alpha for chapter one."},
+            "CHAPTER_0002": {"recap": "Recap beta for chapter two."},
         }}
         write_lf(root / "story_state.json",
                  json.dumps(state, ensure_ascii=False, indent=2) + "\n")
         prompts = []
-        run(root, manifest, ["Chapter_0001.md"],
+        run(root, manifest, ["CHAPTER_0001.md"],
             fake_chat_factory(payload, sink=prompts))
 
         check("13i first chapter: no recap part (no predecessor)",
@@ -724,19 +724,19 @@ def case_14_empty_annotation_guard() -> None:
     #    written anywhere
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         tn.save_notes(
-            root, "Chapter_0001.md", ["Line zero body.", "Line one body."],
+            root, "CHAPTER_0001.md", ["Line zero body.", "Line one body."],
             [{"line": 0, "term": "旧词", "note": "Old note."}],
         )
-        sidecar_bytes = tn.notes_path(root, "Chapter_0001.md").read_bytes()
-        chapter_bytes = (root / "translated" / "Chapter_0001.md").read_bytes()
+        sidecar_bytes = tn.notes_path(root, "CHAPTER_0001.md").read_bytes()
+        chapter_bytes = (root / "translated" / "CHAPTER_0001.md").read_bytes()
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            result = run(root, manifest, ["Chapter_0001.md"],
+            result = run(root, manifest, ["CHAPTER_0001.md"],
                          fake_chat_factory(payload))
         out = buf.getvalue()
 
@@ -744,19 +744,19 @@ def case_14_empty_annotation_guard() -> None:
               "annotator-exception result shape)",
               result == {"scanned": 1, "changed": 0, "migrated": 0,
                          "notes_before": 0, "notes_after": 0,
-                         "failed": ["Chapter_0001.md"], "skipped": [],
+                         "failed": ["CHAPTER_0001.md"], "skipped": [],
                          "dry_run": False},
               f"result={result}")
         check("14b guard: sidecar byte-unchanged (not unlinked)",
-              tn.notes_path(root, "Chapter_0001.md").read_bytes()
+              tn.notes_path(root, "CHAPTER_0001.md").read_bytes()
               == sidecar_bytes, "")
         check("14c guard: translated markdown byte-unchanged",
-              (root / "translated" / "Chapter_0001.md").read_bytes()
+              (root / "translated" / "CHAPTER_0001.md").read_bytes()
               == chapter_bytes, "")
         check("14d guard: no tn_history.json written for the failed chapter",
               not (root / "tn_history.json").exists(), "")
         check("14e guard: exact warn line, nothing else printed",
-              out == "[tn] Chapter_0001.md: annotator returned 0 notes "
+              out == "[tn] CHAPTER_0001.md: annotator returned 0 notes "
                      "for a chapter with 1 note(s) - keeping existing "
                      "sidecar\n",
               f"out={out!r}")
@@ -766,28 +766,28 @@ def case_14_empty_annotation_guard() -> None:
     #    same guard)
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": LEGACY_MD},
         ])
-        chapter_bytes = (root / "translated" / "Chapter_0001.md").read_bytes()
+        chapter_bytes = (root / "translated" / "CHAPTER_0001.md").read_bytes()
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            result = run(root, manifest, ["Chapter_0001.md"],
+            result = run(root, manifest, ["CHAPTER_0001.md"],
                          fake_chat_factory(payload))
         out = buf.getvalue()
 
         check("14f guard legacy: failed, nothing migrated",
-              result["failed"] == ["Chapter_0001.md"]
+              result["failed"] == ["CHAPTER_0001.md"]
               and result["migrated"] == 0 and result["changed"] == 0,
               f"result={result}")
         check("14g guard legacy: baked markdown byte-unchanged",
-              (root / "translated" / "Chapter_0001.md").read_bytes()
+              (root / "translated" / "CHAPTER_0001.md").read_bytes()
               == chapter_bytes, "")
         check("14h guard legacy: no sidecar created, no history written",
-              not tn.notes_path(root, "Chapter_0001.md").exists()
+              not tn.notes_path(root, "CHAPTER_0001.md").exists()
               and not (root / "tn_history.json").exists(), "")
         check("14i guard legacy: exact warn line",
-              out == "[tn] Chapter_0001.md: annotator returned 0 notes "
+              out == "[tn] CHAPTER_0001.md: annotator returned 0 notes "
                      "for a chapter with 1 note(s) - keeping existing "
                      "sidecar\n",
               f"out={out!r}")
@@ -796,26 +796,26 @@ def case_14_empty_annotation_guard() -> None:
     #    prefix) and mutates nothing
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": LEGACY_MD},
         ])
-        chapter_bytes = (root / "translated" / "Chapter_0001.md").read_bytes()
+        chapter_bytes = (root / "translated" / "CHAPTER_0001.md").read_bytes()
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            result = run(root, manifest, ["Chapter_0001.md"],
+            result = run(root, manifest, ["CHAPTER_0001.md"],
                          fake_chat_factory(payload), dry_run=True)
         out = buf.getvalue()
 
         check("14j guard dry-run: failed, dry_run flagged, nothing counted",
               result["dry_run"] is True
-              and result["failed"] == ["Chapter_0001.md"]
+              and result["failed"] == ["CHAPTER_0001.md"]
               and result["changed"] == 0 and result["migrated"] == 0,
               f"result={result}")
         check("14k guard dry-run: legacy markdown byte-unchanged",
-              (root / "translated" / "Chapter_0001.md").read_bytes()
+              (root / "translated" / "CHAPTER_0001.md").read_bytes()
               == chapter_bytes, "")
         check("14l guard dry-run: exact warn line with the [dry-run] prefix",
-              out == "[dry-run] [tn] Chapter_0001.md: annotator returned 0 "
+              out == "[dry-run] [tn] CHAPTER_0001.md: annotator returned 0 "
                      "notes for a chapter with 1 note(s) - keeping "
                      "existing sidecar\n",
               f"out={out!r}")
@@ -823,12 +823,12 @@ def case_14_empty_annotation_guard() -> None:
     # D: zero baseline + zero kept is a benign no-op (no warn, not failed)
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            result = run(root, manifest, ["Chapter_0001.md"],
+            result = run(root, manifest, ["CHAPTER_0001.md"],
                          fake_chat_factory(payload))
         out = buf.getvalue()
 
@@ -839,24 +839,24 @@ def case_14_empty_annotation_guard() -> None:
               and "annotator returned 0 notes" not in out,
               f"result={result} out={out!r}")
         check("14n benign: no sidecar created",
-              not tn.notes_path(root, "Chapter_0001.md").exists(), "")
+              not tn.notes_path(root, "CHAPTER_0001.md").exists(), "")
 
     # E: a healthy re-annotation still works (regression): the fresh notes
     #    replace the baseline, counted changed, history updated
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         tn.save_notes(
-            root, "Chapter_0001.md", ["Line zero body.", "Line one body."],
+            root, "CHAPTER_0001.md", ["Line zero body.", "Line one body."],
             [{"line": 0, "term": "旧词", "note": "Old note."}],
         )
         chat = fake_chat_factory(
             {"notes": [{"line": 1, "term": "清明",
                         "note": "Tomb-sweeping festival."}]})
-        result = run(root, manifest, ["Chapter_0001.md"], chat)
-        notes = tn.load_notes(root, "Chapter_0001.md")
+        result = run(root, manifest, ["CHAPTER_0001.md"], chat)
+        notes = tn.load_notes(root, "CHAPTER_0001.md")
         check("14o regression: re-annotation replaces the baseline",
               result["failed"] == [] and result["changed"] == 1
               and result["notes_before"] == 1 and result["notes_after"] == 1
@@ -877,12 +877,12 @@ def case_14_empty_annotation_guard() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            {"file": "Chapter_0001.md", "order": 0, "status": "translated",
+            {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
         write_lf(root / "config.json", '{"providers": {}}\n')
         tn.save_notes(
-            root, "Chapter_0001.md", ["Line zero body.", "Line one body."],
+            root, "CHAPTER_0001.md", ["Line zero body.", "Line one body."],
             [{"line": 0, "term": "旧词", "note": "Old note."}],
         )
         orig_chat = translate.pipeline._chat
@@ -893,7 +893,7 @@ def case_14_empty_annotation_guard() -> None:
             with contextlib.redirect_stdout(outbuf), \
                     contextlib.redirect_stderr(errbuf):
                 code = translate.cmd_tn(
-                    argparse.Namespace(chapters="Chapter_0001.md",
+                    argparse.Namespace(chapters="CHAPTER_0001.md",
                                        dry_run=False, no_build=True),
                     root,
                 )
@@ -903,10 +903,10 @@ def case_14_empty_annotation_guard() -> None:
         check("14q guard CLI: cmd_tn exits 1 on the failed chapter",
               code == 1, f"code={code}")
         check("14r guard CLI: the [FAIL] line names the file",
-              "tn re-check: could not re-evaluate: Chapter_0001.md"
+              "tn re-check: could not re-evaluate: CHAPTER_0001.md"
               in errbuf.getvalue(),
               f"stderr={errbuf.getvalue()!r}")
-        kept = tn.load_notes(root, "Chapter_0001.md")
+        kept = tn.load_notes(root, "CHAPTER_0001.md")
         check("14s guard CLI: the sidecar survived on disk",
               len(kept) == 1 and kept[0]["term"] == "旧词", f"kept={kept}")
 

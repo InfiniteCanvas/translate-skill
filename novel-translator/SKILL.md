@@ -35,7 +35,7 @@ markdown contract).
 
 Two ways source chapters arrive:
 
-- **Files provided**: the user hands you `source/Chapter_NNNN.md` files
+- **Files provided**: the user hands you `source/CHAPTER_NNNN.md` files
   (exactly 4 zero-padded digits, no suffix). Any other shape is not
   discovered — but `init`/`sync`
   print a `[warn]` naming each ignored file and why, so read that output
@@ -46,7 +46,7 @@ Two ways source chapters arrive:
   scheme.
 - **URL given (the common case)**: scrape the table of contents for the
   ordered chapter list, fetch each chapter with the environment's web
-  tooling (e.g. firecrawl), and write UTF-8 `source/Chapter_NNNN.md` files
+  tooling (e.g. firecrawl), and write UTF-8 `source/CHAPTER_NNNN.md` files
   - one paragraph per physical line, per-chapter frontmatter with
   `chapter_title` + `source_url` when the site provides them - then `init`.
   For long novels, work in batches: init on the first batch, then after
@@ -193,7 +193,7 @@ chapters are skipped; `--force` retranslates anyway.
 
 Each chapter runs through a state machine (resumable; safe to Ctrl-C and
 rerun the same command). A source chapter with no content lines never
-enters it: `[Chapter_NNNN] [warn] <file>: source chapter has no content -
+enters it: `[CHAPTER_NNNN] [warn] <file>: source chapter has no content -
 marked needs-review` — the chapter is marked `needs-review` outright,
 with no LLM call. Per-attempt preparation happens inline before the
 state machine rather than being a resumable stage: every attempt splits the
@@ -228,7 +228,7 @@ sorted by frequency):
    before any model call. Validated parts are persisted as they complete
    (`chunks` in the draft state), so a crash or Ctrl-C mid-TRANSLATE
    resumes at the next part
-   (`[Chapter_NNNN] [init] resuming translation at part k/n (m lines
+   (`[CHAPTER_NNNN] [init] resuming translation at part k/n (m lines
    already done)`; a packing that no longer matches the saved parts —
    source or config changed — discards them with a `[warn]` and restarts
    from scratch).
@@ -333,10 +333,10 @@ sorted by frequency):
    discard (low threshold, cap overflow, invalid entry) is recorded in the
    `notes/<stem>.dropped.json` review artifact (the epub builder does not
    read it), and the stage prints
-   `[Chapter_NNNN] [ok] notes: K kept (cats); D dropped (reasons) -> notes/<stem>.dropped.json`
+   `[CHAPTER_NNNN] [ok] notes: K kept (cats); D dropped (reasons) -> notes/<stem>.dropped.json`
    (`0 kept` omits the parenthetical; a zero-drop chapter ends at the kept
    clause).
-7. **ASSEMBLE** — write `translated/Chapter_NNNN.md` as clean markdown (no
+7. **ASSEMBLE** — write `translated/CHAPTER_NNNN.md` as clean markdown (no
    footnote markers, no notes section) plus the `notes/<stem>.json` sidecar
    carrying the kept notes; auto-promote. The manifest status update is
    best-effort: after retrying through Windows file-lock contention
@@ -386,7 +386,7 @@ skipped chapters commit nothing.
 ```bash
 uv run "$SCRIPT" status --project .                # see statuses + attempt counts
 uv run "$SCRIPT" status --why --project .          # + why each needs-review chapter is stuck
-cat draft/Chapter_0007.state.json                  # full accumulated gate feedback
+cat draft/CHAPTER_0007.state.json                  # full accumulated gate feedback
 ```
 
 Read the feedback, then choose:
@@ -399,9 +399,9 @@ Read the feedback, then choose:
   `retry --failed` to retry every needs-review chapter at once (selection is
   by status, so hand-marked chapters are included).
 - **Translate by hand**: write the final chapter to
-  `translated/Chapter_0007.md` following the translated-chapter format
+  `translated/CHAPTER_0007.md` following the translated-chapter format
   (frontmatter + one paragraph per line; translator's notes, if any, go in
-  the `notes/Chapter_0007.json` sidecar — see
+  the `notes/CHAPTER_0007.json` sidecar — see
   `references/file-formats.md`), then
   `uv run "$SCRIPT" mark --project . --chapters 7 --status translated`
   (committed as `mark: <file> -> <status>[, ...]`).
@@ -451,8 +451,8 @@ thus always holds a current epub (epubcheck-validated when Docker is
 available) — no manual builds
 during long batches. Child build output (incl. epubcheck results) appends
 to `logs/epub-build.log` with
-`=== epub build after Chapter_NNNN.md | timestamp ===` separators; the console
-prints `[epub-auto] build ok (after Chapter_NNNN.md)`. Failures are warnings
+`=== epub build after CHAPTER_NNNN.md | timestamp ===` separators; the console
+prints `[epub-auto] build ok (after CHAPTER_NNNN.md)`. Failures are warnings
 only and never change the translate/retry exit code (which still reflects
 translation status): a stalled build is killed after 360s — the kill
 takes the builder's whole process tree (taskkill /T on Windows, killpg
@@ -593,12 +593,13 @@ background build too. Builds produce no git commits — `export/`,
   `max_tokens` and raising only the translate cap would make the retry
   smaller than the attempt it retries. Only values still equal to the old
   default are rewritten, so custom numbers survive. v010 renames source
-  chapters to the fixed 4-digit, canonical-case form (DESCRIPTION: `rename
-  source chapters to the fixed 4-digit, canonical-case form
-  (Chapter_001.md -> Chapter_0001.md), carrying chapters.json,
+  chapters to the fixed 4-digit, all-caps canonical form (DESCRIPTION: `rename
+  source chapters to the fixed 4-digit, all-caps canonical form
+  (Chapter_001.md -> CHAPTER_0001.md), carrying chapters.json,
   story_state.json and the per-chapter artifacts`): the old regex accepted
-  1-4 digits and any case, so a project with `Chapter_001.md` or
-  `chapter_0012b.md` silently loses those chapters after the tightening — no
+  1-4 digits, any case, and an optional letter suffix, so a project with
+  `Chapter_001.md` or
+  `Chapter_0042a.md` silently loses those chapters after the tightening — no
   manifest entry, no status, no translation target. v010 renames the source
   file **and every artifact keyed on its name** (`translated/<file>`,
   `draft/<stem>.*`, `notes/<stem>*`, `chapters.json`'s `file`,
@@ -608,9 +609,9 @@ background build too. Builds produce no git commits — `export/`,
   letter suffix — are deliberately NOT renamed**: they produce a `[warn]`
   naming each file and telling the operator to hand the decision to their
   agent, because with the suffix gone the mechanical rename would be
-  `Chapter_0042a.md` → `Chapter_0042.md`, clobbering a real chapter. If you see
+  `Chapter_0042a.md` → `CHAPTER_0042.md`, clobbering a real chapter. If you see
   that warning, read the TOC, give each extra chapter its own number, rename to
-  `Chapter_NNNN.md`, and update `chapters.json`, `story_state.json`, `draft/`,
+  `CHAPTER_NNNN.md`, and update `chapters.json`, `story_state.json`, `draft/`,
   `translated/` and `notes/` to match. A template that
   exists but
   differs from the shipped one is

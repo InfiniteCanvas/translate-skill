@@ -142,15 +142,15 @@ CH5 = (
 )
 
 MANIFEST_3 = [
-    {"file": "Chapter_0001.md", "number": 1, "order": 0, "status": "translated",
+    {"file": "CHAPTER_0001.md", "number": 1, "order": 0, "status": "translated",
      "title": "Spirit Root Awakening"},
-    {"file": "Chapter_0002.md", "number": 2, "order": 1, "status": "translated",
+    {"file": "CHAPTER_0002.md", "number": 2, "order": 1, "status": "translated",
      "title": "The Outer Gates"},
-    {"file": "Chapter_0003.md", "number": 3, "order": 2, "status": "translated",
+    {"file": "CHAPTER_0003.md", "number": 3, "order": 2, "status": "translated",
      "title": "Missing Chapter"},
-    {"file": "Chapter_0004.md", "number": 4, "order": 3, "status": "translated",
+    {"file": "CHAPTER_0004.md", "number": 4, "order": 3, "status": "translated",
      "title": "Rain on the Mountain"},
-    {"file": "Chapter_0005.md", "number": 5, "order": 4, "status": "pending",
+    {"file": "CHAPTER_0005.md", "number": 5, "order": 4, "status": "pending",
      "title": "Night Walk"},
 ]
 
@@ -158,8 +158,8 @@ REPORT_3 = {
     "scanned": 3,
     "changed": 2,
     "occurrences": 4,
-    "per_chapter": [("Chapter_0001.md", 3), ("Chapter_0002.md", 1)],
-    "missing": ["Chapter_0003.md"],
+    "per_chapter": [("CHAPTER_0001.md", 3), ("CHAPTER_0002.md", 1)],
+    "missing": ["CHAPTER_0003.md"],
 }
 
 
@@ -168,16 +168,16 @@ def make_chapters_project(td: str) -> tuple[Path, dict[str, bytes]]:
     root = Path(td)
     translated = root / "translated"
     translated.mkdir()
-    write_lf(translated / "Chapter_0001.md", CH1)
-    write_lf(translated / "Chapter_0002.md", CH2)
-    write_lf(translated / "Chapter_0004.md", CH4)
-    write_lf(translated / "Chapter_0005.md", CH5)
-    # Chapter_0003.md deliberately absent -> lands in `missing`
+    write_lf(translated / "CHAPTER_0001.md", CH1)
+    write_lf(translated / "CHAPTER_0002.md", CH2)
+    write_lf(translated / "CHAPTER_0004.md", CH4)
+    write_lf(translated / "CHAPTER_0005.md", CH5)
+    # CHAPTER_0003.md deliberately absent -> lands in `missing`
     before = {
-        "Chapter_0001.md": (translated / "Chapter_0001.md").read_bytes(),
-        "Chapter_0002.md": (translated / "Chapter_0002.md").read_bytes(),
-        "Chapter_0004.md": (translated / "Chapter_0004.md").read_bytes(),
-        "Chapter_0005.md": (translated / "Chapter_0005.md").read_bytes(),
+        "CHAPTER_0001.md": (translated / "CHAPTER_0001.md").read_bytes(),
+        "CHAPTER_0002.md": (translated / "CHAPTER_0002.md").read_bytes(),
+        "CHAPTER_0004.md": (translated / "CHAPTER_0004.md").read_bytes(),
+        "CHAPTER_0005.md": (translated / "CHAPTER_0005.md").read_bytes(),
     }
     return root, before
 
@@ -222,13 +222,13 @@ def make_glossary_project(td: str) -> tuple[Path, dict[str, bytes]]:
     translated.mkdir()
     write_lf(root / "glossary.json", glossary_json())
     write_lf(root / "chapters.json", json.dumps([
-        {"file": "Chapter_0001.md", "number": 1, "order": 0,
+        {"file": "CHAPTER_0001.md", "number": 1, "order": 0,
          "status": "translated", "title": "The Testing"},
     ], ensure_ascii=False, indent=2) + "\n")
-    write_lf(translated / "Chapter_0001.md", GLO_CHAPTER)
+    write_lf(translated / "CHAPTER_0001.md", GLO_CHAPTER)
     before = {
         "glossary": (root / "glossary.json").read_bytes(),
-        "chapter": (translated / "Chapter_0001.md").read_bytes(),
+        "chapter": (translated / "CHAPTER_0001.md").read_bytes(),
     }
     return root, before
 
@@ -240,7 +240,7 @@ def load_glossary_entry(root: Path) -> dict:
 
 # ------------------------------------------------------------ case 7 fixtures
 
-REC_FILES = ("Chapter_0001.md", "Chapter_0002.md", "Chapter_0003.md")
+REC_FILES = ("CHAPTER_0001.md", "CHAPTER_0002.md", "CHAPTER_0003.md")
 
 
 def rec_chapter(n: int) -> str:
@@ -292,7 +292,7 @@ def make_recovery_project(td: str) -> tuple[Path, dict[str, bytes]]:
 # BOM'd read that defeats _split_frontmatter (head "") would count the title
 # hit and rewrite the YAML. Reuses CH1 (title hit + 3 body occurrences).
 BOM_MANIFEST = [
-    {"file": "Chapter_0001.md", "number": 1, "order": 0, "status": "translated",
+    {"file": "CHAPTER_0001.md", "number": 1, "order": 0, "status": "translated",
      "title": "Spirit Root Awakening"},
 ]
 
@@ -309,13 +309,13 @@ BOM_NO_MATCH = (
 
 
 def make_bom_project(td: str, chapter_text: str) -> tuple[Path, bytes]:
-    """Temp project with ONE BOM'd translated chapter (Chapter_0001.md);
+    """Temp project with ONE BOM'd translated chapter (CHAPTER_0001.md);
     returns (root, chapter bytes-before)."""
     root = Path(td)
     translated = root / "translated"
     translated.mkdir()
-    write_bom(translated / "Chapter_0001.md", chapter_text)
-    return root, (translated / "Chapter_0001.md").read_bytes()
+    write_bom(translated / "CHAPTER_0001.md", chapter_text)
+    return root, (translated / "CHAPTER_0001.md").read_bytes()
 
 
 # ---------------------------------------------------------------------- cases
@@ -392,8 +392,8 @@ def case_3_replace_chapters() -> None:
               rep == REPORT_3, f"rep={rep}")
 
         translated = root / "translated"
-        ch1 = (translated / "Chapter_0001.md").read_text(encoding="utf-8")
-        check("3b rewrite: Chapter_0001 exact expected text (body + TN section)",
+        ch1 = (translated / "CHAPTER_0001.md").read_text(encoding="utf-8")
+        check("3b rewrite: CHAPTER_0001 exact expected text (body + TN section)",
               ch1 == CH1_AFTER, f"got={ch1!r}")
         check("3c rewrite: frontmatter head block byte-exact",
               ch1.startswith(CH1_HEAD), f"head={ch1.split(chr(10))[0:4]!r}")
@@ -404,14 +404,14 @@ def case_3_replace_chapters() -> None:
         check("3e rewrite: untouched body line preserved",
               "The elder said nothing, only noting the color of the spiritual root." in ch1,
               "")
-        ch2 = (translated / "Chapter_0002.md").read_text(encoding="utf-8")
-        check("3f rewrite: Chapter_0002 exact expected text", ch2 == CH2_AFTER,
+        ch2 = (translated / "CHAPTER_0002.md").read_text(encoding="utf-8")
+        check("3f rewrite: CHAPTER_0002 exact expected text", ch2 == CH2_AFTER,
               f"got={ch2!r}")
         check("3g rewrite: match-free file NOT rewritten",
-              (translated / "Chapter_0004.md").read_bytes() == before["Chapter_0004.md"],
+              (translated / "CHAPTER_0004.md").read_bytes() == before["CHAPTER_0004.md"],
               "")
         check("3h rewrite: pending-status file skipped",
-              (translated / "Chapter_0005.md").read_bytes() == before["Chapter_0005.md"],
+              (translated / "CHAPTER_0005.md").read_bytes() == before["CHAPTER_0005.md"],
               "")
 
     # Case B: dry_run computes the identical report but writes nothing
@@ -464,7 +464,7 @@ def case_4_glossary_replace() -> None:
               and entry["alt_translations"] == ["spirit core"]
               and entry["variants"] == ["靈根"],
               f"entry={entry}")
-        ch = ((root / "translated" / "Chapter_0001.md").read_text(encoding="utf-8"))
+        ch = ((root / "translated" / "CHAPTER_0001.md").read_text(encoding="utf-8"))
         expected = GLO_CHAPTER.replace("His spirit root", "His spiritual root") \
                               .replace("Spirit roots", "Spiritual roots")
         check("4d default: chapter rewritten with polished replacements",
@@ -482,7 +482,7 @@ def case_4_glossary_replace() -> None:
               and entry["translation"] == "spiritual root", f"entry={entry}")
         check("4g keep_alt: chapters still rewritten",
               rep["chapters"]["occurrences"] == 2
-              and "spiritual root" in (root / "translated" / "Chapter_0001.md")
+              and "spiritual root" in (root / "translated" / "CHAPTER_0001.md")
               .read_text(encoding="utf-8"), f"chapters={rep['chapters']}")
 
     # Case C: lookup by variant finds the entry
@@ -495,7 +495,7 @@ def case_4_glossary_replace() -> None:
         entry = load_glossary_entry(root)
         check("4i variant lookup: saved translation updated",
               entry["translation"] == "spirit essence", f"entry={entry}")
-        ch = (root / "translated" / "Chapter_0001.md").read_text(encoding="utf-8")
+        ch = (root / "translated" / "CHAPTER_0001.md").read_text(encoding="utf-8")
         check("4j variant lookup: chapters rewritten",
               "His spirit essence was graded poorly." in ch
               and "The elder examined Spirit essences with an old mirror." in ch,
@@ -518,7 +518,7 @@ def case_4_glossary_replace() -> None:
               f"chapters={rep['chapters']}")
         check("4o noop: glossary.json and chapter bytes unchanged",
               (root / "glossary.json").read_bytes() == before["glossary"]
-              and (root / "translated" / "Chapter_0001.md").read_bytes() == before["chapter"],
+              and (root / "translated" / "CHAPTER_0001.md").read_bytes() == before["chapter"],
               "")
 
     # Case F: dry_run reports the diff but writes nothing
@@ -532,7 +532,7 @@ def case_4_glossary_replace() -> None:
         check("4q dry-run: glossary.json bytes unchanged",
               (root / "glossary.json").read_bytes() == before["glossary"], "")
         check("4r dry-run: chapter bytes unchanged",
-              (root / "translated" / "Chapter_0001.md").read_bytes() == before["chapter"],
+              (root / "translated" / "CHAPTER_0001.md").read_bytes() == before["chapter"],
               "")
 
 
@@ -655,7 +655,7 @@ def case_7_progress_and_recovery() -> None:
         orig_awt = R.project.atomic_write_text
 
         def flaky_awt(path, text, newline=None):
-            if Path(path).name == "Chapter_0002.md":
+            if Path(path).name == "CHAPTER_0002.md":
                 raise OSError("simulated chapter-write failure")
             return orig_awt(path, text, newline=newline)
 
@@ -680,14 +680,14 @@ def case_7_progress_and_recovery() -> None:
         check("7h recovery: glossary.json bytes unchanged",
               (root / "glossary.json").read_bytes() == before["glossary"])
         check("7i recovery: chapter 1 rewritten before the failure",
-              (translated / "Chapter_0001.md").read_text(encoding="utf-8")
+              (translated / "CHAPTER_0001.md").read_text(encoding="utf-8")
               == rec_chapter(1).replace("spirit root", "spiritual root"),
-              f"got={(translated / 'Chapter_0001.md').read_text(encoding='utf-8')!r}")
+              f"got={(translated / 'CHAPTER_0001.md').read_text(encoding='utf-8')!r}")
         check("7j recovery: chapters 2-3 untouched",
-              (translated / "Chapter_0002.md").read_bytes()
-              == before["Chapter_0002.md"]
-              and (translated / "Chapter_0003.md").read_bytes()
-              == before["Chapter_0003.md"], "")
+              (translated / "CHAPTER_0002.md").read_bytes()
+              == before["CHAPTER_0002.md"]
+              and (translated / "CHAPTER_0003.md").read_bytes()
+              == before["CHAPTER_0003.md"], "")
         check("7k recovery: no *.tmp siblings left in translated/",
               list(translated.glob("*.tmp")) == [],
               f"tmp={[str(p) for p in translated.glob('*.tmp')]}")
@@ -700,7 +700,7 @@ def case_7_progress_and_recovery() -> None:
               rep["chapters"]["changed"] == 2
               and rep["chapters"]["occurrences"] == 2
               and rep["chapters"]["per_chapter"]
-              == [("Chapter_0002.md", 1), ("Chapter_0003.md", 1)],
+              == [("CHAPTER_0002.md", 1), ("CHAPTER_0003.md", 1)],
               f"chapters={rep['chapters']}")
         entry = load_glossary_entry(root)
         check("7m recovery: glossary.json now carries the new translation",
@@ -731,9 +731,9 @@ def case_8_bom_chapters() -> None:
         rep = R.replace_chapters(root, BOM_MANIFEST, "spirit root", "spiritual root")
         check("8a BOM: occurrences exclude the frontmatter title hit",
               rep["occurrences"] == 3
-              and rep["per_chapter"] == [("Chapter_0001.md", 3)]
+              and rep["per_chapter"] == [("CHAPTER_0001.md", 3)]
               and rep["changed"] == 1, f"rep={rep}")
-        raw = (root / "translated" / "Chapter_0001.md").read_bytes()
+        raw = (root / "translated" / "CHAPTER_0001.md").read_bytes()
         check("8b BOM: real rewrite drops the EF BB BF prefix",
               raw[:3] != b"\xef\xbb\xbf", f"head={raw[:6]!r}")
         text = raw.decode("utf-8")
@@ -753,7 +753,7 @@ def case_8_bom_chapters() -> None:
         check("8e BOM: dry-run still reports the body-only count",
               rep["occurrences"] == 3 and rep["changed"] == 1, f"rep={rep}")
         check("8f BOM: dry-run leaves the BOM'd file byte-identical",
-              (root / "translated" / "Chapter_0001.md").read_bytes() == before)
+              (root / "translated" / "CHAPTER_0001.md").read_bytes() == before)
 
     # Case C: no match anywhere -- nothing rewritten, BOM preserved
     with tempfile.TemporaryDirectory() as td:
@@ -761,7 +761,7 @@ def case_8_bom_chapters() -> None:
         rep = R.replace_chapters(root, BOM_MANIFEST, "spirit root", "spiritual root")
         check("8g BOM: no-match BOM'd file untouched (BOM preserved)",
               rep["occurrences"] == 0 and rep["changed"] == 0
-              and (root / "translated" / "Chapter_0001.md").read_bytes() == before,
+              and (root / "translated" / "CHAPTER_0001.md").read_bytes() == before,
               f"rep={rep}")
 
 

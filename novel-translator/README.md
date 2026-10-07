@@ -32,7 +32,7 @@ through uv automatically):
 ## One-time setup
 
 1. Make a project directory and put source chapters in `source/` named
-   `Chapter_NNNN.md` (exactly 4 zero-padded digits, no suffix — that is the
+   `CHAPTER_NNNN.md` (exactly 4 zero-padded digits, no suffix — that is the
    only accepted spelling). Any other shape is
    skipped, and `init`/`sync` print a `[warn]` naming each skipped file and
    why — so check that output before trusting the chapter count. Frontmatter is
@@ -97,7 +97,7 @@ through uv automatically):
    `migrate` is non-destructive and re-runnable: it brings a project up
    to the current skill version (new config keys, templates shipped
    since the project's init, and `v010`'s rename of source chapters to the
-   fixed 4-digit `Chapter_NNNN.md` form, which carries `chapters.json`,
+   fixed 4-digit `CHAPTER_NNNN.md` form, which carries `chapters.json`,
    `story_state.json` and the per-chapter artifacts with it) and never touches
    `glossary.json`,
    `tn_history.json`, or `story_state.json` -- that reset is
@@ -199,7 +199,7 @@ through uv automatically):
     uv run scripts/translate.py translate --next 3 --project .
 
 `--next N` takes the next N pending or in-progress chapters; `--chapters A-B` (or a spec
-like `1,3-5,Chapter_0007.md`) picks chapters explicitly. Chapters run
+like `1,3-5,CHAPTER_0007.md`) picks chapters explicitly. Chapters run
 strictly in sequence on purpose: the glossary, note history, and rolling
 story recap build up as you go. Ctrl-C is safe at any point -- per-chapter
 state is saved and a
@@ -220,7 +220,7 @@ retranslating a chapter refreshes only its own entry).
 
 ## Human review
 
-- Read `translated/Chapter_NNNN.md` (one paragraph per line).
+- Read `translated/CHAPTER_NNNN.md` (one paragraph per line).
 - Either hand-edit the file directly -- the epub builds from the file
   as-is -- or fix the cause (a wrong `glossary.json` term, a prompt
   template) and retranslate:
@@ -237,7 +237,7 @@ retranslating a chapter refreshes only its own entry).
 
   prints the last few accumulated feedback entries (from any stage —
   translate, validate, or faith) for every `needs-review` chapter.
-- Fully manual chapters: write `translated/Chapter_NNNN.md` yourself
+- Fully manual chapters: write `translated/CHAPTER_NNNN.md` yourself
   following the format described in `references/file-formats.md`, then:
 
       uv run scripts/translate.py mark --chapters 7 --status translated --project .
@@ -284,7 +284,7 @@ skipped a proposal -- count its occurrences across the source chapters
         [--variants "A,B"] [--chapters SPEC] [--min N]
 
     [glossary] count '裴小丫' (+1 variant(s)) across 42 chapter(s)
-    [glossary] Chapter_0003.md: 2
+    [glossary] CHAPTER_0003.md: 2
     [glossary] total: 7 occurrence(s) in 2/42 chapter(s)
     [ok] '裴小丫' meets the significance threshold (min 3)
 
@@ -445,7 +445,7 @@ and the cap truncates after dedup, so the most severe context loss
 survives). Discarded candidates — low-threshold, cap overflow, invalid —
 are recorded in `notes/<stem>.dropped.json` next to the sidecar (a
 review artifact; the epub builder does not read it); the pipeline prints
-the same record as `[Chapter_NNNN] [ok] notes: K kept (cats); D dropped
+the same record as `[CHAPTER_NNNN] [ok] notes: K kept (cats); D dropped
 (reasons) -> notes/<stem>.dropped.json`. An annotator response of zero
 notes for a chapter that has notes is treated as a failed evaluation:
 the sidecar and translated markdown are left untouched
@@ -793,7 +793,7 @@ Each run prunes older logs to the newest `log_llm_keep_runs` (default 5);
 disable the LLM lines with `log_llm: false` in config.json.
 
 Background epub builds append their output (including epubcheck results) to
-`logs/epub-build.log`, with `=== epub build after Chapter_NNNN.md | timestamp ===`
+`logs/epub-build.log`, with `=== epub build after CHAPTER_NNNN.md | timestamp ===`
 separators between builds.
 
 Because every mutating action is committed (see the `git_commits` config

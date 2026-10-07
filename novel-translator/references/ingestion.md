@@ -11,7 +11,7 @@ The user gives you a URL instead of chapter files ("download this novel and
 prepare it as a translation project"). The path is always the same:
 
 1. Scrape the table of contents for the ordered chapter list.
-2. Fetch each chapter and convert it to a `source/Chapter_NNNN.md` file.
+2. Fetch each chapter and convert it to a `source/CHAPTER_NNNN.md` file.
 3. Run `init`.
 4. For long novels, work in batches: download the next batch, `sync`,
    `translate --next N`, repeat.
@@ -22,14 +22,14 @@ Before `init` runs, the project directory must contain a `source/`
 subdirectory holding at least one UTF-8 markdown file whose name matches:
 
 ```text
-^Chapter_([0-9]{4})\.md$     (case-insensitive; ASCII digits only)
+^CHAPTER_([0-9]{4})\.md$     (EXACT case; ASCII digits only)
 ```
 
 `init` fails fast when `source/` is missing or holds zero matching files.
 
 ## File naming rules
 
-- `Chapter_NNNN.md` is the **only** accepted spelling: exactly 4 zero-padded
+- `CHAPTER_NNNN.md` is the **only** accepted spelling: exactly 4 zero-padded
   digits, no suffix. Padding is fixed, so the older 3-digit spelling
   (`Chapter_001.md`) is rejected — accepting both let one chapter be spelled
   two ways. Sorting is by parsed number, which with fixed padding is also
@@ -44,15 +44,15 @@ subdirectory holding at least one UTF-8 markdown file whose name matches:
   `sync` now **print a `[warn]` for each**, naming the file and the reason:
 
   ```text
-  [warn] source/Chapter_001.md: ignored - 3 digits, not 4 (rename to Chapter_NNNN.md - 4 digits)
-  [warn] source/Chapter_0042a.md: ignored - extras/bonus chapters (letter suffix) are no longer accepted - give this chapter its own number (rename to Chapter_NNNN.md - 4 digits)
-  [warn] source/Chapter_0007.zh.md: ignored - not Chapter_NNNN.md (exactly 4 digits) (rename to Chapter_NNNN.md - 4 digits)
+  [warn] source/Chapter_001.md: ignored - 3 digits, not 4 (rename to CHAPTER_NNNN.md - 4 digits)
+  [warn] source/Chapter_0042a.md: ignored - extras/bonus chapters (letter suffix) are no longer accepted - give this chapter its own number (rename to CHAPTER_NNNN.md - 4 digits)
+  [warn] source/Chapter_0007.zh.md: ignored - not CHAPTER_NNNN.md (exactly 4 digits) (rename to CHAPTER_NNNN.md - 4 digits)
   [warn] 3 source file(s) look like chapters but were not added to the manifest
   ```
 
   The classes covered are short padding, a letter suffix (single or
   multi-letter), `Chapter_0007.zh.md`, `chapter 7.md`, `0007.md` (no
-  `Chapter_` prefix), non-ASCII digits (full-width or Arabic-Indic), and a
+  `CHAPTER_` prefix), non-ASCII digits (full-width or Arabic-Indic), and a
   wrong extension. Files that are plainly not chapters (`README.md`,
   `notes.txt`, `.gitkeep`) are never reported — `source/` legitimately holds
   more than chapters. A warning never fails the command: `init`/`sync` still
@@ -86,7 +86,7 @@ Before (raw scrape, hard-wrapped):
 <p>镇口的老槐树下，<br>坐着一名青衣少女。</p>
 ```
 
-After (`source/Chapter_0001.md`):
+After (`source/CHAPTER_0001.md`):
 
 ```text
 ---

@@ -1,12 +1,21 @@
-"""v10: rename source chapters to the fixed 4-digit, canonical-case form.
+"""v10: rename source chapters to the fixed 4-digit, ALL-CAPS canonical form.
 
-project.CHAPTER_RE went from `^Chapter_([0-9]{1,4})([a-z]?)\.md$` to
-`^Chapter_([0-9]{4})\.md$`. Three old spellings stop being discovered: short
-padding (Chapter_001.md, Chapter_12.md), non-canonical case
-(chapter_0012.md, Chapter_0012.MD), and the letter suffix that used to mark
-extras/bonus chapters (Chapter_0042a.md). Anything not renamed is silently
-dropped from the manifest -- no entry, no status, no translation target -- so
-projects built before v10 need their files moved, not just re-discovered.
+project.CHAPTER_RE went from `^Chapter_([0-9]{1,4})([a-z]?)\.md$` (IGNORECASE)
+to `^CHAPTER_([0-9]{4})\.md$` -- case-sensitive, no IGNORECASE flag at all. Every
+old spelling stops being discovered: short padding (Chapter_001.md), the old
+title-case prefix (chapter_0042.md, Chapter_0042.md), a wrong-case extension
+(CHAPTER_0042.MD), and the letter suffix that used to mark extras/bonus
+chapters (Chapter_0042a.md). Anything not renamed is silently dropped from the
+manifest -- no entry, no status, no translation target -- so projects built
+before v10 need their files moved, not just re-discovered.
+
+Most renames here differ ONLY IN CASE, which is the awkward part. On a
+case-insensitive filesystem (Windows, default macOS) the destination already
+"exists" as the very file being renamed, so a direct Path.rename() raises
+FileExistsError. _rename() therefore stages through an intermediate name when
+only the case differs, and _taken() keeps that same fact from being mistaken
+for a name clash -- otherwise every canonical rename would report a phantom
+collision and skip itself.
 
 A rename orphans everything keyed on the file name, which is why this step does
 not stop at source/: the manifest's `file` field, story_state.json's recap
@@ -14,13 +23,13 @@ keys, and the draft/translated/notes artifacts all move with it. draft/ and
 notes/ are globbed per stem rather than listed file-by-file, so an artifact
 added by a later version is carried along instead of stranded.
 
-Extra chapters are NOT renamed here, and this is now a correctness
-requirement, not a nicety: with the suffix gone, the canonical name for
-Chapter_0042a.md would be Chapter_0042.md -- which a real Chapter_0042.md may
-already occupy. Renaming would either clobber a chapter or collide in the
-manifest. There is also no mechanical answer to what number an extra actually
-wants (is 0042a chapter 43? a second part?), so these get a [warn] naming each
-file and telling the operator to hand the decision to their agent with the TOC.
+Extra chapters are NOT renamed here, and that is a correctness requirement:
+with the suffix gone, the canonical name for Chapter_0042a.md would be
+CHAPTER_0042.md -- which a real CHAPTER_0042.md may already occupy. Renaming
+would either clobber a chapter or collide in the manifest, and no mechanical
+answer exists to what number an extra actually wants (is 0042a chapter 43? a
+second part?). These get a [warn] naming each file and telling the operator to
+hand the decision to their agent with the TOC.
 
 Idempotent: a second run finds every name already canonical, defers the same
 extra chapters, and reports nothing beyond the delegated template sync.
@@ -41,8 +50,8 @@ from . import common
 from lib import project
 
 VERSION = 10
-DESCRIPTION = ("rename source chapters to the fixed 4-digit, canonical-case "
-               "form (Chapter_001.md -> Chapter_0001.md), carrying "
+DESCRIPTION = ("rename source chapters to the fixed 4-digit, all-caps canonical "
+               "form (Chapter_001.md -> CHAPTER_0001.md), carrying "
                "chapters.json, story_state.json and the per-chapter artifacts")
 
 # The form that was accepted before v10. It still matches the letter suffix on
@@ -61,7 +70,7 @@ def migrate(project_dir: Path, templates_src: Path,
 
     renames, deferred = _plan(paths["source"])
     collisions = [(old, new) for old, new in renames.items()
-                  if (paths["source"] / new).exists()]
+                  if _taken(paths["source"] / old, paths["source"] / new)]
     for old, new in collisions:
         del renames[old]
         lines.append(f"[warn] chapters: {old} NOT renamed - {new} already "
@@ -73,7 +82,7 @@ def migrate(project_dir: Path, templates_src: Path,
         example = f"{sorted(renames)[0]} -> {renames[sorted(renames)[0]]}"
         verb = "would rename" if dry_run else "renamed"
         lines.append(f"[ok] chapters: {verb} {len(renames)} source file(s) to "
-                     f"the 4-digit canonical form (e.g. {example})")
+                     f"the 4-digit all-caps canonical form (e.g. {example})")
         if not dry_run:
             _apply(paths, renames)
 
@@ -86,9 +95,9 @@ def migrate(project_dir: Path, templates_src: Path,
         lines.append(
             "[warn] chapters: hand these to your agent, do not bulk-rename "
             "them. The suffix is gone, so the mechanical rename would be "
-            "Chapter_0042a.md -> Chapter_0042.md -- clobbering a real chapter. "
+            "Chapter_0042a.md -> CHAPTER_0042.md -- clobbering a real chapter. "
             "Give it this list plus the TOC and the rule: assign each its own "
-            "Chapter_NNNN.md number, then update chapters.json, "
+            "CHAPTER_NNNN.md number, then update chapters.json, "
             "story_state.json, draft/, translated/ and notes/ to match."
         )
 
@@ -112,7 +121,37 @@ def _canonical(number: str) -> str:
     """The one spelling v10 accepts for this chapter. Takes no suffix: a
     suffixed name never reaches this (it is deferred instead), and computing
     it would hand back a name a real chapter may already own."""
-    return f"Chapter_{int(number):04d}.md"
+    return f"CHAPTER_{int(number):04d}.md"
+
+
+def _taken(src: Path, dst: Path) -> bool:
+    """True when dst is occupied by a DIFFERENT file, so moving src there
+    would clobber it.
+
+    A case-only difference is NOT a clash: after the rename to all-caps, most
+    renames in this step differ only in case, and on a case-insensitive
+    filesystem dst already exists precisely because it IS src. Treating that
+    as a collision would skip every canonical rename."""
+    if not dst.exists():
+        return False
+    return src.name.lower() != dst.name.lower()
+
+
+def _rename(src: Path, dst: Path) -> None:
+    """Move src to dst, staging through a temp name when only the case differs.
+
+    On a case-insensitive filesystem the destination of a case-only rename
+    resolves to src itself, so a direct rename() raises FileExistsError. Going
+    via an intermediate whose name differs from BOTH endpoints frees the
+    destination before the second step."""
+    if src.name.lower() != dst.name.lower():
+        src.rename(dst)
+        return
+    tmp = src.with_name(src.name + ".v010tmp")
+    if tmp.exists():
+        tmp.unlink()          # leftover from a run that died mid-rename
+    src.rename(tmp)
+    tmp.rename(dst)
 
 
 def _plan(source: Path) -> tuple[dict[str, str], list[str]]:
@@ -150,20 +189,21 @@ def _apply(paths: dict, renames: dict[str, str]) -> None:
     never the reverse."""
     for old, new in renames.items():
         old_stem, new_stem = Path(old).stem, Path(new).stem
-        (paths["source"] / old).rename(paths["source"] / new)
+        _rename(paths["source"] / old, paths["source"] / new)
 
         translated = paths["translated"] / old
         if translated.exists():
-            translated.rename(paths["translated"] / new)
+            _rename(translated, paths["translated"] / new)
 
         for folder in (paths["draft"], paths["notes"]):
             if not folder.is_dir():
                 continue
             for artifact in sorted(folder.glob(f"{old_stem}.*")):
-                target = folder / artifact.name.replace(old_stem, new_stem, 1)
-                if target.exists():
-                    continue              # never clobber an existing artifact
-                artifact.rename(target)
+                tail = artifact.name[len(old_stem):]
+                target = folder / f"{new_stem}{tail}"
+                if _taken(artifact, target):
+                    continue          # never clobber a different artifact
+                _rename(artifact, target)
 
 
 def _count_artifacts(paths: dict, renames: dict[str, str]) -> int:

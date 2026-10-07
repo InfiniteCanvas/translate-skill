@@ -153,7 +153,7 @@ def write_source(root: Path, name: str, text: str) -> None:
 # read_chapter's no-frontmatter path returns the file text verbatim, so a
 # trailing "\n" would split into a phantom 4th empty source line.
 BODIES = {
-    "Chapter_0001.md": "第一行。\n第二行。\n第三行。",
+    "CHAPTER_0001.md": "第一行。\n第二行。\n第三行。",
 }
 MANIFEST = [
     {"file": fname, "number": i + 1, "suffix": "", "order": i, "status": "pending"}
@@ -265,7 +265,7 @@ def case_5_retry_then_success() -> None:
         pipeline._chat = make_fake_chat(calls, verdicts)
         try:
             outcome, _out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
@@ -294,13 +294,13 @@ def case_5_retry_then_success() -> None:
         check("5i retry: attempt 2 prompt reproduces the rejected line",
               "Translated line 2." in p2, f"prompt={p2!r}")
         check("5j retry: translated chapter exists",
-              (proj / "translated" / "Chapter_0001.md").is_file())
+              (proj / "translated" / "CHAPTER_0001.md").is_file())
         check("5k retry: draft state file removed on success",
-              not (proj / "draft" / "Chapter_0001.state.json").exists())
+              not (proj / "draft" / "CHAPTER_0001.state.json").exists())
         story_state = json.loads(
             (proj / "story_state.json").read_text(encoding="utf-8"))
         check("5l retry: rolling recap recorded for the chapter",
-              story_state.get("chapters", {}).get("Chapter_0001", {}).get("recap")
+              story_state.get("chapters", {}).get("CHAPTER_0001", {}).get("recap")
               == "Mock recap of the story so far.",
               f"story_state={story_state}")
         recap_prompt = calls[-1]["prompt"]
@@ -324,13 +324,13 @@ def case_6_give_up() -> None:
         pipeline._chat = make_fake_chat(calls, verdicts)
         try:
             outcome, _out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
         check("6a give-up: run_chapter returns 'needs-review'",
               exc is None and outcome == "needs-review", f"exc={exc!r}")
-        state_path = proj / "draft" / "Chapter_0001.state.json"
+        state_path = proj / "draft" / "CHAPTER_0001.state.json"
         check("6b give-up: draft state file still exists", state_path.is_file())
         state = json.loads(state_path.read_text(encoding="utf-8"))
         check("6c give-up: state rejected == the 3 translated lines",
@@ -348,7 +348,7 @@ def case_6_give_up() -> None:
               in translates[1]
               and "[Rejected Previous Attempt]" in translates[1],
               f"n={len(translates)} p2={translates[1] if len(translates) > 1 else None!r}")
-        entry = project.find_entry(project.load_manifest(proj), "Chapter_0001.md")
+        entry = project.find_entry(project.load_manifest(proj), "CHAPTER_0001.md")
         check("6f give-up: manifest entry status needs-review",
               entry is not None and entry.get("status") == "needs-review",
               f"entry={entry!r}")

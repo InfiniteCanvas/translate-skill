@@ -149,7 +149,7 @@ def case_1_bom_json_project_files() -> None:
               out == "", f"out={out!r}")
 
         # chapters.json
-        manifest_in = [{"file": "Chapter_0001.md", "number": 1, "suffix": "",
+        manifest_in = [{"file": "CHAPTER_0001.md", "number": 1, "suffix": "",
                         "order": 0, "status": "translated",
                         "title": "Spirit Root"}]
         write_bom(root / "chapters.json",
@@ -184,11 +184,11 @@ def case_1_bom_json_project_files() -> None:
         notes_in = [{"line": 0, "term": "灵根",
                      "note": "Innate aptitude for cultivation.",
                      "anchor": "He tested his spirit root."}]
-        write_bom(tn.notes_path(root, "Chapter_0001.md"),
-                  json.dumps({"chapter": "Chapter_0001.md",
+        write_bom(tn.notes_path(root, "CHAPTER_0001.md"),
+                  json.dumps({"chapter": "CHAPTER_0001.md",
                               "updated_at": "2026-01-01T00:00:00+00:00",
                               "notes": notes_in}, ensure_ascii=False))
-        n, out, exc = capture(tn.load_notes, root, "Chapter_0001.md")
+        n, out, exc = capture(tn.load_notes, root, "CHAPTER_0001.md")
         check("1g notes: BOM'd sidecar loads with its note",
               exc is None and n == notes_in, f"exc={exc!r} n={n}")
         check("1h notes: silent", out == "", f"out={out!r}")
@@ -198,9 +198,9 @@ def case_1_bom_json_project_files() -> None:
                     "title": "T", "lines": None, "notes": None,
                     "rejected": None, "updated_at": "", "pipeline": 2}
         draft = root / "draft"
-        write_bom(draft / "Chapter_0001.state.json",
+        write_bom(draft / "CHAPTER_0001.state.json",
                   json.dumps(state_in, ensure_ascii=False))
-        s, out, exc = capture(pipeline.load_state, draft, "Chapter_0001.md")
+        s, out, exc = capture(pipeline.load_state, draft, "CHAPTER_0001.md")
         check("1i state: BOM'd draft state loads with its stage",
               exc is None and s == state_in
               and s is not None and s["stage"] == "FAITH",
@@ -244,7 +244,7 @@ def case_2_read_chapter_bom() -> None:
     keeps the BOM out of the body text."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        chapter = root / "Chapter_0001.md"
+        chapter = root / "CHAPTER_0001.md"
         write_bom(chapter,
                   "---\n"
                   "chapter_title: 第二章 灵根\n"
@@ -259,7 +259,7 @@ def case_2_read_chapter_bom() -> None:
         check("2b read_chapter: body intact after the BOM'd frontmatter",
               body == "正文第一行。\n正文第二行。", f"body={body!r}")
 
-        plain = root / "Chapter_0002.md"
+        plain = root / "CHAPTER_0002.md"
         write_bom(plain, "只有正文。\n第二行。\n")
         fm, body = project.read_chapter(plain)
         check("2c read_chapter: BOM'd frontmatter-less chapter -> ({}, body), "
@@ -310,23 +310,23 @@ def case_4_load_state_loud_discard() -> None:
     counterparts live in test_tn_sidecar.py."""
     with tempfile.TemporaryDirectory() as td:
         draft = Path(td)
-        path = draft / "Chapter_0001.state.json"
+        path = draft / "CHAPTER_0001.state.json"
 
         write_lf(path, "{not json")
-        state, out, exc = capture(pipeline.load_state, draft, "Chapter_0001.md")
+        state, out, exc = capture(pipeline.load_state, draft, "CHAPTER_0001.md")
         check("4a state: JSON syntax error -> None, no exception",
               exc is None and state is None, f"exc={exc!r} state={state!r}")
         check("4b state: exactly one unreadable warn (JSONDecodeError)",
-              out == "[warn] Chapter_0001.state.json unreadable "
+              out == "[warn] CHAPTER_0001.state.json unreadable "
                      "(JSONDecodeError) - restarting chapter state\n",
               f"out={out!r}")
 
         write_lf(path, "[]")
-        state, out, exc = capture(pipeline.load_state, draft, "Chapter_0001.md")
+        state, out, exc = capture(pipeline.load_state, draft, "CHAPTER_0001.md")
         check("4c state: non-object document -> None, no exception",
               exc is None and state is None, f"exc={exc!r} state={state!r}")
         check("4d state: the warn names the reason in parentheses (list)",
-              out == "[warn] Chapter_0001.state.json unreadable (list) "
+              out == "[warn] CHAPTER_0001.state.json unreadable (list) "
                      "- restarting chapter state\n", f"out={out!r}")
 
 
@@ -355,7 +355,7 @@ def case_6_profile_template_bom() -> None:
     meta hook never writes a log."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        write_lf(root / "source" / "Chapter_0001.md",
+        write_lf(root / "source" / "CHAPTER_0001.md",
                  "第一章 灵根\n\n林枫将手掌贴在水晶上。\n")
         write_lf(root / "config.json", json.dumps({
             "source_lang": "zh", "target_lang": "en",

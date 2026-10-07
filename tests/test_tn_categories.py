@@ -204,14 +204,14 @@ def case_6_save_dropped_lifecycle() -> None:
     DELETES it when empty (absent = nothing dropped)."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        path = tn.dropped_path(root, "Chapter_0001.md")
+        path = tn.dropped_path(root, "CHAPTER_0001.md")
         check("6a dropped-path: notes/<stem>.dropped.json",
-              path == root / "notes" / "Chapter_0001.dropped.json",
+              path == root / "notes" / "CHAPTER_0001.dropped.json",
               f"path={path}")
 
         dropped = [{"line": 0, "term": "甲", "note": "n", "category": "other",
                     "threshold": "low", "reason": "low_threshold"}]
-        tn.save_dropped(root, "Chapter_0001.md", dropped)
+        tn.save_dropped(root, "CHAPTER_0001.md", dropped)
         check("6b save_dropped: file written when non-empty", path.is_file(), "")
         raw = path.read_bytes()
         check("6c save_dropped: trailing newline", raw.endswith(b"\n"),
@@ -219,15 +219,15 @@ def case_6_save_dropped_lifecycle() -> None:
         document = json.loads(raw.decode("utf-8"))
         check("6d save_dropped: document shape {chapter, updated_at, dropped}",
               set(document) == {"chapter", "updated_at", "dropped"}
-              and document["chapter"] == "Chapter_0001.md"
+              and document["chapter"] == "CHAPTER_0001.md"
               and isinstance(document["updated_at"], str)
               and document["dropped"] == dropped,
               f"document={document}")
 
-        tn.save_dropped(root, "Chapter_0001.md", [])
+        tn.save_dropped(root, "CHAPTER_0001.md", [])
         check("6e save_dropped: empty list DELETES the file",
               not path.exists(), f"path={path}")
-        tn.save_dropped(root, "Chapter_0001.md", [])  # absent stays absent
+        tn.save_dropped(root, "CHAPTER_0001.md", [])  # absent stays absent
         check("6f save_dropped: deleting an absent file is a no-op",
               not path.exists(), "")
 
@@ -237,7 +237,7 @@ def case_7_sidecar_category() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         lines = ["Line zero.", "Line one."]
-        kept = tn.save_notes(root, "Chapter_0002.md", lines, [
+        kept = tn.save_notes(root, "CHAPTER_0002.md", lines, [
             {"line": 0, "term": "甲", "note": "No category."},
             {"line": 1, "term": "乙", "note": "Categorized.", "category": "unit"},
             {"line": 1, "term": "丙", "note": "Bogus.", "category": "dragon"},
@@ -247,7 +247,7 @@ def case_7_sidecar_category() -> None:
               and [e["category"] for e in kept] == ["other", "unit", "other"],
               f"kept={kept}")
         document = json.loads(
-            (root / "notes" / "Chapter_0002.json").read_text(encoding="utf-8"))
+            (root / "notes" / "CHAPTER_0002.json").read_text(encoding="utf-8"))
         check("7b sidecar: on-disk entries carry the category",
               [e["category"] for e in document["notes"]]
               == ["other", "unit", "other"],

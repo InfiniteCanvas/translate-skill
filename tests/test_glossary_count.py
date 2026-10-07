@@ -181,9 +181,9 @@ def write_source(root: Path, name: str, text: str) -> None:
 # DEFAULTS threshold), 裴小丫 2x in ch3 with one standalone 小丫, 山谷 1x
 # in ch1, ch2 is empty of every fixture term.
 BODIES = {
-    "Chapter_0001.md": "灵石铺满了山谷。\n他又捡起一块灵石。\n",
-    "Chapter_0002.md": "山门外风平浪静。\n",
-    "Chapter_0003.md": "裴小丫握紧了灵石。\n裴小丫点头。小丫笑了。\n",
+    "CHAPTER_0001.md": "灵石铺满了山谷。\n他又捡起一块灵石。\n",
+    "CHAPTER_0002.md": "山门外风平浪静。\n",
+    "CHAPTER_0003.md": "裴小丫握紧了灵石。\n裴小丫点头。小丫笑了。\n",
 }
 MANIFEST = [
     {"file": fname, "number": i + 1, "suffix": "", "order": i, "status": "pending"}
@@ -243,15 +243,15 @@ def case_2_basic_count() -> None:
               exc is None and code == 0, f"code={code} exc={exc!r}")
         check("2b basic: exact output lines",
               out == "[glossary] count '灵石' across 3 chapter(s)\n"
-                     "[glossary] Chapter_0001.md: 2\n"
-                     "[glossary] Chapter_0003.md: 1\n"
+                     "[glossary] CHAPTER_0001.md: 2\n"
+                     "[glossary] CHAPTER_0003.md: 1\n"
                      "[glossary] total: 3 occurrence(s) in 2/3 chapter(s)\n"
                      "[ok] '灵石' meets the significance threshold (min 3)\n",
               f"out={out!r}")
         total, hits = glossary.count_term_in_chapters(proj, "灵石")
         check("2c basic: helper total and hits in discover order",
-              total == 3 and hits == [("Chapter_0001.md", 2),
-                                      ("Chapter_0003.md", 1)],
+              total == 3 and hits == [("CHAPTER_0001.md", 2),
+                                      ("CHAPTER_0003.md", 1)],
               f"total={total} hits={hits}")
 
 
@@ -270,12 +270,12 @@ def case_3_variants() -> None:
               "[glossary] count '裴小丫' (+1 variant(s)) across 3 chapter(s)" in out,
               f"out={out!r}")
         check("3c variants: all 3 hits in the one chapter with occurrences",
-              "[glossary] Chapter_0003.md: 3" in out
+              "[glossary] CHAPTER_0003.md: 3" in out
               and "[glossary] total: 3 occurrence(s) in 1/3 chapter(s)" in out,
               f"out={out!r}")
         _total, hits = glossary.count_term_in_chapters(proj, "裴小丫", ["小丫"])
         check("3d variants: helper agrees (total in hits == 3)",
-              hits == [("Chapter_0003.md", 3)], f"hits={hits}")
+              hits == [("CHAPTER_0003.md", 3)], f"hits={hits}")
 
 
 def case_4_chapters_spec() -> None:
@@ -289,8 +289,8 @@ def case_4_chapters_spec() -> None:
               exc is None and "[glossary] count '灵石' across 2 chapter(s)" in out,
               f"exc={exc!r} out={out!r}")
         check("4b spec: only chapter 1 counted, chapter 3 excluded",
-              "[glossary] Chapter_0001.md: 2" in out
-              and "Chapter_0003" not in out
+              "[glossary] CHAPTER_0001.md: 2" in out
+              and "CHAPTER_0003" not in out
               and "[glossary] total: 2 occurrence(s) in 1/2 chapter(s)" in out,
               f"out={out!r}")
         check("4c spec: 2 < 3 -> exit 1 with the warn line",
@@ -353,7 +353,7 @@ def case_7_bad_input() -> None:
         check("7c unknown spec: PipelineError (no chapters match 99)",
               isinstance(exc, pipeline.PipelineError) and "99" in str(exc),
               f"exc={exc!r}")
-        write_source(proj, "Chapter_0004.md",
+        write_source(proj, "CHAPTER_0004.md",
                      "---\nchapter_title: [unclosed\n---\n\nbody\n")
         _code, _out, exc = run_cli(
             translate._cmd_glossary_count, count_ns("灵石"), proj)
@@ -698,7 +698,7 @@ def case_10_gate_corpus_cache() -> None:
     # Fail-open: an unreadable corpus is never cached
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "p3")
-        write_source(proj, "Chapter_0004.md",
+        write_source(proj, "CHAPTER_0004.md",
                      "---\nchapter_title: [unclosed\n---\n\n正文。\n")
         pipeline._GATE_CORPUS.clear()
         reads = {"n": 0}
@@ -723,7 +723,7 @@ def case_10_gate_corpus_cache() -> None:
                   and proj.resolve() not in pipeline._GATE_CORPUS,
                   f"reads={reads['n']} exc={exc2!r}")
             # The corpus becomes readable in the same process: works + caches
-            write_source(proj, "Chapter_0004.md", "山门前风平浪静。")
+            write_source(proj, "CHAPTER_0004.md", "山门前风平浪静。")
             corpus = pipeline._gate_corpus(proj)
             check("10k fail-open: a later readable corpus succeeds in-process",
                   "山门前风平浪静。" in corpus and reads["n"] == 12
@@ -746,9 +746,9 @@ def make_gate_project(root: Path, name: str) -> Path:
     # source line and fail the numbered-line coverage check (the shape
     # test_retry_feedback's BODIES use).
     bodies = {
-        "Chapter_0001.md": "他捡起一块灵石。",
-        "Chapter_0002.md": "山门外风平浪静。",
-        "Chapter_0003.md": "山门前风平浪静。",
+        "CHAPTER_0001.md": "他捡起一块灵石。",
+        "CHAPTER_0002.md": "山门外风平浪静。",
+        "CHAPTER_0003.md": "山门前风平浪静。",
     }
     for fname, body in bodies.items():
         write_source(proj, fname, body)
@@ -798,10 +798,10 @@ def case_11_gate_corpus_run_chapter() -> None:
     pipeline._GATE_CORPUS.clear()
     with tempfile.TemporaryDirectory() as td:
         proj = make_gate_project(Path(td), "proj")
-        # Chapter_0003 starts corrupt: discover() still finds it, so any
+        # CHAPTER_0003 starts corrupt: discover() still finds it, so any
         # corpus join re-reads it and fails (run_chapter itself only reads
         # the chapter it translates).
-        write_source(proj, "Chapter_0003.md",
+        write_source(proj, "CHAPTER_0003.md",
                      "---\nchapter_title: [unclosed\n---\n\n正文。\n")
         cfg = config.load_config(proj)
         orig = pipeline._chat
@@ -812,7 +812,7 @@ def case_11_gate_corpus_run_chapter() -> None:
         ])
         try:
             outcome1, out1, exc1 = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md", cfg)
+                pipeline.run_chapter, proj, "CHAPTER_0001.md", cfg)
             check("11a run: chapter 1 translates despite the unreadable corpus",
                   exc1 is None and outcome1 == "translated",
                   f"outcome={outcome1} exc={exc1!r}")
@@ -828,16 +828,16 @@ def case_11_gate_corpus_run_chapter() -> None:
                   f"out={out1!r}")
 
             outcome2, out2, exc2 = capture(
-                pipeline.run_chapter, proj, "Chapter_0002.md", cfg)
+                pipeline.run_chapter, proj, "CHAPTER_0002.md", cfg)
             check("11d run: a second evaluation warns AGAIN (not cached)",
                   exc2 is None and outcome2 == "translated"
                   and out2.count("occurrence gate disabled") == 1,
                   f"outcome={outcome2} out={out2!r}")
 
-            # Repair Chapter_0003 and translate it in the same process
-            write_source(proj, "Chapter_0003.md", "山门前风平浪静。")
+            # Repair CHAPTER_0003 and translate it in the same process
+            write_source(proj, "CHAPTER_0003.md", "山门前风平浪静。")
             outcome3, out3, exc3 = capture(
-                pipeline.run_chapter, proj, "Chapter_0003.md", cfg)
+                pipeline.run_chapter, proj, "CHAPTER_0003.md", cfg)
             check("11e run: readable corpus -> no fail-open warn",
                   exc3 is None and outcome3 == "translated"
                   and "occurrence gate disabled" not in out3,

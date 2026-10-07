@@ -180,11 +180,11 @@ def make_project(root: Path, name: str, lines: list[str],
     proj = root / name
     proj.mkdir()
     (proj / "source").mkdir(parents=True, exist_ok=True)
-    with open(proj / "source" / "Chapter_0001.md", "w",
+    with open(proj / "source" / "CHAPTER_0001.md", "w",
               encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines))
     (proj / "chapters.json").write_text(
-        json.dumps([{"file": "Chapter_0001.md", "number": 1, "suffix": "",
+        json.dumps([{"file": "CHAPTER_0001.md", "number": 1, "suffix": "",
                      "order": 0, "status": "pending"}],
                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     cfg = {"providers": {}, "translate_max_output_tokens": MAX_OUT}
@@ -206,7 +206,7 @@ def seed_state(proj: Path, chunks: list[list[str]] | None, title=None) -> None:
         "title": title, "lines": None, "chunks": chunks, "notes": None,
         "rejected": None, "updated_at": "", "pipeline": 2,
     }
-    (proj / "draft" / "Chapter_0001.state.json").write_text(
+    (proj / "draft" / "CHAPTER_0001.state.json").write_text(
         json.dumps(state, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8")
 
@@ -271,7 +271,7 @@ def case_2_oversized_fail_fast() -> None:
         pipeline._chat = make_fake_chat(calls)
         try:
             outcome, _out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
@@ -282,7 +282,7 @@ def case_2_oversized_fail_fast() -> None:
         check("2c fail-fast: ZERO model calls were made",
               len(calls) == 0, f"calls={calls}")
         state = json.loads(
-            (proj / "draft" / "Chapter_0001.state.json")
+            (proj / "draft" / "CHAPTER_0001.state.json")
             .read_text(encoding="utf-8"))
         fb = state.get("feedback") or []
         check("2d fail-fast: feedback names the oversized line",
@@ -309,7 +309,7 @@ def case_3_singleton_escalated() -> None:
         pipeline._chat = make_fake_chat(calls)
         try:
             outcome, _out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
@@ -356,7 +356,7 @@ def case_4_escalating_retry() -> None:
         pipeline._chat = make_fake_chat(calls, translate_scripts=scripts)
         try:
             outcome, _out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
@@ -394,7 +394,7 @@ def case_4_escalating_retry() -> None:
         pipeline._chat = make_fake_chat(calls, translate_scripts=scripts)
         try:
             outcome, _out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
@@ -430,7 +430,7 @@ def case_5_persistence_resume() -> None:
         pipeline._chat = make_fake_chat(calls)
         try:
             outcome, out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
@@ -444,11 +444,11 @@ def case_5_persistence_resume() -> None:
               == [9, 10],
               f"n={len(tcalls)}")
         check("5c resume: the resume console line prints",
-              "[Chapter_0001] [init] resuming translation at part 3/3 "
+              "[CHAPTER_0001] [init] resuming translation at part 3/3 "
               "(8 lines already done)" in out,
               f"out={out!r}")
         lines_json = json.loads(
-            (proj / "draft" / "Chapter_0001.lines.json")
+            (proj / "draft" / "CHAPTER_0001.lines.json")
             .read_text(encoding="utf-8"))
         check("5d resume: state lines complete (seeds + fresh tail)",
               lines_json["lines"]
@@ -459,12 +459,12 @@ def case_5_persistence_resume() -> None:
               lines_json["title"] == "Seeded Title",
               f"title={lines_json.get('title')!r}")
         check("5f resume: translated chapter carries every line",
-              (proj / "translated" / "Chapter_0001.md").is_file()
+              (proj / "translated" / "CHAPTER_0001.md").is_file()
               and "Seed line 8." in
-              (proj / "translated" / "Chapter_0001.md").read_text("utf-8"),
+              (proj / "translated" / "CHAPTER_0001.md").read_text("utf-8"),
               "translated file incomplete")
         check("5g resume: state file cleaned up on success",
-              not (proj / "draft" / "Chapter_0001.state.json").exists())
+              not (proj / "draft" / "CHAPTER_0001.state.json").exists())
 
     # All chunks completed (crash between the last chunk and the stage
     # advance): the chunk loop is skipped entirely -- zero translate calls.
@@ -480,7 +480,7 @@ def case_5_persistence_resume() -> None:
         pipeline._chat = make_fake_chat(calls)
         try:
             outcome, _out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
@@ -491,7 +491,7 @@ def case_5_persistence_resume() -> None:
               f"outcome={outcome} exc={exc!r} "
               f"n={len(translate_calls(calls))}")
         lines_json = json.loads(
-            (proj / "draft" / "Chapter_0001.lines.json")
+            (proj / "draft" / "CHAPTER_0001.lines.json")
             .read_text(encoding="utf-8"))
         check("5i complete: seeded lines flow through unmodified",
               lines_json["lines"] == [f"Seed line {i}." for i in range(1, 11)],
@@ -509,7 +509,7 @@ def case_5_persistence_resume() -> None:
         pipeline._chat = make_fake_chat(calls)
         try:
             outcome, out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
@@ -544,7 +544,7 @@ def case_6_gate_failure_clears_chunks() -> None:
         pipeline._chat = make_fake_chat(calls, translate_scripts=[filler] * 4)
         try:
             outcome, _out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig
@@ -556,7 +556,7 @@ def case_6_gate_failure_clears_chunks() -> None:
               len(translate_calls(calls)) == 2,
               f"n={len(translate_calls(calls))}")
         state = json.loads(
-            (proj / "draft" / "Chapter_0001.state.json")
+            (proj / "draft" / "CHAPTER_0001.state.json")
             .read_text(encoding="utf-8"))
         check("6c gate-clear: saved state has chunks == []",
               state.get("chunks") == [], f"chunks={state.get('chunks')!r}")
@@ -583,7 +583,7 @@ def case_7_pinned_feedback_slicing() -> None:
         pipeline._chat = make_fake_chat(calls, verdicts=verdicts)
         try:
             outcome, _out, exc = capture(
-                pipeline.run_chapter, proj, "Chapter_0001.md",
+                pipeline.run_chapter, proj, "CHAPTER_0001.md",
                 config.load_config(proj))
         finally:
             pipeline._chat = orig

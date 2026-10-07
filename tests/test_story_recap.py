@@ -142,22 +142,22 @@ def entry(recap: str) -> dict:
 
 def case_1_predecessor() -> None:
     """Manifest ORDER (the `order` field) decides, not list position."""
-    manifest = make_manifest(["Chapter_0001.md", "Chapter_0002.md", "Chapter_0003.md"])
+    manifest = make_manifest(["CHAPTER_0001.md", "CHAPTER_0002.md", "CHAPTER_0003.md"])
     shuffled = [manifest[2], manifest[0], manifest[1]]  # deliberately out of order
     check("1a predecessor: first chapter -> None",
-          story.predecessor(shuffled, "Chapter_0001.md") is None, "")
+          story.predecessor(shuffled, "CHAPTER_0001.md") is None, "")
     check("1b predecessor: second chapter's predecessor is chapter 1",
-          story.predecessor(shuffled, "Chapter_0002.md") == "Chapter_0001.md", "")
+          story.predecessor(shuffled, "CHAPTER_0002.md") == "CHAPTER_0001.md", "")
     check("1c predecessor: third chapter's predecessor is chapter 2",
-          story.predecessor(shuffled, "Chapter_0003.md") == "Chapter_0002.md", "")
+          story.predecessor(shuffled, "CHAPTER_0003.md") == "CHAPTER_0002.md", "")
     check("1d predecessor: file absent from the manifest -> None",
-          story.predecessor(shuffled, "Chapter_9999.md") is None, "")
+          story.predecessor(shuffled, "CHAPTER_9999.md") is None, "")
 
 
 def case_2_load_state() -> None:
     """Missing -> empty; malformed -> warn + empty; BOM parses."""
     with tempfile.TemporaryDirectory() as td:
-        root, _manifest = make_project(td, ["Chapter_0001.md"])
+        root, _manifest = make_project(td, ["CHAPTER_0001.md"])
         state, out = capture(story.load_state, root)
         check("2a load: missing file -> {'chapters': {}} silently",
               state == {"chapters": {}} and out == "", f"state={state} out={out!r}")
@@ -186,7 +186,7 @@ def case_2_load_state() -> None:
                          " - recaps start fresh\n", f"out={out!r}")
 
         # BOM-prefixed hand edit: utf-8-sig read keeps the entries, silent.
-        seeded = {"chapters": {"Chapter_0001": entry("Plot so far.")}}
+        seeded = {"chapters": {"CHAPTER_0001": entry("Plot so far.")}}
         (root / "story_state.json").write_bytes(
             b"\xef\xbb\xbf" + json.dumps(seeded, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
         state, out = capture(story.load_state, root)
@@ -197,9 +197,9 @@ def case_2_load_state() -> None:
 def case_3_roundtrip() -> None:
     """save_state -> load_state preserves entries; file shape."""
     with tempfile.TemporaryDirectory() as td:
-        root, _manifest = make_project(td, ["Chapter_0001.md", "Chapter_0002.md"])
-        state = {"chapters": {"Chapter_0001": entry("灵根 awakened."),
-                              "Chapter_0002": entry("Second recap.")}}
+        root, _manifest = make_project(td, ["CHAPTER_0001.md", "CHAPTER_0002.md"])
+        state = {"chapters": {"CHAPTER_0001": entry("灵根 awakened."),
+                              "CHAPTER_0002": entry("Second recap.")}}
         capture(story.save_state, root, state)
         path = root / "story_state.json"
         check("3a roundtrip: file written at the project root", path.is_file(), "")
@@ -226,19 +226,19 @@ def case_5_ensure_recap_hit() -> None:
     """Existing predecessor entry returned with ZERO LLM calls; first chapter
     -> "" with zero calls."""
     with tempfile.TemporaryDirectory() as td:
-        root, manifest = make_project(td, ["Chapter_0001.md", "Chapter_0002.md",
-                                           "Chapter_0003.md"])
+        root, manifest = make_project(td, ["CHAPTER_0001.md", "CHAPTER_0002.md",
+                                           "CHAPTER_0003.md"])
         write_lf(root / "story_state.json", json.dumps(
-            {"chapters": {"Chapter_0002": entry("Stored recap.")}}, ensure_ascii=False) + "\n")
+            {"chapters": {"CHAPTER_0002": entry("Stored recap.")}}, ensure_ascii=False) + "\n")
         recap, out = capture(story.ensure_recap, root, CFG, manifest,
-                             "Chapter_0003.md", "[Chapter_0003]", chat=broken_chat)
+                             "CHAPTER_0003.md", "[CHAPTER_0003]", chat=broken_chat)
         check("5a hit: stored predecessor entry returned verbatim",
               recap == "Stored recap.", f"recap={recap!r}")
         check("5b hit: no LLM call (broken stub would have raised), no console",
               out == "", f"out={out!r}")
 
         recap, out = capture(story.ensure_recap, root, CFG, manifest,
-                             "Chapter_0001.md", "[Chapter_0001]", chat=broken_chat)
+                             "CHAPTER_0001.md", "[CHAPTER_0001]", chat=broken_chat)
         check("5c hit: first chapter -> \"\" with no call, no console",
               recap == "" and out == "", f"recap={recap!r} out={out!r}")
 
@@ -247,14 +247,14 @@ def case_6_ensure_recap_backfill() -> None:
     """Missing predecessor entry: exactly ONE call anchored on the nearest
     EARLIER existing entry (chapter 2 of 1..5), state saved, console line."""
     with tempfile.TemporaryDirectory() as td:
-        files = [f"Chapter_000{n}.md" for n in range(1, 6)]
-        root, manifest = make_project(td, files, translated=["Chapter_0004.md"])
+        files = [f"CHAPTER_000{n}.md" for n in range(1, 6)]
+        root, manifest = make_project(td, files, translated=["CHAPTER_0004.md"])
         write_lf(root / "story_state.json", json.dumps(
-            {"chapters": {"Chapter_0002": entry("Earlier plot.")}}, ensure_ascii=False) + "\n")
+            {"chapters": {"CHAPTER_0002": entry("Earlier plot.")}}, ensure_ascii=False) + "\n")
         prompts: list[str] = []
         recap, out = capture(
-            story.ensure_recap, root, CFG, manifest, "Chapter_0005.md",
-            "[Chapter_0005]", chat=fake_recap_chat("Backfilled recap.", sink=prompts))
+            story.ensure_recap, root, CFG, manifest, "CHAPTER_0005.md",
+            "[CHAPTER_0005]", chat=fake_recap_chat("Backfilled recap.", sink=prompts))
         check("6a backfill: generated recap returned",
               recap == "Backfilled recap.", f"recap={recap!r}")
         check("6b backfill: exactly ONE LLM call (no chain)",
@@ -265,11 +265,11 @@ def case_6_ensure_recap_backfill() -> None:
               "Lin Feng awakened his spirit root." in prompts[0], "")
         state = story.load_state(root)
         check("6e backfill: predecessor's entry saved under its stem",
-              state["chapters"].get("Chapter_0004", {}).get("recap") == "Backfilled recap."
-              and "Chapter_0002" in state["chapters"],
+              state["chapters"].get("CHAPTER_0004", {}).get("recap") == "Backfilled recap."
+              and "CHAPTER_0002" in state["chapters"],
               f"state={state}")
         check("6f backfill: console prints the init line naming the backfilled chapter",
-              out == "[Chapter_0005] [init] recap (backfill Chapter_0004.md)\n",
+              out == "[CHAPTER_0005] [init] recap (backfill CHAPTER_0004.md)\n",
               f"out={out!r}")
 
 
@@ -278,54 +278,54 @@ def case_7_ensure_recap_no_chain() -> None:
     predecessor (39) with the EMPTY anchor -- the later recap is never used
     and no recursive chain runs (still exactly one call)."""
     with tempfile.TemporaryDirectory() as td:
-        files = [f"Chapter_00{n}.md" for n in (37, 38, 39, 40)]
-        root, manifest = make_project(td, files, translated=["Chapter_0039.md"])
+        files = [f"CHAPTER_00{n}.md" for n in (37, 38, 39, 40)]
+        root, manifest = make_project(td, files, translated=["CHAPTER_0039.md"])
         write_lf(root / "story_state.json", json.dumps(
-            {"chapters": {"Chapter_0040": entry("Future plot.")}}, ensure_ascii=False) + "\n")
+            {"chapters": {"CHAPTER_0040": entry("Future plot.")}}, ensure_ascii=False) + "\n")
         prompts: list[str] = []
         recap, out = capture(
-            story.ensure_recap, root, CFG, manifest, "Chapter_0040.md",
-            "[Chapter_0040]", chat=fake_recap_chat("Ch39 recap.", sink=prompts))
+            story.ensure_recap, root, CFG, manifest, "CHAPTER_0040.md",
+            "[CHAPTER_0040]", chat=fake_recap_chat("Ch39 recap.", sink=prompts))
         check("7a no-chain: exactly ONE call (no 38/37 backfill cascade)",
               len(prompts) == 1, f"calls={len(prompts)}")
         check("7b no-chain: the LATER chapter's recap is not the anchor",
               "Future plot." not in prompts[0], f"prompt={prompts[0][:200]!r}")
         check("7c no-chain: recap still returned and recorded for ch39",
               recap == "Ch39 recap."
-              and story.load_state(root)["chapters"]["Chapter_0039"]["recap"] == "Ch39 recap.",
+              and story.load_state(root)["chapters"]["CHAPTER_0039"]["recap"] == "Ch39 recap.",
               f"recap={recap!r}")
         check("7d no-chain: ch40's own entry untouched",
-              story.load_state(root)["chapters"]["Chapter_0040"]["recap"] == "Future plot.",
+              story.load_state(root)["chapters"]["CHAPTER_0040"]["recap"] == "Future plot.",
               "")
 
 
 def case_8_ensure_recap_failure() -> None:
     """Advisory failure: missing translated predecessor and LLM error both
     return "" with one warn line, never raise."""
-    files = ["Chapter_0001.md", "Chapter_0002.md"]
+    files = ["CHAPTER_0001.md", "CHAPTER_0002.md"]
 
     # predecessor listed as translated but its file is missing
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, files)  # no translated/ files
         recap, out = capture(story.ensure_recap, root, CFG, manifest,
-                             "Chapter_0002.md", "[Chapter_0002]", chat=broken_chat)
+                             "CHAPTER_0002.md", "[CHAPTER_0002]", chat=broken_chat)
         check("8a fail: missing predecessor file -> \"\"",
               recap == "", f"recap={recap!r}")
         check("8b fail: one warn naming the predecessor and the reason",
-              out.startswith("[Chapter_0002] [warn] recap backfill failed"
-                             " for Chapter_0001.md: ")
+              out.startswith("[CHAPTER_0002] [warn] recap backfill failed"
+                             " for CHAPTER_0001.md: ")
               and "translated chapter missing" in out and out.count("\n") == 1,
               f"out={out!r}")
 
     # the LLM call itself dies
     with tempfile.TemporaryDirectory() as td:
-        root, manifest = make_project(td, files, translated=["Chapter_0001.md"])
+        root, manifest = make_project(td, files, translated=["CHAPTER_0001.md"])
         recap, out = capture(story.ensure_recap, root, CFG, manifest,
-                             "Chapter_0002.md", "[Chapter_0002]", chat=broken_chat)
+                             "CHAPTER_0002.md", "[CHAPTER_0002]", chat=broken_chat)
         check("8c fail: LLM error -> \"\" with the warn line",
               recap == ""
-              and out == "[Chapter_0002] [warn] recap backfill failed"
-                         " for Chapter_0001.md: endpoint down\n",
+              and out == "[CHAPTER_0002] [warn] recap backfill failed"
+                         " for CHAPTER_0001.md: endpoint down\n",
               f"recap={recap!r} out={out!r}")
         check("8d fail: no state written on failure",
               not (root / "story_state.json").exists(), "")
@@ -335,23 +335,23 @@ def case_9_record_recap() -> None:
     """Overwrites the chapter's own entry unconditionally; neighbors intact;
     prompt carries prev_recap_text + title + body; failure leaves state
     byte-unchanged."""
-    files = ["Chapter_0001.md", "Chapter_0002.md", "Chapter_0003.md"]
+    files = ["CHAPTER_0001.md", "CHAPTER_0002.md", "CHAPTER_0003.md"]
     with tempfile.TemporaryDirectory() as td:
         root, _manifest = make_project(td, files)
         write_lf(root / "story_state.json", json.dumps(
-            {"chapters": {"Chapter_0001": entry("R1."),
-                          "Chapter_0002": entry("Old own recap.")}}, ensure_ascii=False) + "\n")
+            {"chapters": {"CHAPTER_0001": entry("R1."),
+                          "CHAPTER_0002": entry("Old own recap.")}}, ensure_ascii=False) + "\n")
         prompts: list[str] = []
         _none, out = capture(
-            story.record_recap, root, CFG, "Chapter_0002.md",
+            story.record_recap, root, CFG, "CHAPTER_0002.md",
             "The Second Chapter", "Fresh body line.", "R1.",
-            "[Chapter_0002]", chat=fake_recap_chat("New own recap.", sink=prompts))
+            "[CHAPTER_0002]", chat=fake_recap_chat("New own recap.", sink=prompts))
         state = story.load_state(root)
         check("9a record: chapter's own entry overwritten",
-              state["chapters"]["Chapter_0002"]["recap"] == "New own recap.",
+              state["chapters"]["CHAPTER_0002"]["recap"] == "New own recap.",
               f"state={state}")
         check("9b record: neighbor entries intact",
-              state["chapters"]["Chapter_0001"]["recap"] == "R1.", "")
+              state["chapters"]["CHAPTER_0001"]["recap"] == "R1.", "")
         check("9c record: exactly ONE LLM call",
               len(prompts) == 1, f"calls={len(prompts)}")
         check("9d record: prompt carries the passed-in previous recap",
@@ -360,22 +360,22 @@ def case_9_record_recap() -> None:
               '"The Second Chapter"' in prompts[0]
               and "Fresh body line." in prompts[0], f"prompt={prompts[0][:200]!r}")
         check("9f record: console prints the init line",
-              out == "[Chapter_0002] [init] recap\n", f"out={out!r}")
+              out == "[CHAPTER_0002] [init] recap\n", f"out={out!r}")
 
     # failure: prior state byte-unchanged
     with tempfile.TemporaryDirectory() as td:
         root, _manifest = make_project(td, files)
-        seeded = {"chapters": {"Chapter_0001": entry("R1."),
-                               "Chapter_0002": entry("Old own recap.")}}
+        seeded = {"chapters": {"CHAPTER_0001": entry("R1."),
+                               "CHAPTER_0002": entry("Old own recap.")}}
         write_lf(root / "story_state.json",
                  json.dumps(seeded, ensure_ascii=False, indent=2) + "\n")
         before = (root / "story_state.json").read_bytes()
         _none, out = capture(
-            story.record_recap, root, CFG, "Chapter_0002.md",
-            "T", "B", "R1.", "[Chapter_0002]", chat=broken_chat)
+            story.record_recap, root, CFG, "CHAPTER_0002.md",
+            "T", "B", "R1.", "[CHAPTER_0002]", chat=broken_chat)
         check("9g record fail: warn line names the file and the reason",
-              out == "[Chapter_0002] [warn] recap generation failed"
-                     " for Chapter_0002.md: endpoint down\n", f"out={out!r}")
+              out == "[CHAPTER_0002] [warn] recap generation failed"
+                     " for CHAPTER_0002.md: endpoint down\n", f"out={out!r}")
         check("9h record fail: prior state byte-unchanged",
               (root / "story_state.json").read_bytes() == before, "")
 
@@ -399,17 +399,17 @@ def case_11_stale_stem_pruned() -> None:
     (silently, valid entries verbatim); saving the loaded state does not
     resurrect the stale stems."""
     with tempfile.TemporaryDirectory() as td:
-        root, _manifest = make_project(td, ["Chapter_0001.md", "Chapter_0002.md"])
-        seeded = {"chapters": {"Chapter_0001": entry("Keep one."),
-                               "Chapter_0002": entry("Keep two."),
-                               "Chapter_0042": entry("Stale from an old numbering."),
-                               "Chapter_0002a": entry("Stale suffix stem.")}}
+        root, _manifest = make_project(td, ["CHAPTER_0001.md", "CHAPTER_0002.md"])
+        seeded = {"chapters": {"CHAPTER_0001": entry("Keep one."),
+                               "CHAPTER_0002": entry("Keep two."),
+                               "CHAPTER_0042": entry("Stale from an old numbering."),
+                               "CHAPTER_0002a": entry("Stale suffix stem.")}}
         write_lf(root / "story_state.json",
                  json.dumps(seeded, ensure_ascii=False, indent=2) + "\n")
         loaded, out = capture(story.load_state, root)
         check("11a prune: manifest-absent stems dropped, valid stems verbatim",
-              loaded == {"chapters": {"Chapter_0001": entry("Keep one."),
-                                      "Chapter_0002": entry("Keep two.")}},
+              loaded == {"chapters": {"CHAPTER_0001": entry("Keep one."),
+                                      "CHAPTER_0002": entry("Keep two.")}},
               f"loaded={loaded}")
         check("11b prune: silent housekeeping (no console output)",
               out == "", f"out={out!r}")
@@ -421,16 +421,16 @@ def case_11_stale_stem_pruned() -> None:
               f"reloaded={reloaded} out={out2!r}")
         raw = (root / "story_state.json").read_text(encoding="utf-8")
         check("11d prune: the stale stems are gone from the file bytes",
-              "Chapter_0042" not in raw and "Chapter_0002a" not in raw, "")
+              "CHAPTER_0042" not in raw and "CHAPTER_0002a" not in raw, "")
 
 
 def case_12_prune_guard_and_anchor() -> None:
     """Pruning is skipped on uncertain grounds (missing / empty / corrupt
     manifest) and never disturbs the recap anchoring for valid stems: a
     stale stem is neither the backfill anchor nor saved back."""
-    files = ["Chapter_0001.md", "Chapter_0002.md", "Chapter_0003.md"]
-    seeded = {"chapters": {"Chapter_0001": entry("Real earlier plot."),
-                           "Chapter_0000": entry("Stale plot.")}}
+    files = ["CHAPTER_0001.md", "CHAPTER_0002.md", "CHAPTER_0003.md"]
+    seeded = {"chapters": {"CHAPTER_0001": entry("Real earlier plot."),
+                           "CHAPTER_0000": entry("Stale plot.")}}
 
     # missing manifest -> untouched
     with tempfile.TemporaryDirectory() as td:
@@ -459,25 +459,25 @@ def case_12_prune_guard_and_anchor() -> None:
 
     # anchoring for valid stems unchanged; the stale stem is never the anchor
     with tempfile.TemporaryDirectory() as td:
-        root, manifest = make_project(td, files, translated=["Chapter_0002.md"])
+        root, manifest = make_project(td, files, translated=["CHAPTER_0002.md"])
         write_lf(root / "story_state.json", json.dumps(seeded, ensure_ascii=False) + "\n")
         prompts: list[str] = []
         recap, out = capture(
-            story.ensure_recap, root, CFG, manifest, "Chapter_0003.md",
-            "[Chapter_0003]", chat=fake_recap_chat("Ch2 recap.", sink=prompts))
+            story.ensure_recap, root, CFG, manifest, "CHAPTER_0003.md",
+            "[CHAPTER_0003]", chat=fake_recap_chat("Ch2 recap.", sink=prompts))
         check("12d anchor: backfill anchors on the valid earlier entry (ch1)",
               recap == "Ch2 recap." and len(prompts) == 1
               and "Real earlier plot." in prompts[0]
               and "Stale plot." not in prompts[0],
               f"prompt={prompts[0][:200]!r}")
         check("12e anchor: console line still names the backfilled chapter",
-              out == "[Chapter_0003] [init] recap (backfill Chapter_0002.md)\n",
+              out == "[CHAPTER_0003] [init] recap (backfill CHAPTER_0002.md)\n",
               f"out={out!r}")
         state = story.load_state(root)
         check("12f anchor: saved state has ch2's entry and no stale stem",
-              state["chapters"].get("Chapter_0002", {}).get("recap") == "Ch2 recap."
-              and "Chapter_0000" not in state["chapters"]
-              and state["chapters"]["Chapter_0001"]["recap"] == "Real earlier plot.",
+              state["chapters"].get("CHAPTER_0002", {}).get("recap") == "Ch2 recap."
+              and "CHAPTER_0000" not in state["chapters"]
+              and state["chapters"]["CHAPTER_0001"]["recap"] == "Real earlier plot.",
               f"state={state}")
 
 

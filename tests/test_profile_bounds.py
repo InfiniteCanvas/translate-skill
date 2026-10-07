@@ -122,7 +122,7 @@ def case_sampling_cap() -> None:
     """Exactly sample_chapters chapters are sampled (deterministic via a
     random.sample stub picking the head), the unpicked markers never reach
     the prompt, and the cap clamps in both directions."""
-    bodies = {f"Chapter_000{i}.md": f"第{i}章采样标记行。"
+    bodies = {f"CHAPTER_000{i}.md": f"第{i}章采样标记行。"
               for i in range(1, 7)}
 
     # A: cap 3 of 6 available, deterministic stub -> chapters 1-3 only.
@@ -154,7 +154,7 @@ def case_sampling_cap() -> None:
     #    (real random.sample: all are picked, no determinism needed).
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj",
-                            {f"Chapter_000{i}.md": f"第{i}章采样标记行。"
+                            {f"CHAPTER_000{i}.md": f"第{i}章采样标记行。"
                              for i in range(1, 4)})
         cfg = config.load_config(proj)
         _result, prompt, exc = run_generate(
@@ -168,7 +168,7 @@ def case_sampling_cap() -> None:
     # C: a zero request still samples exactly one chapter (max(1, ...)).
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj",
-                            {f"Chapter_000{i}.md": f"第{i}章采样标记行。"
+                            {f"CHAPTER_000{i}.md": f"第{i}章采样标记行。"
                              for i in range(1, 4)})
         cfg = config.load_config(proj)
         _result, prompt, exc = run_generate(
@@ -194,7 +194,7 @@ def case_char_budget() -> None:
     #    sample ends after the second full line.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", {
-            "Chapter_0001.md": "\n".join(["A" * 10] * 6),
+            "CHAPTER_0001.md": "\n".join(["A" * 10] * 6),
         })
         cfg = config.load_config(proj)
         _result, prompt, exc = run_generate(
@@ -215,8 +215,8 @@ def case_char_budget() -> None:
     #    order is pinned (head-first stub) so chapter 1 fills the budget.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", {
-            "Chapter_0001.md": "A" * 40,
-            "Chapter_0002.md": "B" * 40,
+            "CHAPTER_0001.md": "A" * 40,
+            "CHAPTER_0002.md": "B" * 40,
         })
         cfg = config.load_config(proj)
         orig_sample = profile_mod.random.sample
@@ -258,8 +258,8 @@ def case_underflow_errors() -> None:
     # B: chapters exist but every body is empty -> no sample text.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "empty-bodies", {
-            "Chapter_0001.md": "",
-            "Chapter_0002.md": "  \n  ",
+            "CHAPTER_0001.md": "",
+            "CHAPTER_0002.md": "  \n  ",
         })
         cfg = config.load_config(proj)
         result, _prompt, exc = run_generate(
