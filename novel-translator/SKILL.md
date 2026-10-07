@@ -36,7 +36,10 @@ markdown contract).
 Two ways source chapters arrive:
 
 - **Files provided**: the user hands you `source/Chapter_NNNN.md` files
-  (1-4 digit zero-padded; extras get a letter suffix, `Chapter_0042a.md`).
+  (exactly 4 zero-padded digits; extras get a single-letter suffix,
+  `Chapter_0042a.md`). Any other shape is not discovered — but `init`/`sync`
+  print a `[warn]` naming each ignored file and why, so read that output
+  before reporting a chapter count back to the user.
   Frontmatter is optional - `init` backfills `novel_title`/`author`/
   `source_url` and derives `chapter_title` from the first body line. Never
   renumber or rename chapter files; the pipeline depends on the naming
@@ -589,7 +592,27 @@ background build too. Builds produce no git commits — `export/`,
   since the truncation-retry cap is clamped to the smallest translator
   `max_tokens` and raising only the translate cap would make the retry
   smaller than the attempt it retries. Only values still equal to the old
-  default are rewritten, so custom numbers survive. A template that
+  default are rewritten, so custom numbers survive. v010 renames source
+  chapters to the fixed 4-digit, canonical-case form (DESCRIPTION: `rename
+  source chapters to the fixed 4-digit, canonical-case form
+  (Chapter_001.md -> Chapter_0001.md), carrying chapters.json,
+  story_state.json and the per-chapter artifacts`): the old regex accepted
+  1-4 digits and any case, so a project with `Chapter_001.md` or
+  `chapter_0012b.md` silently loses those chapters after the tightening — no
+  manifest entry, no status, no translation target. v010 renames the source
+  file **and every artifact keyed on its name** (`translated/<file>`,
+  `draft/<stem>.*`, `notes/<stem>*`, `chapters.json`'s `file`,
+  `story_state.json`'s recap keys); artifacts move before the manifest is
+  rewritten, so a mid-way failure leaves the manifest pointing at names that
+  still exist. An existing target is never clobbered. **Extra chapters — a
+  letter suffix — are deliberately NOT renamed**: they produce a `[warn]`
+  naming each file and telling the operator to hand the rename to their agent,
+  since a suffix is part of a chapter's identity, a case-only rename needs two
+  steps on a case-insensitive filesystem, and `Chapter_42a.md` needs a
+  decision about whether "42a" is chapter 42a or a typo for 420. If you see
+  that warning, read the TOC, rename to `Chapter_NNNN[x].md`, and update
+  `chapters.json`, `story_state.json`, `draft/`, `translated/` and `notes/` to
+  match. A template that
   exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:

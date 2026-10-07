@@ -9,13 +9,32 @@ from pathlib import Path
 
 import yaml
 
-# 1-4 digit chapter numbers (real projects use both 3-digit "Chapter_001.md"
-# and 4-digit "Chapter_0001.md" conventions); sorting is by the parsed number,
-# so projects stay correctly ordered either way. Digits are spelled [0-9],
-# never \d: \d also matches full-width/Arabic-Indic decimal digits, so
-# "Chapter_０００７.md" would be discovered and int()-collapse onto the real
-# Chapter_0007.
-CHAPTER_RE = re.compile(r"^Chapter_([0-9]{1,4})([a-z]?)\.md$", re.IGNORECASE)
+# EXACTLY 4 digit chapter numbers ("Chapter_0001.md"). 9999 chapters is far
+# beyond any real novel, and a fixed width removes the padding ambiguity that
+# used to let "Chapter_001.md" and "Chapter_0001.md" both be admitted and both
+# claim chapter 1. A non-matching name is no longer silently dropped -- see
+# near_miss_reason() and the [warn] lines init/sync print for them.
+#
+# The optional lowercase letter suffix is KEPT: it marks extras/bonus chapters
+# (Chapter_0042a.md sorts between Chapter_0042.md and Chapter_0043.md), it is
+# documented in SKILL.md / README.md / references/ingestion.md /
+# references/file-formats.md, and it is persisted as a manifest field. Padding,
+# not suffix, was the axis that needed tightening.
+#
+# Digits are spelled [0-9], never \d: \d also matches full-width/Arabic-Indic
+# decimal digits, so "Chapter_０００７.md" would be discovered and
+# int()-collapse onto the real Chapter_0007. near_miss_reason() deliberately
+# uses \d so those names are REPORTED instead of vanishing.
+CHAPTER_RE = re.compile(r"^Chapter_([0-9]{4})([a-z]?)\.md$", re.IGNORECASE)
+
+# Looser patterns, used only to decide whether an ignored source/ file is worth
+# warning about. They are never used to discover a chapter -- \d here is the
+# point: it catches the full-width/Arabic-Indic digit names CHAPTER_RE rejects.
+_CHAPTERISH_RE = re.compile(r"^chapter[\s_.-]*\d", re.IGNORECASE)
+_BARE_NUMBER_RE = re.compile(r"^\d+$")
+# The tail of a chapter-shaped stem, after "chapter_": digits then at most one
+# letter. \d so full-width/Arabic-Indic digits are matched and can be reported.
+_CHAPTER_TAIL_RE = re.compile(r"chapter_(\d+)([a-z]?)", re.IGNORECASE)
 STATUSES = ("pending", "in-progress", "needs-review", "translated")
 
 
@@ -63,6 +82,63 @@ def discover(project_dir: Path) -> list[Chapter]:
                                     number=int(match.group(1)), suffix=match.group(2)))
     chapters.sort(key=lambda c: (c.number, c.suffix.lower()))
     return chapters
+
+
+def near_miss_reason(name: str) -> str | None:
+    """Why a source/ file that does NOT match CHAPTER_RE looks like a dropped
+    chapter, or None when it is plainly not one (README.md, .gitkeep, ...).
+
+    Discovery stays silent about non-matching files -- it must, since source/
+    legitimately holds more than chapters -- but silently ignoring something a
+    user meant to be a chapter is data loss with no signal. init and sync print
+    a [warn] for every name this function flags, so the near-miss classes named
+    in references/ingestion.md ("Chapter_0007.zh.md", "chapter 7.md", "0007.md",
+    non-ASCII digits) are surfaced instead of requiring a manual count of the
+    manifest against the TOC.
+
+    \\d is intentional here and only here: it matches full-width and
+    Arabic-Indic digits, which CHAPTER_RE's [0-9] deliberately does not. That
+    is why the digit string is re-checked with str.isascii() below -- a regex
+    match alone cannot tell ASCII from non-ASCII."""
+    if CHAPTER_RE.match(name):
+        return None
+    stem = Path(name).stem
+    if _BARE_NUMBER_RE.match(stem):
+        return "no Chapter_ prefix"
+    if not _CHAPTERISH_RE.match(stem):
+        return None
+    if Path(name).suffix.lower() != ".md":
+        return f"extension {Path(name).suffix!r} is not .md"
+    tail = _CHAPTER_TAIL_RE.fullmatch(stem)
+    if not tail:
+        return "not Chapter_NNNN.md (4 digits, then an optional letter)"
+    digits = tail.group(1)
+    if not digits.isascii():
+        return "non-ASCII digits in the number"
+    if len(digits) != 4:
+        return f"{len(digits)} digits, not 4"
+    return None
+
+
+def ignored_chapters(project_dir: Path) -> list[tuple[str, str]]:
+    """(filename, reason) for every source/ file discover() dropped that still
+    looks like an intended chapter, sorted by NAME. Empty when source/ does
+    not exist.
+
+    Sorted by entry.name rather than by Path: PurePath ordering is
+    case-insensitive on Windows, so sorting Paths would make the report order
+    platform-dependent."""
+    source = paths(project_dir)["source"]
+    if not source.is_dir():
+        return []
+    out: list[tuple[str, str]] = []
+    for entry in sorted(source.iterdir(), key=lambda p: p.name):
+        if not entry.is_file():
+            continue
+        reason = near_miss_reason(entry.name)
+        if reason:
+            out.append((entry.name, reason))
+    return out
 
 
 def _replace_with_retry(src: Path, dst: Path) -> None:

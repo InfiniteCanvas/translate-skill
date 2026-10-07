@@ -166,6 +166,24 @@ def _print_replacement(result: dict, dry_run: bool, old: str) -> None:
 # --------------------------------------------------------------------------
 
 
+def _report_ignored_chapters(project_dir: Path) -> None:
+    """Warn about source/ files that look like chapters but were not discovered.
+
+    discovery() is deliberately silent about non-matching files -- source/
+    legitimately holds more than chapters -- but a name like Chapter_0007.zh.md
+    or Chapter_001.md (3-digit, no longer accepted) vanishing from the manifest
+    is data loss with no signal. Every such file gets a [warn] naming it and the
+    reason, plus the count, so an operator sees the gap without hand-counting
+    the manifest against a table of contents."""
+    ignored = project.ignored_chapters(project_dir)
+    for name, reason in ignored:
+        print(f"[warn] source/{name}: ignored - {reason} "
+              "(rename to Chapter_NNNN.md, 4 digits + optional letter)")
+    if ignored:
+        print(f"[warn] {len(ignored)} source file(s) look like chapters but "
+              "were not added to the manifest")
+
+
 def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"[init] initializing project: {project_dir}")
     paths = project.paths(project_dir)
@@ -183,8 +201,8 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     if not chapters:
         raise CliError(
             f"no source chapters found in {src_dir}: files must be named "
-            "'Chapter_NNN[a].md' (1-4 digit zero-padded number, optional "
-            "single-letter suffix), e.g. Chapter_001.md or Chapter_0002a.md"
+            "'Chapter_NNN[a].md' (4-digit zero-padded number, optional "
+            "single-letter suffix), e.g. Chapter_0001.md or Chapter_0002a.md"
         )
     print(f"[init] found {len(chapters)} source chapter(s)")
 
@@ -381,6 +399,7 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
 
     manifest = project.sync_manifest(project_dir)
     print(f"[init] manifest: {len(manifest)} chapter(s)")
+    _report_ignored_chapters(project_dir)
 
     total_added = 0
     total_skipped = 0
@@ -487,6 +506,8 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError(f"cannot sync - {exc}") from exc
     if backfilled:
         print(f"[sync] backfilled frontmatter on {backfilled} chapter(s)")
+
+    _report_ignored_chapters(project_dir)
 
     prev_files = {e.get("file") for e in prev if e.get("file")}
     new_files = {e.get("file") for e in manifest if e.get("file")}

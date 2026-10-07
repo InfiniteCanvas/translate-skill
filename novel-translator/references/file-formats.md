@@ -38,17 +38,24 @@ drift comparison.
 └── logs/                llm-*-<command>-<pid>.jsonl (one LLM trace per project per CLI invocation, newest log_llm_keep_runs kept); epub-build.log (background epub-build output)
 ```
 
-Chapter file names must match `Chapter_NNNN.md` (1-4 digit zero-padded
-number, matching is case-insensitive), optionally with a letter suffix for
-extras/bonus chapters:
+Chapter file names must match `Chapter_NNNN.md` — **exactly 4** zero-padded
+digits (matching is case-insensitive), optionally with a single-letter suffix
+for extras/bonus chapters:
 `Chapter_0042a.md` sorts between `Chapter_0042.md` and `Chapter_0043.md`.
-Chapter order = position in the file list sorted numerically by the parsed
-`(number, suffix)` — so `Chapter_999` sorts before `Chapter_1000`; that order
+Padding is fixed at 4 so one chapter cannot be spelled two ways; the older
+3-digit `Chapter_001.md` is rejected. Chapter order = position in the file
+list sorted numerically by the parsed `(number, suffix)` — with fixed padding
+that is also plain name order, so `Chapter_0999.md` sorts before
+`Chapter_1000.md`; that order
 is written into each source file's frontmatter and into `chapters.json` as
 `order` (0-based), and ALL chapter-distance logic (the translation-note gap)
 measures distance in `order` units. The manifest is rebuilt by `init` and
 `sync`; `sync` re-scans `source/` for added/removed files and preserves
-statuses by file name.
+statuses by file name. Both commands print a `[warn]` for each `source/` file
+that looks like a chapter but does not match (short padding, `.zh`, a missing
+`Chapter_` prefix, non-ASCII digits, a multi-letter suffix, a wrong
+extension); non-chapter files are never reported and a warning never fails the
+command. See `references/ingestion.md`.
 
 ## Git history
 
@@ -220,7 +227,7 @@ LLM call.
   "log_llm_keep_runs": 5,        // one llm-*.jsonl per project per CLI invocation; older logs pruned to the newest N (by mtime)
   "review_batch_size": 40,       // entries per `review glossary` / `review notes` model review call; `--batch-size` overrides per run
   "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary` / `review notes`, read back by `review fix`)
-  "version": 8                   // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
+  "version": 10                  // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
 
@@ -930,7 +937,31 @@ project on any other number keeps it; a value that was genuinely chosen at
 reversible by setting it back, after which `migrate` is a no-op. It reads
 and writes the RAW config (not load_config's merged form) so the report names
 the numbers that actually moved, and delegates the unchanged template sync
-to `common.sync_templates` (idempotent).
+to `common.sync_templates` (idempotent). `v010` (DESCRIPTION: `rename source
+chapters to the fixed 4-digit, canonical-case form (Chapter_001.md ->
+Chapter_0001.md), carrying chapters.json, story_state.json and the per-chapter
+artifacts`) renames `source/` files to the one form `CHAPTER_RE` accepts —
+`Chapter_NNNN.md` (exactly 4 digits) or `Chapter_NNNN[x].md` with a lowercase
+letter suffix — so short padding and non-canonical case stop being silently
+dropped. A rename orphans everything keyed on the file name, so the step moves
+the whole set: the source file, `translated/<file>`, every `draft/<stem>.*` and
+`notes/<stem>*` artifact (globbed per stem, so an artifact a later version adds
+is carried rather than stranded), `chapters.json`'s `file` field, and
+`story_state.json`'s recap keys. Artifacts move BEFORE the manifest is
+rewritten, so a failure partway leaves the manifest pointing at names that
+still exist rather than the reverse; `story_state.json` is read and written
+directly rather than through `lib/story`, whose `load_state` prunes entries
+whose stem is absent from the manifest and would discard the recaps instead of
+moving them. A target name that already exists is never clobbered: the file is
+skipped with a `[warn]` naming the clash. **Extra chapters are deliberately not
+renamed** — a non-canonical `Chapter_0042A.md` or `chapter_0012b.md` produces a
+`[warn]` listing every one and telling the operator to hand the rename to their
+agent, because a suffix is part of a chapter's identity, a case-only rename
+cannot be a single `rename()` on a case-insensitive filesystem, and
+`Chapter_42a.md` needs a decision about whether "42a" is chapter 42a or a typo
+for 420. This step changes no config key and delegates only to
+`common.sync_templates` (idempotent: a second run renames nothing and reports
+only the still-deferred extras).
 `--dry-run` writes nothing and reports
 `[git] would initialize the repository (a real run commits after each
 migrate step)` (cmd_migrate prefixes step lines with `[dry-run] `). A

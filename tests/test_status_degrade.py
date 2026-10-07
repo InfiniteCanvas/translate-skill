@@ -61,11 +61,11 @@ def make_degraded_project(root: Path) -> None:
     novel_info.json is a JSON array (load_novel_info wants an object)."""
     source = root / "source"
     source.mkdir(parents=True, exist_ok=True)
-    (source / "Chapter_001.md").write_text(
+    (source / "Chapter_0001.md").write_text(
         "第一章 初见\n\n林凡睁开双眼。\n", encoding="utf-8", newline="\n"
     )
     manifest = [
-        {"order": 1, "file": "Chapter_001.md", "status": "pending",
+        {"order": 1, "file": "Chapter_0001.md", "status": "pending",
          "title": "初见"},
     ]
     (root / "chapters.json").write_text(
@@ -102,7 +102,7 @@ def case_1_status_degrades() -> None:
         check("1d status: no traceback in output", "Traceback" not in out)
         check("1e status: no [FAIL] line", "[FAIL]" not in out)
         check("1f status: chapter table still rendered",
-              "Chapter_001.md" in out and "pending" in out, f"out={out!r}")
+              "Chapter_0001.md" in out and "pending" in out, f"out={out!r}")
         check("1g status: glossary line present in the section block",
               "glossary" in out)
         check("1h status: style section survives novel_info=[]",

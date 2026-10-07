@@ -21,8 +21,8 @@ missing-project CliError, v002's direct add-only materialize (user-set
 values -- including ones already sitting under the new key names -- survive
 verbatim, a file missing exactly the new keys gets them reported and
 defaulted, a second identical run reports [] and writes nothing), and the
-real package's chain() == [v001, v002, v003, v004, v005, v006, v007, v008]
-with current_version() == 8 (v003's own behavior tests live in
+real package's chain() == [v001, v002, v003, v004, v005, v006, v007, v008,
+v009, v010] with current_version() == 10 (v003's own behavior tests live in
 tests/test_git.py; only the chain shape is pinned here, plus v004's
 direct add-only materialize of min_term_occurrences mirroring the v002
 cases, and v005's direct templates-only sync -- config.json never
@@ -86,7 +86,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
-from migrations import v002, v004, v005, v006, v007, v008  # noqa: E402
+from migrations import v002, v004, v005, v006, v007, v008, v010  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -188,7 +188,7 @@ def case_1_v001() -> None:
     --dry-run); materialize DEFAULTS preserving user values; stamp the
     chain-head version; second run no-op; the already-current maintenance
     pass (trap fixed)."""
-    HEAD = migrations.current_version()  # real chain head (8 since v008)
+    HEAD = migrations.current_version()  # real chain head (10 since v010)
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
@@ -250,10 +250,10 @@ def case_1_v001() -> None:
             check("1j chain: version stamped to the chain head",
                   disk.get("version") == HEAD,
                   f"version={disk.get('version')!r} head={HEAD}")
-            # The full v001->v008 walk ends array-shaped (v008's step, and
+            # The full v001->vNNN walk ends array-shaped (v008's step, and
             # the normalization every materialize performs since then):
             # every job a list of blocks, the consensus job exactly one.
-            check("1j2 chain: full v1->v8 walk leaves array-shaped providers with consensus",
+            check("1j2 chain: full walk leaves array-shaped providers with consensus",
                   all(isinstance(disk["providers"][job], list)
                       for job in config.PROVIDER_JOBS)
                   and len(disk["providers"]["consensus"]) == 1
@@ -537,11 +537,11 @@ def case_3_not_a_project() -> None:
 
 
 def case_4_real_chain() -> None:
-    """The real migrations package: exactly [v001, v002, v003, v004, v005,
-    v006, v007, v008], VERSIONs [1, 2, 3, 4, 5, 6, 7, 8], head version 8.
-    v003's behavior is covered in tests/test_git.py, v004's in case 7,
-    v005's in case 8, v007's in case 9, and v008's in case 11; only the
-    chain shape is pinned here."""
+    """The real migrations package: exactly v001..vNNN with VERSIONs 1..NNN
+    (the assertions below derive the head from migrations.current_version(), so
+    adding a step does not stale this docstring). v003's behavior is covered in
+    tests/test_git.py, v004's in case 7, v005's in case 8, v007's in case 9,
+    v008's in case 11, v010's in case 12; only the chain shape is pinned here."""
     steps = migrations.chain()
     check("4a real chain: every step v001..vNNN, VERSIONs 1..NNN",
           len(steps) == migrations.current_version()
@@ -1165,9 +1165,8 @@ def case_11_v008() -> None:
     never moves the version stamp; a second identical call over the
     normalized result reports [] and writes nothing (idempotent); a
     --dry-run variant leaves the on-disk config dict-shaped and untouched.
-    (The full v001->v008 chain walk -- a version-0 project ending at
-    version 8 array-shaped with consensus -- is pinned in case 1, check
-    1j2.)"""
+    (The full v001->vNNN chain walk -- a version-0 project ending array-shaped --
+    is pinned in case 1, check 1j2.)"""
     def make_v7_project(root: Path, name: str) -> Path:
         """A project as v007 left it: every DEFAULTS key (v008 adds none),
         minimal user-authored DICT-shaped provider blocks (base_url + model
@@ -1275,6 +1274,154 @@ def case_11_v008() -> None:
               f"translator={dry_disk['providers']['translator']!r}")
 
 
+def case_12_v010() -> None:
+    """v010 called directly: the 4-digit canonical rename.
+
+    A v9-era project is migrated. The rename is not just source/: every
+    artifact keyed on the file name moves with it -- chapters.json's `file`,
+    story_state.json's recap keys, and the draft/translated/notes sidecars --
+    so no chapter is orphaned. Extra chapters (a letter suffix) are NEVER
+    renamed: they are listed in a [warn] that points the operator at their
+    agent instead. --dry-run touches nothing, a second run reports [].
+    """
+    def make_v9_project(root: Path, name: str) -> Path:
+        """source/ holds one short-padded chapter, one already-canonical
+        chapter, and one non-canonical-case EXTRA chapter; the first has a
+        full artifact set to carry across."""
+        proj = root / name
+        (proj / "source").mkdir(parents=True)
+        (proj / "draft").mkdir()
+        (proj / "translated").mkdir()
+        (proj / "notes").mkdir()
+        for chapter in ("Chapter_001.md", "Chapter_0002.md", "chapter_0012b.md"):
+            (proj / "source" / chapter).write_text("body\n", encoding="utf-8")
+        (proj / "draft" / "Chapter_001.state.json").write_text("{}", encoding="utf-8")
+        (proj / "draft" / "Chapter_001.md").write_text("draft\n", encoding="utf-8")
+        (proj / "draft" / "Chapter_001.lines.json").write_text("[]", encoding="utf-8")
+        (proj / "translated" / "Chapter_001.md").write_text("out\n", encoding="utf-8")
+        (proj / "notes" / "Chapter_001.json").write_text("[]", encoding="utf-8")
+        (proj / "notes" / "Chapter_001.dropped.json").write_text("[]", encoding="utf-8")
+        (proj / "chapters.json").write_text(json.dumps([
+            {"file": "Chapter_001.md", "number": 1, "suffix": "",
+             "order": 0, "status": "translated", "title": "One"},
+            {"file": "Chapter_0002.md", "number": 2, "suffix": "",
+             "order": 1, "status": "pending", "title": "Two"},
+            {"file": "chapter_0012b.md", "number": 12, "suffix": "b",
+             "order": 2, "status": "pending", "title": "Extra"},
+        ], indent=2) + "\n", encoding="utf-8")
+        (proj / "story_state.json").write_text(json.dumps({
+            "chapters": {"Chapter_001": {"recap": "one"},
+                         "Chapter_0002": {"recap": "two"}}
+        }, indent=2) + "\n", encoding="utf-8")
+        return proj
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"           # no templates -> sync_templates stays silent
+        src.mkdir()
+        proj = make_v9_project(root, "p")
+        lines = v010.migrate(proj, src)
+
+        names = sorted(p.name for p in (proj / "source").iterdir())
+        check("12a v010: short-padded chapter renamed to 4 digits",
+              "Chapter_0001.md" in names and "Chapter_001.md" not in names,
+              f"source={names!r}")
+        check("12b v010: already-canonical chapter untouched",
+              "Chapter_0002.md" in names, f"source={names!r}")
+        check("12c v010: extra chapter left exactly as it was",
+              "chapter_0012b.md" in names, f"source={names!r}")
+
+        check("12d v010: the rename is reported",
+              any("renamed 1 source file" in ln for ln in lines),
+              f"lines={lines!r}")
+        check("12e v010: the extra chapter is warned about by name",
+              any("chapter_0012b.md" in ln and ln.startswith("[warn]")
+                  for ln in lines), f"lines={lines!r}")
+        check("12f v010: the warning says to hand it to an agent",
+              any("agent" in ln and "Chapter_NNNN" in ln for ln in lines),
+              f"lines={lines!r}")
+        check("12g v010: no config keys materialized (not a config step)",
+              not any("materialized" in ln for ln in lines), f"lines={lines!r}")
+
+        manifest = json.loads((proj / "chapters.json").read_text(encoding="utf-8"))
+        files = [e["file"] for e in manifest]
+        check("12h v010: chapters.json re-pointed at the new name",
+              "Chapter_0001.md" in files and "Chapter_001.md" not in files,
+              f"files={files!r}")
+        check("12i v010: chapters.json keeps titles and statuses",
+              any(e["file"] == "Chapter_0001.md" and e["title"] == "One"
+                  and e["status"] == "translated" for e in manifest),
+              f"manifest={manifest!r}")
+        check("12j v010: the untouched entries keep their names",
+              "Chapter_0002.md" in files and "chapter_0012b.md" in files,
+              f"files={files!r}")
+
+        state = json.loads((proj / "story_state.json").read_text(encoding="utf-8"))
+        check("12k v010: story_state recap re-keyed, none lost",
+              set(state["chapters"]) == {"Chapter_0001", "Chapter_0002"},
+              f"chapters={sorted(state['chapters'])!r}")
+        check("12l v010: the re-keyed recap keeps its content",
+              state["chapters"]["Chapter_0001"]["recap"] == "one",
+              f"recap={state['chapters'].get('Chapter_0001')!r}")
+
+        check("12m v010: translated/ carried across",
+              (proj / "translated" / "Chapter_0001.md").exists()
+              and not (proj / "translated" / "Chapter_001.md").exists())
+        check("12n v010: all three draft artifacts carried across",
+              all((proj / "draft" / f"Chapter_0001{ext}").exists()
+                  for ext in (".state.json", ".md", ".lines.json")))
+        check("12o v010: both notes sidecars carried across",
+              (proj / "notes" / "Chapter_0001.json").exists()
+              and (proj / "notes" / "Chapter_0001.dropped.json").exists())
+        check("12p v010: the artifact count is reported",
+              any("carried" in ln for ln in lines), f"lines={lines!r}")
+
+        after = snapshot(proj)
+        again = v010.migrate(proj, src)
+        check("12q v010: idempotent (second run writes nothing)",
+              snapshot(proj) == after, "files changed on the second run")
+        check("12r v010: second run renames nothing but still defers the extra",
+              not any("renamed" in ln for ln in again)
+              and any("chapter_0012b.md" in ln for ln in again),
+              f"lines={again!r}")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+        proj = make_v9_project(root, "p")
+        before = snapshot(proj)
+        dry = v010.migrate(proj, src, dry_run=True)
+        check("12s v010: --dry-run writes nothing",
+              snapshot(proj) == before, "a file changed during --dry-run")
+        check("12t v010: --dry-run still reports what it would do",
+              any("would rename" in ln for ln in dry), f"lines={dry!r}")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+        proj = make_v9_project(root, "p")
+        # Chapter_001.md and Chapter_0001.md both present: the target exists.
+        (proj / "source" / "Chapter_0001.md").write_text("other\n", encoding="utf-8")
+        clash = v010.migrate(proj, src)
+        check("12u v010: a target collision never clobbers",
+              (proj / "source" / "Chapter_0001.md").read_text(encoding="utf-8") == "other\n",
+              "the existing Chapter_0001.md was overwritten")
+        check("12v v010: the collision is warned about",
+              any("already exists" in ln for ln in clash), f"lines={clash!r}")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+        empty = root / "empty"
+        empty.mkdir()
+        check("12w v010: a project with no source/ is a quiet no-op",
+              v010.migrate(empty, src) == [],
+              f"lines={v010.migrate(empty, src)!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -1291,6 +1438,7 @@ def main() -> int:
     case_9_v007()
     case_10_sync_bom()
     case_11_v008()
+    case_12_v010()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

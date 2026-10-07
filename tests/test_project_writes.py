@@ -70,8 +70,10 @@ def write_lf(path: Path, text: str) -> None:
 def case_1_discovery_ascii_digits() -> None:
     """discover() matches ASCII digits only: "Chapter_0007.md" and the
     suffixed, differently-cased "chapter_0012b.md" are discovered (IGNORECASE
-    preserved), while full-width and Arabic-Indic digit twins, 5-digit
-    numbers, and wrong extensions are not."""
+    preserved), while short-padded (3- and 2-digit), full-width and
+    Arabic-Indic digit twins, 5-digit numbers, and wrong extensions are not.
+    Padding is fixed at exactly 4 digits, so "Chapter_001.md" no longer
+    coexists with "Chapter_0001.md" as a second spelling of chapter 1."""
     with tempfile.TemporaryDirectory() as td:
         source = Path(td) / "source"
         source.mkdir()
@@ -79,7 +81,9 @@ def case_1_discovery_ascii_digits() -> None:
             "Chapter_0007.md",    # discovered, number 7
             "chapter_0012b.md",   # discovered, number 12, suffix b
             "Chapter_0099A.md",   # discovered: IGNORECASE keeps matching the A
-            "Chapter_12.md",      # 2 digits are inside the 1-4 bound
+            "Chapter_0012.md",    # 4 digits: discovered
+            "Chapter_001.md",     # 3 digits: NOT discovered (padding is fixed)
+            "Chapter_12.md",      # 2 digits: NOT discovered (padding is fixed)
             "Chapter_０００７.md",  # full-width digits: NOT discovered
             "Chapter_٠٠٠٧.md",    # Arabic-Indic digits: NOT discovered
             "Chapter_12345.md",   # 5 digits: NOT discovered
@@ -102,9 +106,11 @@ def case_1_discovery_ascii_digits() -> None:
               by_name.get("Chapter_0099A.md") is not None
               and by_name["Chapter_0099A.md"].suffix == "A",
               f"found={[c.file for c in found]!r}")
-        check("1d discover: 2-digit chapter inside the 1-4 bound",
-              by_name.get("Chapter_12.md") is not None
-              and by_name["Chapter_12.md"].number == 12,
+        check("1d discover: 3-digit chapter NOT discovered (padding fixed at 4)",
+              "Chapter_001.md" not in by_name,
+              f"found={[c.file for c in found]!r}")
+        check("1d2 discover: 2-digit chapter NOT discovered (padding fixed at 4)",
+              "Chapter_12.md" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1e discover: full-width digits NOT discovered",
               "Chapter_０００７.md" not in by_name,
@@ -119,7 +125,7 @@ def case_1_discovery_ascii_digits() -> None:
               "Chapter_0007.txt" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1i discover: exactly the four ASCII chapters, sorted by number",
-              [c.file for c in found] == ["Chapter_0007.md", "Chapter_12.md",
+              [c.file for c in found] == ["Chapter_0007.md", "Chapter_0012.md",
                                           "chapter_0012b.md", "Chapter_0099A.md"],
               f"found={[c.file for c in found]!r}")
 

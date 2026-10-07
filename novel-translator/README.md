@@ -32,8 +32,10 @@ through uv automatically):
 ## One-time setup
 
 1. Make a project directory and put source chapters in `source/` named
-   `Chapter_NNN[a].md` (1-4 digit zero-padded number, optional single-letter
-   suffix, e.g. `Chapter_001.md`, `Chapter_0002a.md`). Frontmatter is
+   `Chapter_NNNN[a].md` (exactly 4 zero-padded digits, optional single-letter
+   suffix, e.g. `Chapter_0001.md`, `Chapter_0002a.md`). Any other shape is
+   skipped, and `init`/`sync` print a `[warn]` naming each skipped file and
+   why — so check that output before trusting the chapter count. Frontmatter is
    optional; `init` backfills novel-level fields and chapter titles.
    Starting from a website instead of files? `references/ingestion.md`
    walks through scraping a novel: TOC discovery, converting pages to
@@ -94,9 +96,15 @@ through uv automatically):
 
    `migrate` is non-destructive and re-runnable: it brings a project up
    to the current skill version (new config keys, templates shipped
-   since the project's init) and never touches `glossary.json`,
+   since the project's init, and `v010`'s rename of source chapters to the
+   fixed 4-digit `Chapter_NNNN.md` form, which carries `chapters.json`,
+   `story_state.json` and the per-chapter artifacts with it) and never touches
+   `glossary.json`,
    `tn_history.json`, or `story_state.json` -- that reset is
-   `init --force`'s job. Templates
+   `init --force`'s job. Extra chapters (a letter suffix, `Chapter_0042a.md`)
+   are deliberately left alone: `migrate` prints a `[warn]` naming each one and
+   asks you to rename those by hand, checking each against the table of
+   contents. Templates
    missing from the project are copied without asking; a copy that
    differs from the shipped one prompts, per template,
    `templates ~ <name>.md differs from the shipped copy - overwrite
