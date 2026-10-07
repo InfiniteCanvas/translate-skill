@@ -25,7 +25,7 @@ drift comparison.
 ├── tn_history.json      translation-note history (powers the 10-chapter rule)
 ├── story_state.json     rolling story-so-far recaps (one entry per chapter; injected as translator context)
 ├── review-report.md     indexed review findings (`review glossary`: machine-applicable vs needs-manual-review sections; `review notes`: advisory note-quality findings; frontmatter counts; regenerated per run by whichever tier ran last)
-├── source/              Chapter_NNNN[a].md — untouched source chapters
+├── source/              Chapter_NNNN.md — untouched source chapters
 ├── draft/               working area per chapter (see Draft artifacts)
 ├── translated/          finalized chapters, exactly what the epub is built from
 ├── notes/               translator's-note sidecars (notes/<stem>.json) + dropped-candidate review artifacts (notes/<stem>.dropped.json)
@@ -38,22 +38,22 @@ drift comparison.
 └── logs/                llm-*-<command>-<pid>.jsonl (one LLM trace per project per CLI invocation, newest log_llm_keep_runs kept); epub-build.log (background epub-build output)
 ```
 
-Chapter file names must match `Chapter_NNNN.md` — **exactly 4** zero-padded
-digits (matching is case-insensitive), optionally with a single-letter suffix
-for extras/bonus chapters:
-`Chapter_0042a.md` sorts between `Chapter_0042.md` and `Chapter_0043.md`.
-Padding is fixed at 4 so one chapter cannot be spelled two ways; the older
-3-digit `Chapter_001.md` is rejected. Chapter order = position in the file
-list sorted numerically by the parsed `(number, suffix)` — with fixed padding
-that is also plain name order, so `Chapter_0999.md` sorts before
+Chapter file names must match `Chapter_NNNN.md` and nothing else: **exactly 4**
+zero-padded ASCII digits, no suffix (matching is case-insensitive). Padding is
+fixed so one chapter cannot be spelled two ways, and the 3-digit
+`Chapter_001.md` is rejected; the former letter-suffix spelling for
+extras/bonus chapters (`Chapter_0042a.md`) was removed as unused and is now a
+reported near-miss. Chapter order = position in the file list sorted
+numerically by the parsed number — with fixed padding that is also plain name
+order, so `Chapter_0999.md` sorts before
 `Chapter_1000.md`; that order
 is written into each source file's frontmatter and into `chapters.json` as
 `order` (0-based), and ALL chapter-distance logic (the translation-note gap)
 measures distance in `order` units. The manifest is rebuilt by `init` and
 `sync`; `sync` re-scans `source/` for added/removed files and preserves
 statuses by file name. Both commands print a `[warn]` for each `source/` file
-that looks like a chapter but does not match (short padding, `.zh`, a missing
-`Chapter_` prefix, non-ASCII digits, a multi-letter suffix, a wrong
+that looks like a chapter but does not match (short padding, a letter suffix,
+`.zh`, a missing `Chapter_` prefix, non-ASCII digits, a wrong
 extension); non-chapter files are never reported and a warning never fails the
 command. See `references/ingestion.md`.
 
@@ -402,9 +402,9 @@ fails the build.
 
 ```jsonc
 [
-  { "file": "Chapter_0001.md", "number": 1, "suffix": "", "order": 0,
+  { "file": "Chapter_0001.md", "number": 1, "order": 0,
     "status": "translated", "title": "山边小村" },
-  { "file": "Chapter_0002.md", "number": 2, "suffix": "", "order": 1,
+  { "file": "Chapter_0002.md", "number": 2, "order": 1,
     "status": "pending", "title": "青牛镇" }
 ]
 ```
@@ -941,9 +941,9 @@ to `common.sync_templates` (idempotent). `v010` (DESCRIPTION: `rename source
 chapters to the fixed 4-digit, canonical-case form (Chapter_001.md ->
 Chapter_0001.md), carrying chapters.json, story_state.json and the per-chapter
 artifacts`) renames `source/` files to the one form `CHAPTER_RE` accepts —
-`Chapter_NNNN.md` (exactly 4 digits) or `Chapter_NNNN[x].md` with a lowercase
-letter suffix — so short padding and non-canonical case stop being silently
-dropped. A rename orphans everything keyed on the file name, so the step moves
+`Chapter_NNNN.md`, exactly 4 digits — so short padding, non-canonical case and
+the removed letter suffix stop being silently dropped. A rename orphans
+everything keyed on the file name, so the step moves
 the whole set: the source file, `translated/<file>`, every `draft/<stem>.*` and
 `notes/<stem>*` artifact (globbed per stem, so an artifact a later version adds
 is carried rather than stranded), `chapters.json`'s `file` field, and
@@ -954,12 +954,13 @@ directly rather than through `lib/story`, whose `load_state` prunes entries
 whose stem is absent from the manifest and would discard the recaps instead of
 moving them. A target name that already exists is never clobbered: the file is
 skipped with a `[warn]` naming the clash. **Extra chapters are deliberately not
-renamed** — a non-canonical `Chapter_0042A.md` or `chapter_0012b.md` produces a
-`[warn]` listing every one and telling the operator to hand the rename to their
-agent, because a suffix is part of a chapter's identity, a case-only rename
-cannot be a single `rename()` on a case-insensitive filesystem, and
-`Chapter_42a.md` needs a decision about whether "42a" is chapter 42a or a typo
-for 420. This step changes no config key and delegates only to
+renamed** — a retired suffix name like `Chapter_0042a.md` produces a `[warn]`
+listing every one and telling the operator to hand the decision to their agent.
+With the suffix gone, the mechanical rename would be `Chapter_0042a.md` →
+`Chapter_0042.md`, which a real chapter may already own: renaming would
+clobber it. There is also no mechanical answer to what number an extra
+actually wants (is `0042a` chapter 43? a second part?), so the TOC decides.
+This step changes no config key and delegates only to
 `common.sync_templates` (idempotent: a second run renames nothing and reports
 only the still-deferred extras).
 `--dry-run` writes nothing and reports

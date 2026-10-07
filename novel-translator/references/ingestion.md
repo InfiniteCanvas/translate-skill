@@ -22,21 +22,21 @@ Before `init` runs, the project directory must contain a `source/`
 subdirectory holding at least one UTF-8 markdown file whose name matches:
 
 ```text
-^Chapter_([0-9]{4})([a-z]?)\.md$     (case-insensitive; ASCII digits only)
+^Chapter_([0-9]{4})\.md$     (case-insensitive; ASCII digits only)
 ```
 
 `init` fails fast when `source/` is missing or holds zero matching files.
 
 ## File naming rules
 
-- Exactly 4 digits, always: `Chapter_0001.md`. Padding is fixed, so the older
-  3-digit spelling (`Chapter_001.md`) is **rejected** — accepting both let one
-  chapter be spelled two ways. Sorting is by parsed number, which with fixed
-  padding is also plain lexicographic order. 9999 chapters is far beyond any
-  novel.
-- The letter suffix marks extras/bonus chapters: `Chapter_0042a.md` sorts
-  between `Chapter_0042.md` and `Chapter_0043.md`. At most one letter.
-- Numbers above 9999 are unsupported.
+- `Chapter_NNNN.md` is the **only** accepted spelling: exactly 4 zero-padded
+  digits, no suffix. Padding is fixed, so the older 3-digit spelling
+  (`Chapter_001.md`) is rejected — accepting both let one chapter be spelled
+  two ways. Sorting is by parsed number, which with fixed padding is also
+  plain lexicographic order. 9999 chapters is far beyond any novel.
+- There is **no letter suffix**. An earlier version accepted `Chapter_0042a.md`
+  for extras/bonus chapters; it was removed as unused, and such a file is now a
+  near-miss (warned about below).
 - Never rename or renumber after `init`. The manifest, translated copies,
   and note sidecars all key on file names; renaming a source file orphans
   its status, title, and translation.
@@ -44,17 +44,19 @@ subdirectory holding at least one UTF-8 markdown file whose name matches:
   `sync` now **print a `[warn]` for each**, naming the file and the reason:
 
   ```text
-  [warn] source/Chapter_001.md: ignored - 3 digits, not 4 (rename to Chapter_NNNN.md, 4 digits + optional letter)
-  [warn] source/Chapter_0007.zh.md: ignored - not Chapter_NNNN.md (4 digits, then an optional letter) (rename to ...)
-  [warn] 2 source file(s) look like chapters but were not added to the manifest
+  [warn] source/Chapter_001.md: ignored - 3 digits, not 4 (rename to Chapter_NNNN.md - 4 digits)
+  [warn] source/Chapter_0042a.md: ignored - extras/bonus chapters (letter suffix) are no longer accepted - give this chapter its own number (rename to Chapter_NNNN.md - 4 digits)
+  [warn] source/Chapter_0007.zh.md: ignored - not Chapter_NNNN.md (exactly 4 digits) (rename to Chapter_NNNN.md - 4 digits)
+  [warn] 3 source file(s) look like chapters but were not added to the manifest
   ```
 
-  The classes covered are short padding, `Chapter_0007.zh.md`, `chapter 7.md`,
-  `0007.md` (no `Chapter_` prefix), non-ASCII digits (full-width or
-  Arabic-Indic), multi-letter suffixes, and a wrong extension. Files that are
-  plainly not chapters (`README.md`, `notes.txt`, `.gitkeep`) are never
-  reported — `source/` legitimately holds more than chapters. A warning never
-  fails the command: `init`/`sync` still exit 0.
+  The classes covered are short padding, a letter suffix (single or
+  multi-letter), `Chapter_0007.zh.md`, `chapter 7.md`, `0007.md` (no
+  `Chapter_` prefix), non-ASCII digits (full-width or Arabic-Indic), and a
+  wrong extension. Files that are plainly not chapters (`README.md`,
+  `notes.txt`, `.gitkeep`) are never reported — `source/` legitimately holds
+  more than chapters. A warning never fails the command: `init`/`sync` still
+  exit 0.
 
 ## Converting scraped pages to chapter files
 

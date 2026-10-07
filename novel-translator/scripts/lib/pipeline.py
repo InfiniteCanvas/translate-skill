@@ -240,16 +240,19 @@ def _entry_number(entry: dict) -> int:
 
 
 def _entry_keys(entry: dict) -> set[str]:
-    """Acceptable normalized name tokens for a manifest entry (suffix-insensitive)."""
+    """Acceptable normalized name tokens for a manifest entry.
+
+    Chapter_NNNN.md has no suffix any more, so there is nothing to strip here.
+    _name_matches still tolerates a trailing ".xxx" on the SPEC side (a typed
+    "Chapter_0007.zh.md" from the retired convention), which is a user-typing
+    convenience and costs nothing -- but the manifest field it used to read
+    from is gone."""
     file_l = str(entry.get("file", "")).strip().lower()
-    suffix = str(entry.get("suffix") or "").strip().lower()
     core = file_l[:-3] if file_l.endswith(".md") else file_l
-    core_nosuf = core[: -(len(suffix) + 1)] if suffix and core.endswith("." + suffix) else core
     num = _entry_number(entry)
     return {
         file_l,
         core,
-        core_nosuf,
         f"chapter_{num:04d}",
         f"chapter_{num}",
         str(num),
@@ -269,8 +272,8 @@ def parse_range(spec: str, manifest: list[dict]) -> list[str]:
     """Resolve a spec ("1,3-5,Chapter_0007.md") to file names in manifest order.
 
     Items may be chapter numbers ("7"), inclusive ranges ("3-5"), or exact
-    file names matched suffix-insensitively (an item like
-    "Chapter_0007.zh.md" -- a retired source-naming convention -- still
+    file names (an item like "Chapter_0007.zh.md" -- a retired source-naming
+    convention -- still
     matches the manifest's "Chapter_0007.md"). Raises PipelineError when
     nothing matches an item.
     """

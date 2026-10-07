@@ -36,8 +36,8 @@ markdown contract).
 Two ways source chapters arrive:
 
 - **Files provided**: the user hands you `source/Chapter_NNNN.md` files
-  (exactly 4 zero-padded digits; extras get a single-letter suffix,
-  `Chapter_0042a.md`). Any other shape is not discovered — but `init`/`sync`
+  (exactly 4 zero-padded digits, no suffix). Any other shape is not
+  discovered — but `init`/`sync`
   print a `[warn]` naming each ignored file and why, so read that output
   before reporting a chapter count back to the user.
   Frontmatter is optional - `init` backfills `novel_title`/`author`/
@@ -606,13 +606,12 @@ background build too. Builds produce no git commits — `export/`,
   rewritten, so a mid-way failure leaves the manifest pointing at names that
   still exist. An existing target is never clobbered. **Extra chapters — a
   letter suffix — are deliberately NOT renamed**: they produce a `[warn]`
-  naming each file and telling the operator to hand the rename to their agent,
-  since a suffix is part of a chapter's identity, a case-only rename needs two
-  steps on a case-insensitive filesystem, and `Chapter_42a.md` needs a
-  decision about whether "42a" is chapter 42a or a typo for 420. If you see
-  that warning, read the TOC, rename to `Chapter_NNNN[x].md`, and update
-  `chapters.json`, `story_state.json`, `draft/`, `translated/` and `notes/` to
-  match. A template that
+  naming each file and telling the operator to hand the decision to their
+  agent, because with the suffix gone the mechanical rename would be
+  `Chapter_0042a.md` → `Chapter_0042.md`, clobbering a real chapter. If you see
+  that warning, read the TOC, give each extra chapter its own number, rename to
+  `Chapter_NNNN.md`, and update `chapters.json`, `story_state.json`, `draft/`,
+  `translated/` and `notes/` to match. A template that
   exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:

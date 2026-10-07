@@ -178,7 +178,7 @@ def _report_ignored_chapters(project_dir: Path) -> None:
     ignored = project.ignored_chapters(project_dir)
     for name, reason in ignored:
         print(f"[warn] source/{name}: ignored - {reason} "
-              "(rename to Chapter_NNNN.md, 4 digits + optional letter)")
+              "(rename to Chapter_NNNN.md - 4 digits)")
     if ignored:
         print(f"[warn] {len(ignored)} source file(s) look like chapters but "
               "were not added to the manifest")
@@ -201,8 +201,8 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     if not chapters:
         raise CliError(
             f"no source chapters found in {src_dir}: files must be named "
-            "'Chapter_NNN[a].md' (4-digit zero-padded number, optional "
-            "single-letter suffix), e.g. Chapter_0001.md or Chapter_0002a.md"
+            "'Chapter_NNNN.md' (exactly 4 zero-padded digits), e.g. "
+            "Chapter_0001.md"
         )
     print(f"[init] found {len(chapters)} source chapter(s)")
 
@@ -1583,7 +1583,7 @@ def _cmd_glossary_count(args: argparse.Namespace, project_dir: Path) -> int:
         # freshly discovered chapters so --chapters resolves numbers, ranges
         # and file names exactly like 'translate --chapters', then map the
         # picked file names back to Chapter objects (discover order).
-        entries = [{"file": c.file, "number": c.number, "suffix": c.suffix}
+        entries = [{"file": c.file, "number": c.number}
                    for c in discovered]
         picked = set(pipeline.parse_range(args.chapters, entries))
         chapters = [c for c in discovered if c.file in picked]

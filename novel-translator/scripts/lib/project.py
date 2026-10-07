@@ -9,41 +9,42 @@ from pathlib import Path
 
 import yaml
 
-# EXACTLY 4 digit chapter numbers ("Chapter_0001.md"). 9999 chapters is far
-# beyond any real novel, and a fixed width removes the padding ambiguity that
-# used to let "Chapter_001.md" and "Chapter_0001.md" both be admitted and both
-# claim chapter 1. A non-matching name is no longer silently dropped -- see
-# near_miss_reason() and the [warn] lines init/sync print for them.
-#
-# The optional lowercase letter suffix is KEPT: it marks extras/bonus chapters
-# (Chapter_0042a.md sorts between Chapter_0042.md and Chapter_0043.md), it is
-# documented in SKILL.md / README.md / references/ingestion.md /
-# references/file-formats.md, and it is persisted as a manifest field. Padding,
-# not suffix, was the axis that needed tightening.
+# EXACTLY 4 digit chapter numbers, no letter suffix: "Chapter_0001.md" is the
+# ONLY accepted spelling. 9999 chapters is far beyond any novel, and a fixed
+# width removes the padding ambiguity that used to let "Chapter_001.md" and
+# "Chapter_0001.md" both be admitted and both claim chapter 1. The optional
+# letter suffix (Chapter_0042a.md, "extras/bonus chapters") was removed after
+# it turned out nobody used it: it cost a field on the Chapter dataclass, a
+# field in chapters.json, a branch in pipeline._entry_keys, a sort key, and
+# four doc mirrors -- and it carried the one case a migration cannot resolve
+# (what number does "0042a" want?). A near-miss name is no longer silently
+# dropped -- see near_miss_reason() and the [warn] lines init/sync print.
 #
 # Digits are spelled [0-9], never \d: \d also matches full-width/Arabic-Indic
 # decimal digits, so "Chapter_０００７.md" would be discovered and
 # int()-collapse onto the real Chapter_0007. near_miss_reason() deliberately
 # uses \d so those names are REPORTED instead of vanishing.
-CHAPTER_RE = re.compile(r"^Chapter_([0-9]{4})([a-z]?)\.md$", re.IGNORECASE)
+CHAPTER_RE = re.compile(r"^Chapter_([0-9]{4})\.md$", re.IGNORECASE)
 
 # Looser patterns, used only to decide whether an ignored source/ file is worth
 # warning about. They are never used to discover a chapter -- \d here is the
 # point: it catches the full-width/Arabic-Indic digit names CHAPTER_RE rejects.
 _CHAPTERISH_RE = re.compile(r"^chapter[\s_.-]*\d", re.IGNORECASE)
 _BARE_NUMBER_RE = re.compile(r"^\d+$")
-# The tail of a chapter-shaped stem, after "chapter_": digits then at most one
-# letter. \d so full-width/Arabic-Indic digits are matched and can be reported.
-_CHAPTER_TAIL_RE = re.compile(r"chapter_(\d+)([a-z]?)", re.IGNORECASE)
+# The tail of a chapter-shaped stem, after "chapter_": digits and NOTHING else.
+# Deliberately has no optional trailing letter, so a retired extra-chapter name
+# ("Chapter_0042a.md") fails the match and gets reported instead of passing as
+# a valid chapter. \d so full-width/Arabic-Indic digits are matched and can be
+# reported rather than silently rejected.
+_CHAPTER_TAIL_RE = re.compile(r"chapter_(\d+)", re.IGNORECASE)
 STATUSES = ("pending", "in-progress", "needs-review", "translated")
 
 
 @dataclass
 class Chapter:
     path: Path
-    file: str      # file name only, e.g. "Chapter_0042a.md"
+    file: str      # file name only, e.g. "Chapter_0042.md"
     number: int    # 42
-    suffix: str    # "a" or ""
 
 
 def paths(project_dir: Path) -> dict:
@@ -68,7 +69,8 @@ def paths(project_dir: Path) -> dict:
 
 
 def discover(project_dir: Path) -> list[Chapter]:
-    """All Chapter_NNNN[x].md files in source/, sorted by (number, suffix.lower())."""
+    """All Chapter_NNNN.md files in source/, sorted by number (which with fixed
+    4-digit padding is also plain name order)."""
     source = paths(project_dir)["source"]
     chapters: list[Chapter] = []
     if not source.is_dir():
@@ -79,8 +81,8 @@ def discover(project_dir: Path) -> list[Chapter]:
         match = CHAPTER_RE.match(entry.name)
         if match:
             chapters.append(Chapter(path=entry, file=entry.name,
-                                    number=int(match.group(1)), suffix=match.group(2)))
-    chapters.sort(key=lambda c: (c.number, c.suffix.lower()))
+                                    number=int(match.group(1))))
+    chapters.sort(key=lambda c: c.number)
     return chapters
 
 
@@ -93,8 +95,8 @@ def near_miss_reason(name: str) -> str | None:
     user meant to be a chapter is data loss with no signal. init and sync print
     a [warn] for every name this function flags, so the near-miss classes named
     in references/ingestion.md ("Chapter_0007.zh.md", "chapter 7.md", "0007.md",
-    non-ASCII digits) are surfaced instead of requiring a manual count of the
-    manifest against the TOC.
+    a retired extra-chapter "Chapter_0042a.md", non-ASCII digits) are surfaced
+    instead of requiring a manual count of the manifest against the TOC.
 
     \\d is intentional here and only here: it matches full-width and
     Arabic-Indic digits, which CHAPTER_RE's [0-9] deliberately does not. That
@@ -110,8 +112,11 @@ def near_miss_reason(name: str) -> str | None:
     if Path(name).suffix.lower() != ".md":
         return f"extension {Path(name).suffix!r} is not .md"
     tail = _CHAPTER_TAIL_RE.fullmatch(stem)
+    if re.fullmatch(r"chapter_\d+[a-z]", stem, re.IGNORECASE):
+        return ("extras/bonus chapters (letter suffix) are no longer accepted - "
+                "give this chapter its own number")
     if not tail:
-        return "not Chapter_NNNN.md (4 digits, then an optional letter)"
+        return "not Chapter_NNNN.md (exactly 4 digits)"
     digits = tail.group(1)
     if not digits.isascii():
         return "non-ASCII digits in the number"
@@ -337,7 +342,6 @@ def sync_manifest(project_dir: Path) -> list[dict]:
         manifest.append({
             "file": chapter.file,
             "number": chapter.number,
-            "suffix": chapter.suffix,
             "order": order,
             "status": status,
             "title": title,

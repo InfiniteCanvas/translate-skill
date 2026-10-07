@@ -1,12 +1,12 @@
 """v10: rename source chapters to the fixed 4-digit, canonical-case form.
 
 project.CHAPTER_RE went from `^Chapter_([0-9]{1,4})([a-z]?)\.md$` to
-`^Chapter_([0-9]{4})([a-z]?)\.md$`. Two old spellings stop being discovered:
-short padding (Chapter_001.md, Chapter_12.md) and non-canonical case
-(chapter_0012b.md, Chapter_0012B.md, Chapter_0012.MD). Anything not renamed is
-silently dropped from the manifest -- no entry, no status, no translation
-target -- so projects built before v10 need their files moved, not just
-re-discovered.
+`^Chapter_([0-9]{4})\.md$`. Three old spellings stop being discovered: short
+padding (Chapter_001.md, Chapter_12.md), non-canonical case
+(chapter_0012.md, Chapter_0012.MD), and the letter suffix that used to mark
+extras/bonus chapters (Chapter_0042a.md). Anything not renamed is silently
+dropped from the manifest -- no entry, no status, no translation target -- so
+projects built before v10 need their files moved, not just re-discovered.
 
 A rename orphans everything keyed on the file name, which is why this step does
 not stop at source/: the manifest's `file` field, story_state.json's recap
@@ -14,21 +14,16 @@ keys, and the draft/translated/notes artifacts all move with it. draft/ and
 notes/ are globbed per stem rather than listed file-by-file, so an artifact
 added by a later version is carried along instead of stranded.
 
-Extra chapters (a letter suffix: Chapter_0042a.md) are NOT renamed here, even
-when their spelling is non-canonical. A suffix is a real, documented part of a
-chapter's identity, so these get a [warn] naming each file and telling the
-operator to hand the rename to their agent, which can check each case against
-the TOC. Two concrete reasons not to automate them:
-
-  - A case-only rename (chapter_0042a.md -> Chapter_0042a.md) cannot be a
-    single rename() on a case-insensitive filesystem; it needs a temp
-    intermediate, and a half-applied rename is exactly the state that orphans
-    a chapter's artifacts.
-  - Chapter_42a.md needs padding *and* a decision about whether "42a" is
-    chapter 42a or a typo for 420. A migration should not make that call.
+Extra chapters are NOT renamed here, and this is now a correctness
+requirement, not a nicety: with the suffix gone, the canonical name for
+Chapter_0042a.md would be Chapter_0042.md -- which a real Chapter_0042.md may
+already occupy. Renaming would either clobber a chapter or collide in the
+manifest. There is also no mechanical answer to what number an extra actually
+wants (is 0042a chapter 43? a second part?), so these get a [warn] naming each
+file and telling the operator to hand the decision to their agent with the TOC.
 
 Idempotent: a second run finds every name already canonical, defers the same
-suffixed files, and reports nothing beyond the delegated template sync.
+extra chapters, and reports nothing beyond the delegated template sync.
 
 No config keys and no templates change, so this step does NOT delegate to
 standard_step -- there is nothing to materialize, and running
@@ -50,8 +45,10 @@ DESCRIPTION = ("rename source chapters to the fixed 4-digit, canonical-case "
                "form (Chapter_001.md -> Chapter_0001.md), carrying "
                "chapters.json, story_state.json and the per-chapter artifacts")
 
-# The form that was accepted before v10. A name matching this but not already
-# canonical is a rename candidate; anything else in source/ is not ours to move.
+# The form that was accepted before v10. It still matches the letter suffix on
+# purpose: that is how the step RECOGNIZES an extra chapter in order to defer
+# it. A name matching this but not already canonical is otherwise a rename
+# candidate; anything else in source/ is not ours to move.
 LEGACY_RE = re.compile(r"^Chapter_([0-9]{1,4})([a-z]?)\.md$", re.IGNORECASE)
 
 
@@ -84,14 +81,14 @@ def migrate(project_dir: Path, templates_src: Path,
         listed = ", ".join(sorted(deferred))
         lines.append(
             f"[warn] chapters: {len(deferred)} extra chapter(s) with a letter "
-            f"suffix need renaming and were LEFT UNCHANGED: {listed}"
+            f"suffix need a DECISION and were LEFT UNCHANGED: {listed}"
         )
         lines.append(
-            "[warn] chapters: hand these to your agent rather than renaming "
-            "them in bulk - a suffix is part of a chapter's identity, and a "
-            "case-only rename needs two steps on this filesystem. Give it "
-            "this list, the TOC, and the rule: rename to Chapter_NNNN[x].md "
-            "(4 digits, lowercase letter), and update chapters.json, "
+            "[warn] chapters: hand these to your agent, do not bulk-rename "
+            "them. The suffix is gone, so the mechanical rename would be "
+            "Chapter_0042a.md -> Chapter_0042.md -- clobbering a real chapter. "
+            "Give it this list plus the TOC and the rule: assign each its own "
+            "Chapter_NNNN.md number, then update chapters.json, "
             "story_state.json, draft/, translated/ and notes/ to match."
         )
 
@@ -111,13 +108,15 @@ def migrate(project_dir: Path, templates_src: Path,
 
 # ----------------------------------------------------------------- planning
 
-def _canonical(number: str, suffix: str) -> str:
-    """The one spelling v10 accepts for this chapter."""
-    return f"Chapter_{int(number):04d}{suffix.lower()}.md"
+def _canonical(number: str) -> str:
+    """The one spelling v10 accepts for this chapter. Takes no suffix: a
+    suffixed name never reaches this (it is deferred instead), and computing
+    it would hand back a name a real chapter may already own."""
+    return f"Chapter_{int(number):04d}.md"
 
 
 def _plan(source: Path) -> tuple[dict[str, str], list[str]]:
-    """Split source/ into (old->new renames, suffixed names left to an agent).
+    """Split source/ into (old->new renames, extra chapters left to an agent).
 
     A name that already equals its canonical form is not a rename. A name
     carrying a letter suffix is never automated -- see the module docstring."""
@@ -132,12 +131,11 @@ def _plan(source: Path) -> tuple[dict[str, str], list[str]]:
         if not match:
             continue                      # never matched; not ours to move
         number, suffix = match.group(1), match.group(2)
-        canonical = _canonical(number, suffix)
-        if entry.name == canonical:
-            continue
         if suffix:
             deferred.append(entry.name)
-        else:
+            continue
+        canonical = _canonical(number)
+        if entry.name != canonical:
             renames[entry.name] = canonical
     return renames, deferred
 

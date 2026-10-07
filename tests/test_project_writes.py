@@ -68,22 +68,26 @@ def write_lf(path: Path, text: str) -> None:
 
 
 def case_1_discovery_ascii_digits() -> None:
-    """discover() matches ASCII digits only: "Chapter_0007.md" and the
-    suffixed, differently-cased "chapter_0012b.md" are discovered (IGNORECASE
-    preserved), while short-padded (3- and 2-digit), full-width and
-    Arabic-Indic digit twins, 5-digit numbers, and wrong extensions are not.
-    Padding is fixed at exactly 4 digits, so "Chapter_001.md" no longer
-    coexists with "Chapter_0001.md" as a second spelling of chapter 1."""
+    """discover() accepts exactly one spelling: "Chapter_NNNN.md", ASCII digits,
+    case-insensitive. Short-padded (3- and 2-digit), suffixed, full-width and
+    Arabic-Indic digit twins, 5-digit numbers, and wrong extensions are not
+    discovered -- and near_miss_reason() reports each of them so none vanishes.
+
+    The fixture deliberately never pairs two names differing only in case
+    (chapter_0099.md vs Chapter_0099.md): on a case-insensitive filesystem they
+    could not coexist as two files, so the pair would test the FS, not the code.
+    """
     with tempfile.TemporaryDirectory() as td:
         source = Path(td) / "source"
         source.mkdir()
         names = [
             "Chapter_0007.md",    # discovered, number 7
-            "chapter_0012b.md",   # discovered, number 12, suffix b
-            "Chapter_0099A.md",   # discovered: IGNORECASE keeps matching the A
-            "Chapter_0012.md",    # 4 digits: discovered
+            "chapter_0099.md",    # discovered: IGNORECASE still applies to the prefix
+            "Chapter_0012.md",    # discovered, number 12
             "Chapter_001.md",     # 3 digits: NOT discovered (padding is fixed)
             "Chapter_12.md",      # 2 digits: NOT discovered (padding is fixed)
+            "Chapter_0042a.md",   # extras spelling: NOT discovered (suffix is gone)
+            "Chapter_0099A.md",   # 1-letter suffix: NOT discovered (suffix is gone)
             "Chapter_０００７.md",  # full-width digits: NOT discovered
             "Chapter_٠٠٠٧.md",    # Arabic-Indic digits: NOT discovered
             "Chapter_12345.md",   # 5 digits: NOT discovered
@@ -97,14 +101,15 @@ def case_1_discovery_ascii_digits() -> None:
               by_name.get("Chapter_0007.md") is not None
               and by_name["Chapter_0007.md"].number == 7,
               f"found={[c.file for c in found]!r}")
-        check("1b discover: lowercase name + suffix still discovered",
-              by_name.get("chapter_0012b.md") is not None
-              and by_name["chapter_0012b.md"].number == 12
-              and by_name["chapter_0012b.md"].suffix == "b",
+        check("1b discover: lowercase prefix still discovered (IGNORECASE)",
+              by_name.get("chapter_0099.md") is not None
+              and by_name["chapter_0099.md"].number == 99,
               f"found={[c.file for c in found]!r}")
-        check("1c discover: uppercase suffix matches (IGNORECASE)",
-              by_name.get("Chapter_0099A.md") is not None
-              and by_name["Chapter_0099A.md"].suffix == "A",
+        check("1c discover: extras/bonus suffix NOT discovered (suffix is gone)",
+              "Chapter_0042a.md" not in by_name,
+              f"found={[c.file for c in found]!r}")
+        check("1c2 discover: single-letter suffix NOT discovered",
+              "Chapter_0099A.md" not in by_name,
               f"found={[c.file for c in found]!r}")
         check("1d discover: 3-digit chapter NOT discovered (padding fixed at 4)",
               "Chapter_001.md" not in by_name,
@@ -124,9 +129,9 @@ def case_1_discovery_ascii_digits() -> None:
         check("1h discover: wrong extension NOT discovered",
               "Chapter_0007.txt" not in by_name,
               f"found={[c.file for c in found]!r}")
-        check("1i discover: exactly the four ASCII chapters, sorted by number",
+        check("1i discover: exactly the three ASCII chapters, sorted by number",
               [c.file for c in found] == ["Chapter_0007.md", "Chapter_0012.md",
-                                          "chapter_0012b.md", "Chapter_0099A.md"],
+                                          "chapter_0099.md"],
               f"found={[c.file for c in found]!r}")
 
 

@@ -59,6 +59,18 @@ def _checks(output: str) -> int | None:
 
 
 def main() -> int:
+    # A failing check may print CJK -- chapter fixtures are Chinese, and the
+    # near-miss names include full-width digits. Without this, printing a
+    # failure detail on a cp1252 console raises UnicodeEncodeError and kills
+    # the whole run, turning "one test failed" into "no results at all" with
+    # every later script unreported. errors="replace" keeps the report
+    # readable instead of fatal.
+    if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # already-utf8 wrapper, or closed
+            pass
+
     scripts = sorted(
         p for p in TESTS_DIR.glob("test_*.py")
         if p.name != Path(__file__).name  # never run itself

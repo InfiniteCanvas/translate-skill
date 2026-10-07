@@ -1,9 +1,10 @@
 """Tests for the tightened chapter-naming rule and near-miss reporting.
 
 project.CHAPTER_RE is now the 4-digit-only pattern below -- padding is fixed at
-exactly 4 digits, while the optional letter suffix (extras/bonus chapters) is
-kept. That closes the padding ambiguity where "Chapter_001.md" and
-"Chapter_0001.md" were both admitted and both claimed chapter 1.
+exactly 4 digits AND the letter suffix is gone, so "Chapter_0001.md" is the
+only accepted spelling. That closes the padding ambiguity where
+"Chapter_001.md" and "Chapter_0001.md" were both admitted and both claimed
+chapter 1, and drops the extras/bonus-chapter spelling nobody used.
 
 Tightening alone would have turned a recoverable collision into silent data
 loss: a name that stops matching produces no manifest entry and no signal.
@@ -69,15 +70,16 @@ NEAR_MISS_CASES = [
     ("chapter 7.md", "not Chapter_NNNN.md", True),        # space separator
     ("0007.md", "no Chapter_ prefix", True),              # bare number
     ("Chapter_０００７.md", "non-ASCII digits", True),      # full-width
-    ("Chapter_٠٠٠٧.md", "non-ASCII digits", True),        # Arabic-Indic
+    ("Chapter_٠٠٠７.md", "non-ASCII digits", True),        # Arabic-Indic
+    ("Chapter_0042a.md", "letter suffix", True),           # retired extras spelling
     ("Chapter_0007xy.md", "not Chapter_NNNN.md", True),    # two-letter suffix
+    ("Chapter_0007x.md", "letter suffix", True),           # one-letter suffix
     ("Chapter_0007.txt", "extension", True),               # wrong extension
-    ("Chapter_0007x.md", None, False),                     # ONE letter: a legal suffix
     ("README.md", None, False),                           # plainly not a chapter
     ("notes.txt", None, False),
     (".gitkeep", None, False),
     ("Chapter_0007.md", None, False),                     # a real chapter
-    ("chapter_0012b.md", None, False),                    # suffix still supported
+    ("chapter_0012.md", None, False),                     # IGNORECASE still matches
 ]
 
 

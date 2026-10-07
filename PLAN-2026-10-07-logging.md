@@ -61,21 +61,26 @@ after a throwaway spike over the real `CHAPTER_RE`:**
   is schema-legal (`SKILL.md:39`, `ingestion.md:32-34`) but is a user mistake,
   and the stem separates it for free. Case variants cannot coexist on a
   case-insensitive filesystem (measured: three writes, one file).
-- **Superseded in part by the `CHAPTER_RE` tightening (shipped 2026-10-07).**
-  `project.CHAPTER_RE` is now `^Chapter_([0-9]{4})([a-z]?)\.md$` — padding is
-  fixed at exactly 4 digits, so `Chapter_001.md` no longer matches and the
-  **padding axis above is closed at the source**. The stem key is still
-  required (suffix is reachable through documented usage, and case variants
-  are reachable on case-sensitive filesystems), and the table above is kept as
-  the historical record of why `(number, suffix)` was not enough. The
-  tightening also added `project.near_miss_reason()` / `ignored_chapters()`
-  and `[warn]` lines in `init`/`sync` (`tests/test_near_miss.py`, 32 checks),
+- **Closed at the source by the `CHAPTER_RE` work (shipped 2026-10-07).**
+  `project.CHAPTER_RE` is now `^Chapter_([0-9]{4})\.md$`: padding is fixed at
+  exactly 4 digits **and the letter suffix is removed**, so **both** the padding
+  and suffix axes above are closed — `Chapter_001.md` and `Chapter_0042a.md`
+  no longer match at all. The stem key is still correct, but its remaining
+  justification is narrower than the table above suggests: only **case
+  variants** (`Chapter_0042.md` vs `CHAPTER_0042.md`) survive, and those cannot
+  coexist on a case-insensitive filesystem (measured: three writes, one file).
+  On a case-sensitive filesystem they *can* both match, which would give
+  `chapters.json` two entries with number 42 — a pre-existing hazard this plan
+  does not introduce and does not fix. The table above is kept as the
+  historical record of why `(number, suffix)` was not a safe key.
+  The tightening also added `project.near_miss_reason()` / `ignored_chapters()`
+  and `[warn]` lines in `init`/`sync` (`tests/test_near_miss.py`, 33 checks),
   so a name that stops matching is reported instead of vanishing — the
-  "silent" half of this finding is now handled by the tool rather than by the
-  log layout. `migrations/v010.py` ships the rename of existing projects'
-  files to the new form (carrying `chapters.json`, `story_state.json` and the
-  per-chapter artifacts with it, and deliberately deferring suffixed chapters
-  to an agent).
+  "silent" half of this finding is handled by the tool rather than by the log
+  layout. `migrations/v010.py` ships the rename of existing projects' files to
+  the new form (carrying `chapters.json`, `story_state.json` and the
+  per-chapter artifacts with it, and deferring retired suffixed chapters to an
+  agent, since their canonical name would belong to a real chapter).
 
 ---
 

@@ -1280,9 +1280,10 @@ def case_12_v010() -> None:
     A v9-era project is migrated. The rename is not just source/: every
     artifact keyed on the file name moves with it -- chapters.json's `file`,
     story_state.json's recap keys, and the draft/translated/notes sidecars --
-    so no chapter is orphaned. Extra chapters (a letter suffix) are NEVER
-    renamed: they are listed in a [warn] that points the operator at their
-    agent instead. --dry-run touches nothing, a second run reports [].
+    so no chapter is orphaned. Extra chapters (a retired letter suffix) are
+    NEVER renamed: their canonical name would belong to a real chapter, so
+    they are listed in a [warn] that points the operator at their agent.
+    --dry-run touches nothing, a second run reports [].
     """
     def make_v9_project(root: Path, name: str) -> Path:
         """source/ holds one short-padded chapter, one already-canonical

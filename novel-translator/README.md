@@ -32,8 +32,8 @@ through uv automatically):
 ## One-time setup
 
 1. Make a project directory and put source chapters in `source/` named
-   `Chapter_NNNN[a].md` (exactly 4 zero-padded digits, optional single-letter
-   suffix, e.g. `Chapter_0001.md`, `Chapter_0002a.md`). Any other shape is
+   `Chapter_NNNN.md` (exactly 4 zero-padded digits, no suffix — that is the
+   only accepted spelling). Any other shape is
    skipped, and `init`/`sync` print a `[warn]` naming each skipped file and
    why — so check that output before trusting the chapter count. Frontmatter is
    optional; `init` backfills novel-level fields and chapter titles.
@@ -101,10 +101,11 @@ through uv automatically):
    `story_state.json` and the per-chapter artifacts with it) and never touches
    `glossary.json`,
    `tn_history.json`, or `story_state.json` -- that reset is
-   `init --force`'s job. Extra chapters (a letter suffix, `Chapter_0042a.md`)
-   are deliberately left alone: `migrate` prints a `[warn]` naming each one and
-   asks you to rename those by hand, checking each against the table of
-   contents. Templates
+   `init --force`'s job. Extra chapters (a retired letter suffix,
+   `Chapter_0042a.md`) are deliberately left alone: `migrate` prints a `[warn]`
+   naming each one and asks you to give it its own chapter number, checking
+   against the table of contents — the mechanical rename would collide with a
+   real chapter. Templates
    missing from the project are copied without asking; a copy that
    differs from the shipped one prompts, per template,
    `templates ~ <name>.md differs from the shipped copy - overwrite
