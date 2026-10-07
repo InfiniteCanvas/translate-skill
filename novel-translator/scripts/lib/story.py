@@ -247,6 +247,8 @@ def ensure_recap(project_dir: Path, cfg: dict, manifest: list[dict], file: str,
         save_state(project_dir, state)
         print(f"{tag} [init] recap (backfill {prev})")
         return recap
+    except client.LLMFatal:
+        raise
     except Exception as exc:  # noqa: BLE001 - advisory: never block a chapter
         print(f"{tag} [warn] recap backfill failed for {prev or file}: {exc}")
         return ""
@@ -273,5 +275,7 @@ def record_recap(project_dir: Path, cfg: dict, file: str,
         state.setdefault("chapters", {})[Path(file).stem] = _stamp(recap)
         save_state(project_dir, state)
         print(f"{tag} [init] recap")
+    except client.LLMFatal:
+        raise
     except Exception as exc:  # noqa: BLE001 - advisory: never block a chapter
         print(f"{tag} [warn] recap generation failed for {file}: {exc}")

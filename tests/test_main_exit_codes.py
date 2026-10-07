@@ -67,7 +67,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import translate  # noqa: E402
-from lib import pipeline  # noqa: E402
+from lib import client, pipeline  # noqa: E402
 
 PASSED = 0
 FAILED: list[str] = []
@@ -307,6 +307,76 @@ def case_6_keyboard_interrupt_arm() -> None:
           "Traceback" not in out + err, f"out={out!r} err={err!r}")
 
 
+def case_7_provider_failure_arms() -> None:
+    """Both provider arms -> exit 3, one [FAIL] line, no traceback.
+
+    Exit 3 exists because 1 and 2 are already spoken for by documented
+    meanings: 1 is "a chapter ended needs-review / a run degraded", 2 is "usage
+    or setup error". A provider that cannot be reached or refuses the request is
+    neither, and an operator or wrapper script needs to tell "your key is dead"
+    apart from "this chapter needs a human".
+
+    Two arms, because the distinction survives in the message even though the
+    code does not:
+      * LLMFatal  -- the provider said retrying cannot help.
+      * LLMError  -- every retry was spent.
+    """
+    for name, exc, expect in [
+        ("7a LLMFatal", client.LLMFatal("HTTP 400 from x: provider code 1210 "
+                                        "(irrecoverable - retrying cannot help)"),
+         "retrying cannot help"),
+        ("7b LLMError", client.LLMError("HTTP 503 from x after 4 attempts: nope"),
+         "after 4 attempts"),
+    ]:
+        orig = translate.cmd_status
+        translate.cmd_status = _dispatch_raiser(exc)
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                out, err, code = run_main_inproc(["status", "--project", td])
+        finally:
+            translate.cmd_status = orig
+        check(f"{name}: exit code 3", code == 3, f"rc={code}")
+        check(f"{name}: [FAIL] on stderr naming the cause",
+              "[FAIL]" in err and expect in err, f"err={err!r}")
+        check(f"{name}: no traceback", "Traceback" not in out + err,
+              f"out={out!r} err={err!r}")
+
+
+def case_8_llmfatal_is_never_absorbed_by_a_stage_guard() -> None:
+    """The mechanism, end to end through the real pipeline.
+
+    An LLMFatal raised inside a chapter must leave `run_range` rather than
+    marking the chapter needs-review and moving on -- which is what turned a
+    dead API key into a whole batch of needs-review chapters and a misleading
+    exit 1. The stage guards do that for free because LLMFatal is also a
+    PipelineError; this asserts the batch loop's own guard is what does it."""
+    def _boom(project_dir, file, cfg, force=False):
+        raise client.LLMFatal("HTTP 429 from x: provider code 1113")
+
+    orig = pipeline.run_chapter
+    pipeline.run_chapter = _boom
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "source").mkdir(parents=True)
+            (root / "source" / "CHAPTER_0001.md").write_text(
+                "---\nchapter_title: One\n---\n\n文字。\n",
+                encoding="utf-8", newline="\n")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                raised = False
+                try:
+                    pipeline.run_range(root, ["CHAPTER_0001.md"], {}, force=False)
+                except client.LLMFatal:
+                    raised = True
+                except Exception:
+                    raised = False
+    finally:
+        pipeline.run_chapter = orig
+    check("8a run_range lets an LLMFatal out instead of swallowing it",
+          raised, "the chapter was absorbed into needs-review")
+
+
 def main() -> int:
     case_1_bad_frontmatter_is_fail_exit_2()
     case_2_healthy_project_exits_0()
@@ -314,6 +384,8 @@ def main() -> int:
     case_4_pipeline_error_arm()
     case_5_os_error_arm()
     case_6_keyboard_interrupt_arm()
+    case_7_provider_failure_arms()
+    case_8_llmfatal_is_never_absorbed_by_a_stage_guard()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

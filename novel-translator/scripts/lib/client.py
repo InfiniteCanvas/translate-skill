@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 # Plain package import (no flat-module fallback): the skill runs in package
 # mode only -- translate.py puts scripts/ on sys.path before importing lib.
 from lib import config
+from lib.errors import PipelineError as _PipelineError
 
 _MODELS_TIMEOUT = 30
 _CHAT_TIMEOUT = 600
@@ -24,6 +25,28 @@ _MAX_ATTEMPTS = 4
 
 class LLMError(Exception):
     """Connection, HTTP, or response-shape failure talking to the LLM server."""
+
+
+class LLMFatal(LLMError, _PipelineError):
+    """A provider failure the pipeline must NOT absorb, ever.
+
+    Two things make it fatal rather than merely failed:
+
+    * `PipelineError` in the bases. Every stage guard in `pipeline.py` is
+      written as `except PipelineError: raise` immediately before its broad
+      `except Exception`, so this rides the codebase's existing fatal channel
+      through all of them with no edits to any of them. It is the ONLY safe way
+      to make a provider failure terminal from here: a plain LLMError is caught
+      by the first broad handler it meets (retry feedback, "notes are
+      optional", "one bad batch must not kill the review") and dies quietly
+      several layers below `main()`.
+    * `LLMError` in the bases, so every existing `except client.LLMError` and
+      every `isinstance` check keeps working unchanged.
+
+    Raised when the provider says the request itself is wrong (a
+    ZAI_FATAL_CODES member): no retry, no degrade, no chapter. Retrying these
+    spends real wall-clock and produces the same refusal every time.
+    """
 
 
 # Model-resolution cache keyed on (normalized base URL, Authorization header
@@ -41,6 +64,83 @@ _THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 # not a license to silently drop response_format.
 _GUIDED_UNSUPPORTED_RE = re.compile(
     r"response_format|json_schema|guided json|x-guided", re.IGNORECASE)
+
+# Z.AI business error codes that retrying CANNOT fix.
+# Source: https://docs.z.ai/api-reference/api-code (checked 2026-10-07).
+#
+# The vendor returns these in the body as {"error": {"code": "...", "message":
+# ...}} alongside an outer HTTP status. They are matched by CODE, not by
+# message text, so a docs rewrite cannot silently reclassify one.
+#
+# The test applied here: can retrying the byte-identical request ever succeed?
+# If not, it is in this set.
+#
+# Deliberately EXCLUDED, even though they are 429-class:
+#   1302 rate limit, 1305 temporarily overloaded  -- transient by definition.
+#   1308, 1310, 1316-1321  usage limits (5h / 7d / monthly spend). These publish
+#     a `next_flush_time` and a whole-novel run routinely spans hours, so a run
+#     that hits one may well clear it before the last chapter. They stay on the
+#     retry ladder; an exhausted retry is fatal anyway, so the only difference
+#     is how many attempts are spent first.
+# The 401/403 codes (1000/1001/1003/1005/1220) are listed for completeness:
+# their HTTP status is already non-retryable in the ladder below.
+ZAI_FATAL_CODES = frozenset({
+    # auth / account
+    "1000",  # Authentication Failed
+    "1001",  # Authentication parameter not received in Header
+    "1003",  # Authentication Token expired
+    "1005",  # Need Two-Factor Authentication
+    "1113",  # Insufficient balance or no resource package (recharge required)
+    "1220",  # No permission to access
+    "1309",  # GLM Coding Plan package expired
+    "1311",  # Subscription plan does not include this model
+    "1313",  # Fair Usage Policy violation
+    "1314",  # Enterprise package expired
+    "1315",  # API key restricted to a different product tier
+    # request shape -- these can only be fixed by editing config.json
+    "1210",  # Invalid API parameter
+    "1211",  # Unknown model
+    "1212",  # Model does not support this call method
+    "1213",  # A required parameter was not sent
+    "1214",  # A parameter is invalid
+    "1215",  # Two mutually exclusive parameters both sent
+    "1221",  # API taken offline
+    "1222",  # API does not exist
+    "1261",  # Prompt too long
+    "1301",  # Content filtered as unsafe/sensitive
+})
+
+
+def _fatal_code(resp) -> str | None:
+    """The provider's business error code from an error response body, or None.
+
+    Tolerates every shape that can show up: a non-JSON body, a JSON body that
+    is not an object, a missing/None `error`, an `error` that is not an object,
+    and an `int` code where the vendor documented a string. Returns a string in
+    every case so the comparison against ZAI_FATAL_CODES cannot miss on type.
+
+    Never raises. A malformed body is not itself a reason to lose the real
+    HTTP status, which the caller still needs for the ordinary ladder.
+    """
+    try:
+        payload = resp.json()
+    except Exception:  # noqa: BLE001 - non-JSON body, no code to find
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    if code is None or isinstance(code, bool):
+        return None
+    return str(code).strip() or None
+
+
+def _code_is_fatal(resp) -> str | None:
+    """The code from `resp` when it is one retrying cannot fix, else None."""
+    code = _fatal_code(resp)
+    return code if code in ZAI_FATAL_CODES else None
 
 
 def _v1_url(base_url: str) -> str:
@@ -120,7 +220,14 @@ def probe(provider_cfg: dict, timeout: int = 30) -> str:
     except requests.RequestException as exc:
         raise LLMError(f"probe request to {url} failed: {exc}") from exc
     if resp.status_code >= 400:
-        raise LLMError(f"probe HTTP {resp.status_code} from {url}: {resp.text[:200]}")
+        # Name the business code when the provider sent one. `ping` is the
+        # command an operator runs when a key stops working, so "HTTP 429" alone
+        # leaves them unable to tell a wrong URL from an exhausted balance --
+        # 1113 vs 1302 is the difference between recharging and waiting.
+        fatal = _code_is_fatal(resp)
+        detail = f"provider code {fatal} (irrecoverable)" if fatal else ""
+        raise LLMError(f"probe HTTP {resp.status_code} from {url}"
+                       f"{': ' + detail if detail else ''}: {resp.text[:200]}")
     try:
         return str(resp.json()["choices"][0]["message"].get("content") or "")
     except (ValueError, KeyError, IndexError, TypeError) as exc:
@@ -131,23 +238,43 @@ def _resolve_cap(provider_cfg: dict, max_tokens: int | None,
                  enforce_ceiling: bool) -> int:
     """The output cap this request actually sends.
 
-    A caller-supplied `max_tokens` is a CEILING, not an instruction: it may
-    lower a block's own max_tokens but never raise it, because a provider's
-    real limit is not negotiable. `enforce_ceiling=False` is the deliberate
-    opt-out, used only by the consensus synthesis (consensus.chat), which
-    must be able to exceed its own block's cap to merge full-size candidates
-    -- consensus.chat computes max(task cap, block cap) on purpose.
+    Two independent clamps, in this order:
+
+    1. A caller-supplied `max_tokens` is a CEILING, not an instruction: it may
+       lower a block's own cap but never raise it. `enforce_ceiling=False` is
+       the deliberate opt-out, used only by the consensus synthesis
+       (consensus.chat), which must be able to exceed its own block's cap to
+       merge full-size candidates -- consensus.chat computes
+       max(task cap, block cap) on purpose.
+
+    2. `max_tokens_limit`, when the block declares one, is a HARD ceiling: the
+       provider's own rejection threshold, not a budget. It binds EVERY call,
+       including that synthesis. This is the difference between "how much this
+       block wants" and "how much the server will accept", which a single
+       max_tokens cannot express -- without it, a consensus block set to its
+       provider's real limit (say 131072) under a 256000 task cap was sent
+       256000 and came back HTTP 400, degrading the merge away.
+
+    See config.block_cap for why the two keys are separate.
 
     Provider `max_tokens` is NOT schema-validated (references/file-formats.md:
     provider sampling knobs are read per request and not validated), so it can
-    arrive as null or a non-int. `or DEFAULT_MAX_TOKENS` is the repo-wide idiom
-    (pipeline._provider_max, consensus.chat) and keeps null/0 meaning "unset",
-    exactly as the previous `max_tokens or provider_cfg.get(...)` did.
+    arrive as null or a non-int -- and neither is max_tokens_limit.
+    `or DEFAULT_MAX_TOKENS` is the repo-wide idiom (config.block_cap,
+    consensus.chat) and keeps null/0 meaning "unset", exactly as the previous
+    `max_tokens or provider_cfg.get(...)` did.
     """
-    block_max = int(provider_cfg.get("max_tokens") or config.DEFAULT_MAX_TOKENS)
+    block_max = config.block_cap(provider_cfg)
     if not max_tokens:
-        return block_max
-    return min(int(max_tokens), block_max) if enforce_ceiling else int(max_tokens)
+        cap = block_max
+    elif enforce_ceiling:
+        cap = min(int(max_tokens), block_max)
+    else:
+        cap = int(max_tokens)
+    # Applied last so it survives the enforce_ceiling opt-out above: the
+    # synthesis may exceed the block's declared budget, never the provider's.
+    limit = provider_cfg.get("max_tokens_limit")
+    return min(cap, int(limit)) if limit else cap
 
 
 def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
@@ -181,9 +308,10 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     the retried request.
 
     `max_tokens` is the caller's ceiling and is clamped DOWN to the block's
-    own max_tokens (see _resolve_cap); it can never raise a block above its
-    declared limit. `enforce_ceiling=False` disables that clamp and exists for
-    the consensus synthesis only.
+    own cap (see _resolve_cap); it can never raise a block above its declared
+    limit. `enforce_ceiling=False` disables that clamp and exists for the
+    consensus synthesis only -- and never disables a block's `max_tokens_limit`,
+    which is a provider limit rather than a budget.
     """
     base_url = _v1_url(str(provider_cfg["base_url"]))
     url = base_url + "/chat/completions"
@@ -275,6 +403,22 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
                 raise LLMError(err) from exc
             time.sleep(_BACKOFF[failures - 1])
             continue
+
+        # An irrecoverable provider code is checked FIRST, before the
+        # guided-JSON fallback below and before the retry ladder. Order is
+        # load-bearing: a Z.AI 1214 whose message names `response_format`
+        # matches _GUIDED_UNSUPPORTED_RE, so placing this after that branch
+        # would silently drop response_format and re-POST a request the
+        # provider has already refused as malformed -- burning the retry
+        # budget on a request that can never succeed.
+        fatal = _code_is_fatal(resp)
+        if fatal is not None:
+            err = (f"HTTP {resp.status_code} from {url}: provider code {fatal} "
+                   f"(irrecoverable - retrying cannot help): {resp.text[:400]}")
+            if meta_hook:
+                meta_hook(_response_meta(elapsed=time.monotonic() - started,
+                                         error=err))
+            raise LLMFatal(err)
 
         retryable_400 = False
         if resp.status_code == 400 and "response_format" in body:

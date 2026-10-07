@@ -200,6 +200,7 @@ LLM call.
     "translator": [
       { "base_url": "http://100.85.218.125:8888/v1", "model": null,
         "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536,
+        "max_tokens_limit": null,   // optional: the PROVIDER's hard ceiling (e.g. 131072 on Z.AI); bounds every call to this block, including the consensus merge. Omit = no declared limit
         "thinking": false },   // sglang chat_template_kwargs.enable_thinking; false = output budget spent on the answer, not a reasoning chain
       { "base_url": "http://100.85.218.125:8889/v1", "model": "Qwen3-235B-A22B",
         "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536,
@@ -233,7 +234,7 @@ LLM call.
   "contextual_glossary_cap": 200, // safety valve only — every glossary term present in the chapter goes in
   "max_new_terms_per_chapter": 15,
   "max_notes_per_chapter": 10,
-  "translate_max_output_tokens": 65536, // per-call OUTPUT CEILING + packing budget for splitting: parts close past floor(0.8*pack_cap)-256 of per-line estimated cost, where pack_cap = min(this, the smallest providers.translator max_tokens); input context is never limited. This is a CEILING, not an override — a block's own max_tokens is a hard provider limit the pipeline may lower but never raise, so a block below this value simply wins and this number is not the cap in force. 64k, raised in v009 from 8192 so a reasoning model drawing from the same budget (measured ~10.5k on GLM-5.3's translator's-notes pass) does not truncate the answer. A translator block below 8192 cannot be packed into at all.
+  "translate_max_output_tokens": 65536, // per-call OUTPUT CEILING + packing budget for splitting: parts close past floor(0.8*pack_cap)-256 of per-line estimated cost, where pack_cap = min(this, the smallest providers.translator block's EFFECTIVE cap); input context is never limited. This is a CEILING, not an override — a block's own max_tokens is a hard provider limit the pipeline may lower but never raise, so a block below this value simply wins and this number is not the cap in force. 64k, raised in v009 from 8192 so a reasoning model drawing from the same budget (measured ~10.5k on GLM-5.3's translator's-notes pass) does not truncate the answer. A translator block whose effective cap is below 8192 cannot be packed into at all.
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation (--style auto only)
   "style_sample_chars": 12000,   // rough source-character budget for the sample (--style auto only)
   "log_orchestration": true,    // tier-1 structural events (see § Two-tier trace logs); false leaves the chapter tier-2 files and both indexes untouched
@@ -272,21 +273,42 @@ LLM call.
   under the task's own JSON schema — downstream validators treat it
   exactly like a single-model reply. Console: `[consensus] {job}: {n}
   model(s) - merging results via the consensus provider` announces the
-  fan-out (once per process per job/n). Failure policy: candidate
-  failures are tolerated while any survivor remains — `[warn]
-  consensus: {job} candidate {i}/{n} ({model}) failed: {err} -
-  continuing with the remaining candidates` per failure — all candidates
-  failing re-raises the last error; a lone survivor is used verbatim
-  (`[warn] consensus: {job}: only one candidate survived - using it
-  without a consensus call`); a failed consensus call degrades to the
-  first surviving candidate (`[warn] consensus: {job}: consensus call
-  failed ({err}) - using candidate {first_survivor_index} without
-  merging`). A single-block job behaves exactly as before: one call, no
+  fan-out (once per process per job/n). Failure policy: **terminal**. A candidate
+  that fails prints `[FAIL] consensus: {job} candidate {i}/{n} ({model}) failed:
+  {type}: {err}` and stops the run once every failure has been named — a
+  chapter built from whichever model happened to answer is not the chapter the
+  project configured, and the old survivor path lost the multi-model merge
+  silently. A failed consensus call stops it too; it no longer degrades to a
+  candidate. Both exit 3 (see § Exit codes), and a provider that calls the
+  request itself unrecoverable never gets here at all. A single-block job
+  behaves exactly as before: one call, no
   consensus. The `consensus` job itself is special: exactly ONE block —
   when omitted it inherits only the translator's FIRST block (that
   block's authored keys win; the consensus temperature 0.2 applies only
   when the block leaves it unset), and an explicitly authored multi-block
   consensus array is rejected at load.
+- **`max_tokens_limit` — the provider's HARD ceiling (v013).** A provider block
+  may declare the largest `max_tokens` its endpoint accepts. Absent, it is
+  exactly `max_tokens` and nothing changes; present, it is a ceiling on EVERY
+  call to that block, **including the consensus synthesis**, which is otherwise
+  allowed past its own block's `max_tokens` (see below). The effective cap is
+  `min(max_tokens, max_tokens_limit)` and is what both the wire and the packing
+  budget use, so a chapter can never be sized for a response the provider will
+  truncate. Three consequences worth knowing:
+  - It exists because `max_tokens` alone cannot say both "this block is
+    deliberately under-provisioned, raise it to merge" and "this provider
+    refuses above N". A `consensus` block set to 128000 on Z.AI (real limit
+    131072) under a 256000 task cap used to be sent 256000, answered
+    `HTTP 400 code 1210 [1,131072]` — which under v014 is an immediate fatal
+    rather than a silent quality loss, see § Exit codes.
+  - It bounds the `max_tokens` field only. A provider honoring
+    `extra_body.max_completion_tokens` — which the MiniMax blocks do — sits
+    outside it: that is a different parameter, merged alongside `max_tokens`,
+    not instead of it.
+  - The consensus job inherits `translator[0]`'s authored keys when it is not
+    authored itself, so a limit on the translator's first block also bounds an
+    inherited consensus block that may point at a different provider. Set the
+    key explicitly on the consensus block when the two differ.
 - **Sampling knobs**: `temperature` and `top_p` (plus optional `top_k`,
   `repetition_penalty`) are per-provider and passed through to the server.
   Only `translator` carries `top_p` by default (1.0, per the model card);
@@ -303,7 +325,8 @@ LLM call.
   `[FAIL] config key '<key>' must be a number (got <value!r>)` and exit 2
   (`<value!r>` is the Python repr of the value that was read). Provider
   sampling knobs (`temperature`, `top_p`, `max_tokens`) are read per request
-  and are not validated the same way.
+  and are not validated the same way — `max_tokens_limit` included, where
+  absent, null and 0 all mean "no declared limit".
 - A `providers.<job>` value that is neither a block object nor an array of
   block objects fails config load (`[FAIL] cannot read config.json: ...`,
   exit 2), with one of four messages — `providers.{job} must be a provider
@@ -779,8 +802,10 @@ note is unresolvable). Two tiers merge into one findings list:
   `misanchored` (attached to the wrong line / the term does not appear
   there). Rows outside the closed vocabulary (unknown idx / kind /
   severity, empty reason) are dropped with a
-  `[notes] warn dropped finding: ...` line; one failed batch is
-  reported and skipped, never fatal.
+  `[notes] warn dropped finding: ...` line. One failed batch is reported and
+  skipped, never fatal — **except** a provider call that fails: that is fatal
+  everywhere (§ Exit codes), because a review that silently reviewed fewer
+  batches than it reports is the same silent downgrade the consensus path had.
 
 The run is **advisory-only**: exit 0 on a completed run regardless of
 finding count (no `--fix`, no exit-1-on-warns — that is the glossary
@@ -986,6 +1011,39 @@ actually wants (is `0042a` chapter 43? a second part?), so the TOC decides.
 This step changes no config key and delegates only to
 `common.sync_templates` (idempotent: a second run renames nothing and reports
 only the still-deferred extras).
+`v014` (DESCRIPTION: `a provider failure that exhausts its retries is now fatal
+(exit 3) instead of degrading quietly, and Z.AI irrecoverable codes skip the
+retry ladder; report provider blocks with no usable credential`) is
+**report-only** on v012's reasoning: no value on disk is wrong that was right
+before, and no config edit can express "this provider will be down", which is
+the failure this policy is about. It adds no key, so `DEFAULTS` is untouched.
+What it reports is the one thing observable from the file and the environment
+that will now stop a run at its first call: a provider block with no usable
+credential — `[FAIL]` when the block names no `api_key` or `api_key_env` at
+all, `[warn]` when an `api_key_env` is merely unset in the current shell (common
+and usually correct for the shell the operator will actually use; a migration
+must not refuse to run over a shell's environment). Jobs omitted from the file
+are skipped rather than reported, since they inherit the translator's array at
+load time. Idempotent by construction: it reads, reports, writes nothing.
+`v013` (DESCRIPTION: `provider max_tokens_limit: a block may declare its
+provider's hard output ceiling, which binds the consensus synthesis too; report
+a consensus block the merge would exceed`) is **report-only** and rewrites
+nothing, on v012's reasoning: no value on disk is wrong that was right before,
+and the migration cannot know any provider's real limit — that number lives in
+the vendor's docs. It adds no key, so `DEFAULTS` is untouched and there is
+nothing to materialize. What it does read is the one condition observable from
+the file alone: the synthesis for a multi-model job would send **more than the
+consensus block's own declared `max_tokens`** — `max(task cap, block cap)` above
+`block cap` — and that block declares no `max_tokens_limit`. That is exactly the
+shape that answers `HTTP 400` when the declared number is the provider's
+ceiling. The polarity matters: the report is *not* "`translate_max_output_tokens`
+exceeds `providers.consensus.max_tokens`", because a block below the ceiling is
+an explicitly SUPPORTED configuration (see the consensus bullet above) and
+warning on it would fire on healthy projects. It is an `[info]`, names the
+number that will go on the wire and the declared one beside it, says the shape
+is supported, and says nothing was rewritten. A block that already declares
+`max_tokens_limit` reports `[ok]` and is left alone, and so does a single-block
+translator, which never fans out and therefore never calls a consensus provider.
 `v012` (DESCRIPTION: `decouple translate_max_output_tokens from provider
 max_tokens (the key is now a ceiling a block can lower, not an override; report
 mismatched translator pairs)`) is **report-only** and rewrites nothing. It reads
@@ -1208,7 +1266,7 @@ Every event belongs to **exactly one** tier, and the tiers never mix.
 **Tier 1 — orchestration** (`logs/run-<run_id>.jsonl`). What happened in this
 run: `run_start`, `chapter_start`, `stage` (`TRANSLATE`, `VALIDATE`, … each
 with `phase: begin|end` and `elapsed_s`), `gate` (the verdict plus its
-**complete** reason list), `degraded`, `attempt`, `attempt_failed`,
+**complete** reason list), `degraded`, `fatal`, `attempt`, `attempt_failed`,
 `balance_advisory`, `glossary_cleanup`, and one `llm_call` metadata summary
 per model call. **Tier 1 never carries a prompt or a response** — `llm_call`
 holds `model`, `usage`, `finish_reason`, `elapsed_s` and `error` only.
@@ -1426,19 +1484,20 @@ caps, since v012:
 - **the ceiling** — `translate_max_output_tokens` (default 65536 since v009, up
   from the old 8192 — reasoning-capable hosted models share this budget with the
   answer). This is the value each translate call ASKS for;
-- **the block cap** — each translator block's own `max_tokens`, a hard provider
-  limit the pipeline may lower but never raise.
+- **the block cap** — each translator block's **effective** cap,
+  `min(max_tokens, max_tokens_limit)`, a hard provider limit the pipeline may
+  lower but never raise.
 
-The sent value is `min(ceiling, that block's max_tokens)`, computed per block —
-so a 256000 ceiling over `[128000, 256000]` sends 128000 to the first model and
-256000 to the second. Chapters whose EXPECTED output fits the packing budget
+The sent value is `min(ceiling, that block's effective cap)`, computed per block
+— so a 256000 ceiling over `[128000, 256000]` sends 128000 to the first model
+and 256000 to the second. Chapters whose EXPECTED output fits the packing budget
 below are
 translated in ONE call — the model sees the chapter's full context (input is
 never limited by this). Longer chapters split by greedy per-line token-budget
 packing: each source line costs its CJK chars + other chars/4 + 10 (the
 numbered-JSON wrapper), parts close when the next line would exceed
 floor(0.8 × pack_cap) − 256, where **pack_cap = min(ceiling, the smallest
-`max_tokens` across the translator array)** (the 0.8 headroom absorbs estimate
+translator block's effective cap)** (the 0.8 headroom absorbs estimate
 error; the 256 is the per-part JSON overhead; every part takes ≥ 1 line), with
 style background and the previous part's final lines included as input context.
 Packing is deterministic given (source, config), so part bounds — and with
@@ -1594,8 +1653,43 @@ Every command exits 0 on success. The non-zero exits:
 |---|---|
 | 1 | `translate` / `retry` — at least one chapter ended `needs-review`; `build-epub` — epubcheck reported errors (the epub failed validation); `review glossary` — warns remain after the run; `review fix` — at least one command failed, or the report was refused as stale; `glossary search` — nothing found; `glossary count` — below the significance threshold; `tn` — failed chapters (annotator call or unreadable chapter) or no eligible chapters in range; `profile` — generation failed |
 | 2 | usage or setup error — bad arguments, missing files, corrupt project JSON (one `[FAIL]` line, never a traceback); `build-epub` — the builder subprocess crashed; `ping` — one or more providers unreachable; `sync-config` — the skill's `config.local.json` is unreadable/malformed, or the project has no `config.json` |
+| 3 | a provider call failed and the run stopped — see "Provider failure is fatal" below |
 | 130 | interrupted at the keyboard (`Ctrl-C`) — chapter state is saved, re-run to resume |
 
 `build-epub` splits its failures: epubcheck failing validation exits 1,
 the builder itself crashing exits 2. `ping` exits 2 whenever one or more
 providers are unreachable.
+
+### Provider failure is fatal
+
+Every provider call that fails **stops the run** (one `[FAIL]` line on stderr,
+exit 3, never a traceback). There is no survivor fallback and no partial
+chapter. Two kinds:
+
+- **Irrecoverable, per the provider** — raised on the *first* response, with
+  no retry and no backoff. Z.AI's table
+  (<https://docs.z.ai/api-reference/api-code>, transcribed into
+  `client.ZAI_FATAL_CODES`, matched by the body's `error.code` and never by
+  message text) covers auth failures (`1000`, `1001`, `1003`, `1005`,
+  `1220`), an exhausted balance (`1113`), a request the provider will always
+  refuse (`1210`–`1215`, `1221`, `1222`, `1261`), filtered content (`1301`),
+  and plan/key problems (`1309`, `1311`, `1313`, `1314`, `1315`). `ping` names
+  the code too, so a wrong URL can be told apart from an empty balance.
+- **Exhausted** — anything else, after `_MAX_ATTEMPTS` (4) attempts with
+  `(2, 4, 8)`s backoff, including every `429` and `5xx`. `429` rate limits
+  (`1302`, `1305`) and the quota *windows* (`1308`, `1310`, `1316`–`1321`,
+  which publish a reset time a multi-hour run may well clear) stay on the retry
+  ladder deliberately: the difference is how many attempts are spent, not
+  whether the run survives.
+
+The check runs before the guided-JSON fallback, so a `1214` whose message names
+`response_format` cannot drop `response_format` and re-POST the same request.
+
+`client.LLMFatal` inherits from `pipeline.PipelineError`, so a provider failure
+passes through every stage guard's `except PipelineError: raise` untouched
+instead of being absorbed into retry feedback or a `needs-review` chapter.
+Non-provider shape errors are unaffected: a missing template or an unfilled
+placeholder is still `PipelineError` and still exit 2.
+
+Re-running after exit 3 is safe. Completed chapters stay `translated`; the
+chapter that failed returns to `needs-review` on the next run.

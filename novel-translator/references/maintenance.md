@@ -244,9 +244,11 @@ translation — run `review notes`:
   context. With a multi-model `reviewer` array each batch fans out to
   every model in parallel and merges via the consensus provider,
   announced by `[consensus] reviewer: {n} model(s) - merging results via
-  the consensus provider`; candidate failures warn and continue while
-  any survivor remains (`[warn] consensus: reviewer candidate {i}/{n}
-  ({model}) failed: {err} - continuing with the remaining candidates`).
+  the consensus provider`. A candidate that fails prints `[FAIL] consensus:
+  reviewer candidate {i}/{n} ({model}) failed: {type}: {err}` and stops the
+  run once every failure is named — as of v014 a provider failure is terminal
+  (exit 3) rather than degrading to a survivor, in this tier exactly as in
+  `translate`.
   Judgment kinds, a closed vocabulary: `restates` (the note adds
   nothing beyond what the translation already says), `overexplains`
   (common knowledge or inferable from context — fails the comprehension

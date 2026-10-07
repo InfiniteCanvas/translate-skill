@@ -363,9 +363,19 @@ two or more blocks fans the prompt out to all its models in parallel and
 ONE `consensus`-provider call merges the labeled candidates into the
 final response under the task's own JSON schema, so gates and validators
 see an ordinary single-model reply (console: `[consensus] {job}: {n}
-model(s) - merging results via the consensus provider`; a failed
-candidate warns and continues while any survivor remains — the failure
-ladder is in `references/file-formats.md` § config.json).
+model(s) - merging results via the consensus provider`). **As of v014 a
+provider failure is terminal rather than degrading**: any call that fails after
+its retries stops the run — one `[FAIL]` line, exit 3 — instead of falling back
+to a surviving candidate or a lone one, and a code the provider itself calls
+irrecoverable (Z.AI auth / balance / invalid-parameter) skips the retry ladder
+entirely. A run that cannot reach its provider should say so rather than emit a
+chapter that looks translated; the ladder is in
+`references/file-formats.md` § Exit codes.
+The merge is the one call allowed past its own block's `max_tokens` (an
+arbitrator set to 65536 still merges full-size candidates), so a provider block
+whose endpoint would reject the result should declare `max_tokens_limit` — its
+hard ceiling. That key is never overridden, and it also drives the packing
+budget, so chapters are never sized for a response the provider will truncate.
 
 **Rolling story recap**: every chapter also maintains a running "story so
 far" in `story_state.json` (one entry per chapter). After ASSEMBLE, one
@@ -625,7 +635,21 @@ background build too. Builds produce no git commits — `export/`,
   rewrites nothing and only explains a mismatched pair, because a resolution
   change has no old-default sentinel to rewrite against. Where it reports one,
   a chapter already mid-translation re-packs to the tightest block and restarts —
-  tell the operator before resuming a batch. A template that
+  tell the operator before resuming a batch. v013 is report-only too
+  (DESCRIPTION: `provider max_tokens_limit: a block may declare its provider's
+  hard output ceiling, which binds the consensus synthesis too; report a
+  consensus block the merge would exceed`): it adds no key and rewrites nothing,
+  and reports the number the consensus merge would send when it exceeds that
+  block's own `max_tokens` and no `max_tokens_limit` is declared. Tell the
+  operator to add the key if their provider rejects that many — as of v014 that
+  failure is an immediate `exit 3`, not a silent degrade to one candidate. v014
+  is report-only as well (DESCRIPTION: `a provider failure that exhausts its
+  retries is now fatal (exit 3) instead of degrading quietly, and Z.AI
+  irrecoverable codes skip the retry ladder; report provider blocks with no
+  usable credential`): it rewrites nothing and only reports a provider block
+  with no usable credential, which would now stop the run at its first call.
+  An unset `api_key_env` in the shell running `migrate` is a `[warn]`, not a
+  refusal — the operator's real shell usually has it. A template that
   exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:

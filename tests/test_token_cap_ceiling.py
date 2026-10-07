@@ -24,7 +24,19 @@ What is pinned here:
     DEFAULT_MAX_TOKENS to the packing minimum -- an omission means "unset",
     never "unlimited";
   * a translator block below pipeline.MIN_TRANSLATOR_MAX_TOKENS cannot be
-    packed into and says so.
+    packed into and says so;
+  * `max_tokens_limit` (v013) -- a block's provider HARD ceiling -- bounds every
+    call including the synthesis, survives the enforce_ceiling opt-out, is a
+    no-op when set above the block, and reaches the packing budget so chapters
+    cannot be sized for a response the provider will truncate.
+
+The defect the limit closes, in the shape it actually occurs: a consensus block
+declaring `max_tokens: 128000` under a 256000 task cap was sent 256000 and came
+back `HTTP 400 code 1210 [1,131072]` from Z.AI, after which the merge degraded
+to candidate 1. `max_tokens` cannot express "this block may be
+under-provisioned on purpose" and "the provider refuses above 128000" at once,
+which is why the second key exists rather than a tighter clamp. Cases i/j
+reproduce both the failure and the fix through the real client.
 
 Hermetic: client.requests is swapped for a fake whose post() records the JSON
 body and returns a canned 200. No network, restore in finally.
@@ -100,11 +112,14 @@ def patched_post():
         client.requests = orig
 
 
-def block(max_tokens=128000, model="glm-5.3", extra=None) -> dict:
+def block(max_tokens=128000, model="glm-5.3", extra=None,
+          limit=None) -> dict:
     b = {"base_url": "http://fake:1/v1", "model": model,
          "temperature": 0.7, "max_tokens": max_tokens, "thinking": False}
     if extra:
         b["extra_body"] = extra
+    if limit is not None:
+        b["max_tokens_limit"] = limit
     return b
 
 
@@ -324,6 +339,229 @@ def case_h_pack_cap_vs_wire_cap() -> None:
           f"plan={plan_small}")
 
 
+# --- the provider HARD ceiling (max_tokens_limit) ----------------------------
+
+def case_i_max_tokens_limit() -> None:
+    """`max_tokens_limit` is the provider's rejection threshold, not a budget,
+    and it binds EVERY call to the block -- including the consensus synthesis,
+    which is otherwise allowed past its own max_tokens.
+
+    The defect this closes, from a real run: a consensus block declaring
+    max_tokens 128000 under a 256000 task cap was sent 256000 and came back
+    `HTTP 400 code 1210 [1,131072]` from Z.AI. The merge then degraded to
+    candidate 1 -- a silent quality loss. max_tokens alone cannot express "the
+    provider refuses above 128000" while still meaning "this block may be
+    under-provisioned on purpose", so it is a second key.
+    """
+    # --- backward compatibility: absence means UNCHANGED, both directions ---
+    with patched_post() as log:
+        client.chat(block(128000), "hi", max_tokens=256000)
+        client.chat(block(256000), "hi", max_tokens=128000)
+        client.chat(block(256000), "hi")
+    check("i1 no limit: every clamp direction is byte-identical to v012",
+          sent(log) == [128000, 128000, 256000], f"sent={sent(log)}")
+
+    with patched_post() as log:
+        client.chat(block(128000, "m1"), "hi", max_tokens=256000)
+        client.chat(block(256000, "m2"), "hi", max_tokens=256000)
+    check("i2 no limit: per-block clamping inside one fan-out still holds",
+          sent(log) == [128000, 256000], f"sent={sent(log)}")
+
+    # --- the limit lowers the block's effective cap --------------------------
+    with patched_post() as log:
+        client.chat(block(256000, limit=131072), "hi", max_tokens=256000)
+    check("i3 limit: a caller's cap is clamped down to the declared limit",
+          sent(log) == [131072], f"sent={sent(log)}")
+
+    with patched_post() as log:
+        client.chat(block(256000, limit=131072), "hi")
+    check("i4 limit: with no caller cap the limit still binds",
+          sent(log) == [131072], f"sent={sent(log)}")
+
+    # The direction a user is most likely to get wrong: writing a limit
+    # believing it RAISES the block. min() does nothing here. Pinned in both
+    # call shapes -- with and without the synthesis opt-out, since that flag
+    # turns the block's max_tokens into a floor rather than a ceiling.
+    with patched_post() as log:
+        client.chat(block(65536, limit=131072), "hi", max_tokens=4096,
+                    enforce_ceiling=False)
+        client.chat(block(65536, limit=131072), "hi")
+        client.chat(block(65536, limit=131072), "hi", max_tokens=4096)
+    check("i5 limit above the block is a no-op, never a raise",
+          sent(log) == [4096, 65536, 4096], f"sent={sent(log)}")
+
+    # Under the synthesis opt-out the BLOCK is not a ceiling, so a caller cap
+    # above it is legal -- but the limit still bounds it. This is the floor
+    # working as designed, not a raise past the block.
+    with patched_post() as log:
+        client.chat(block(65536, limit=131072), "hi", max_tokens=256000,
+                    enforce_ceiling=False)
+    check("i6 synthesis may exceed the block but never the limit",
+          sent(log) == [131072], f"sent={sent(log)}")
+
+    # Absent / null / 0 all mean "no declared limit" (repo-wide `or` idiom).
+    with patched_post() as log:
+        client.chat(block(128000, limit=None), "hi", max_tokens=256000)
+        b0 = block(128000)
+        b0["max_tokens_limit"] = 0
+        client.chat(b0, "hi", max_tokens=256000)
+    check("i7 unvalidated limit: null and 0 mean unset, never raise",
+          sent(log) == [128000, 128000], f"sent={sent(log)}")
+
+
+def case_j_limit_bounds_the_consensus_synthesis() -> None:
+    """The regression, through the REAL client.chat.
+
+    consensus.chat raises the synthesis to max(task cap, block cap) so an
+    under-provisioned arbitrator can still merge large candidates. That raise is
+    a FLOOR. A declared max_tokens_limit is the one thing it may not cross --
+    and this is the exact shape that produced the HTTP 400.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td) / "proj"
+        (proj / "templates").mkdir(parents=True)
+        logger._run_path = None
+
+        # The failing run: ceiling 256000, consensus block 128000 on a provider
+        # whose real limit is 131072. Without a declared limit: sent 256000.
+        cfg = {"providers": {"translator": [block(128000, "m1"),
+                                            block(256000, "m2")],
+                             "consensus": [block(128000, "arbiter")]},
+               "log_llm": True}
+        consensus._ANNOUNCED.clear()
+        with patched_post() as log:
+            consensus.chat(proj, cfg, "translator", "translate these lines",
+                           json_schema=None, max_tokens=256000)
+        check("j1 regression shape: without a limit the synthesis overran",
+              sent(log)[-1] == 256000, f"sent={sent(log)}")
+
+        # Same shape, one key added.
+        cfg["providers"]["consensus"] = [block(128000, "arbiter",
+                                               limit=131072)]
+        consensus._ANNOUNCED.clear()
+        with patched_post() as log:
+            consensus.chat(proj, cfg, "translator", "translate these lines",
+                           json_schema=None, max_tokens=256000)
+        check("j2 fix: the synthesis is clamped to the declared limit",
+              sent(log)[-1] == 131072, f"sent={sent(log)}")
+
+        # The fan-out candidates are bounded by it too: it is a provider limit,
+        # not a synthesis rule. m1's own 128000 is the tighter of the two here,
+        # so it must be UNCHANGED -- the limit must not become a second, lower
+        # budget for a block that never asked for more.
+        check("j3 the limit does not disturb a block already below it",
+              sent(log)[:2] == [128000, 256000], f"sent={sent(log)}")
+
+        # ...and it does bound a block that asked for more than the provider
+        # allows, which is the other half of "provider limit, not budget".
+        cfg["providers"]["translator"] = [block(256000, "m1",
+                                                limit=131072),
+                                          block(256000, "m2")]
+        consensus._ANNOUNCED.clear()
+        with patched_post() as log:
+            consensus.chat(proj, cfg, "translator", "translate these lines",
+                           json_schema=None, max_tokens=256000)
+        check("j4 a translator block over its own limit is clamped too",
+              sent(log)[:2] == [131072, 256000], f"sent={sent(log)}")
+
+        # The under-provisioned arbitrator keeps its FLOOR: consensus.chat raises
+        # the merge to max(task, block) so a 65536 arbitrator can still merge
+        # 256000 candidates, and a limit ABOVE the task cap must not suppress
+        # that. This is the config.local.example.mixed.json shape and it must
+        # not regress -- j2 is the case where the limit DOES bind.
+        cfg["providers"]["translator"] = [block(256000, "m1"),
+                                          block(256000, "m2")]
+        cfg["providers"]["consensus"] = [block(65536, "arbiter",
+                                               limit=262144)]
+        consensus._ANNOUNCED.clear()
+        with patched_post() as log:
+            consensus.chat(proj, cfg, "translator", "translate these lines",
+                           json_schema=None, max_tokens=256000)
+        check("j5 a limit above the task cap leaves the floor intact",
+              sent(log)[-1] == 256000, f"sent={sent(log)}")
+
+        # ...and the same arbitrator whose provider only reaches 131072 gets
+        # exactly that, not the 256000 it asked for.
+        cfg["providers"]["consensus"] = [block(65536, "arbiter",
+                                               limit=131072)]
+        consensus._ANNOUNCED.clear()
+        with patched_post() as log:
+            consensus.chat(proj, cfg, "translator", "translate these lines",
+                           json_schema=None, max_tokens=256000)
+        check("j6 the floor is then clamped to the provider's real limit",
+              sent(log)[-1] == 131072, f"sent={sent(log)}")
+
+
+def case_k_limit_reaches_packing() -> None:
+    """The limit must reach the PACKING budget, not just the wire.
+
+    If it did not, a block declaring max_tokens 256000 with a 131072 limit would
+    have chapters sized for 256000 and every call truncated at 131072 -- the
+    exact silent-truncation trap the v012 clamp exists to prevent. block_cap is
+    what both readers share, so this pins the two agreeing rather than the
+    formula twice.
+    """
+    check("k1 block_cap folds the limit into the block's effective cap",
+          config.block_cap(block(256000, limit=131072)) == 131072
+          and config.block_cap(block(256000)) == 256000
+          and config.block_cap(block(65536, limit=131072)) == 65536,
+          "block_cap disagrees with min(max_tokens, limit)")
+
+    # What pipeline computes for the packing minimum.
+    blocks = [block(256000, "m1"), block(256000, "m2", limit=131072)]
+    pmax = min(config.block_cap(b) for b in blocks)
+    check("k2 the packing minimum follows the limit, not the declaration",
+          pmax == 131072, f"provider_max={pmax}")
+
+    # And it must actually split: the same lines packed at 131072 vs 256000.
+    # 600 lines x ~210 output tokens = 126000, which sits between the two
+    # budgets (floor(0.8*256000)-256 = 204544, floor(0.8*131072)-256 = 104601)
+    # so the limited pack must split where the unlimited one does not.
+    lines = ["中" * 200] * 600
+    big = pipeline._pack_chunks(lines, 256000, 256000, 256000)
+    limited = pipeline._pack_chunks(lines, pmax, 256000, 256000)
+    check("k3 a limited pack_cap splits a chapter an unlimited one does not",
+          len(big) == 1 and len(limited) > 1,
+          f"big={len(big)} limited={len(limited)}")
+
+    import io
+    import contextlib as _c
+
+    def warn(bs: list, wire: int) -> str:
+        buf = io.StringIO()
+        with _c.redirect_stdout(buf):
+            pipeline._check_translator_caps(bs, wire)
+        return buf.getvalue()
+
+    # A limit below the packing floor is the same hard error as a low
+    # max_tokens: the chapter cannot be packed into it at all.
+    out = warn([block(256000, "m1", limit=4096)], 256000)
+    check("k4 a limit below MIN_TRANSLATOR_MAX_TOKENS warns as unpackable",
+          "[warn]" in out and "cannot be packed into" in out, f"out={out!r}")
+
+    # The squeeze warning must compare against the DECLARED budget, not the
+    # limit -- otherwise a limit and the ceiling look identical to it and the
+    # measured Flash-Preview failure (max effort under a small cap returns
+    # nothing) goes undiagnosed. A limit BELOW the declaration is exactly that
+    # undiagnosed case, so it must warn even when the ceiling does not squeeze.
+    out = warn([block(256000, "reasoner", limit=65536,
+                      extra={"reasoning_effort": "max"})], 256000)
+    check("k5 a limit squeezing a reasoning block still warns",
+          "[warn]" in out and "converging" in out, f"out={out!r}")
+
+    # A limit AT the declaration is not a squeeze -- nothing is lost.
+    out = warn([block(256000, "reasoner", limit=256000,
+                      extra={"reasoning_effort": "max"})], 256000)
+    check("k6 a limit at the declared cap is not a squeeze",
+          out.strip() == "", f"out={out!r}")
+
+    # The limit is about capacity, not reasoning: a plain model pinned by one
+    # is fine, same as a plain model squeezed by the ceiling (case g4).
+    out = warn([block(256000, "plain", limit=65536)], 256000)
+    check("k7 a limit on a non-reasoning block is not a squeeze",
+          out.strip() == "", f"out={out!r}")
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -336,6 +574,9 @@ def main() -> int:
     case_f_provider_max_floor()
     case_g_low_cap_and_reasoning_guards()
     case_h_pack_cap_vs_wire_cap()
+    case_i_max_tokens_limit()
+    case_j_limit_bounds_the_consensus_synthesis()
+    case_k_limit_reaches_packing()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

@@ -486,6 +486,8 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
                 json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
             )
             print(f"[init] style profile: {prof.get('style_summary', '')[:100]}")
+        except client.LLMFatal:
+            raise
         except Exception as exc:  # noqa: BLE001 - profile problems must not abort init
             print(f"[warn] style profile generation failed: {exc}")
 
@@ -2242,12 +2244,34 @@ def main(argv: list[str] | None = None) -> int:
     except CliError as exc:
         _fail(str(exc))
         return 2
+    except client.LLMFatal as exc:
+        # An irrecoverable provider code: a dead key, no balance, a malformed
+        # request, content filtered. Retrying cannot help and degrading would
+        # produce output the project did not ask for, so the run stops here.
+        #
+        # MUST come before the PipelineError arm below: LLMFatal inherits
+        # PipelineError (that is what routes it through the stage guards), so
+        # placing it later lets `except pipeline.PipelineError` claim it and
+        # report the run as a usage/setup error.
+        _fail(f"provider refused the request and retrying cannot help: {exc}")
+        return 3
     except pipeline.PipelineError as exc:
         _fail(str(exc))
         return 2
     except ValueError as exc:
         _fail(str(exc))
         return 2
+    except client.LLMError as exc:
+        # Every retry was spent. One [FAIL] line, exit 3, no traceback --
+        # previously this escaped `main()` entirely and printed a raw stack.
+        #
+        # No hard-exit here, unlike KeyboardInterrupt below: by the time an
+        # LLMError reaches main(), consensus.chat has already joined every
+        # worker (it collects all candidate failures before raising), so there
+        # is nothing left to wait for -- and os._exit would skip atexit,
+        # orphaning an in-flight build-epub child and losing buffered stdout.
+        _fail(str(exc))
+        return 3
     except KeyboardInterrupt:
         _fail("interrupted (chapter state is saved; re-run to resume)")
         # With a multi-model fan-out in flight, worker threads sit in

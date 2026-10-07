@@ -247,6 +247,8 @@ def _model_findings(
                     "action": action if isinstance(action, str) else "",
                     "origin": "model",
                 })
+        except client.LLMFatal:
+            raise
         except Exception as exc:  # one bad batch must not kill the whole review
             errors.append(f"batch {i}/{n}: {exc}")
             print(f"[glossary] warn batch {i}/{n} review failed - {exc}")

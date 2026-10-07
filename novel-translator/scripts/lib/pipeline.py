@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from lib import assemble, autobuild, balance, client, config, consensus, glossary, logger, project, story, styles, tn, vcs
+from lib.errors import PipelineError as _PipelineError
 
 STAGES = (
     "TRANSLATE",
@@ -191,8 +192,13 @@ def _lang_name(code: object) -> str:
     return LANG_NAMES.get(str(code).strip().lower(), str(code))
 
 
-class PipelineError(Exception):
-    """Fatal pipeline error (bad spec, missing template, unfilled placeholder)."""
+# The class itself lives in `lib.errors` so `client.LLMFatal` can inherit it
+# without an import cycle (`pipeline` imports `client`, never the reverse).
+# ALIASED, not subclassed: `client.LLMFatal(LLMError, PipelineError)` must be a
+# subtype of what every `except PipelineError: raise` guard below matches on,
+# and a subclass here would invert that relationship and route fatal provider
+# failures straight into the broad handlers.
+PipelineError = _PipelineError
 
 
 # --------------------------------------------------------------------------
@@ -718,6 +724,12 @@ def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
             "retirements": retirements,
             "kept_sources": [s["source"] for s in signals],
         }
+    except client.LLMFatal:
+        # Irrecoverable provider code: no amount of keeping every signal makes
+        # a run that cannot reach its provider succeed. The remaining `except`
+        # keeps the fail-safe for shape errors and exhausted-but-retryable
+        # calls, which are genuinely recoverable and still emit `degraded`.
+        raise
     except Exception as exc:  # noqa: BLE001 - fail-safe: keep every signal
         logger.log_event(project_dir, {
             "event": "degraded", "chapter": chapter, "where": "glossary_cleanup",
@@ -829,27 +841,40 @@ def _check_translator_caps(blocks: list, wire_cap: int) -> None:
        the whole cap thinking and return finish_reason=length with no content.
        This is measured, not hypothetical: Flash-Preview at `max` under a
        64k cap ran ~19m51s and returned nothing.
+
+    Two numbers per block, deliberately. `declared` is what the block ASKS for
+    and is the reference check 2 compares against -- the warning is about a
+    reasoning model losing the room it declared. `cap` (config.block_cap) is
+    what it will actually get once any max_tokens_limit binds, and it is what
+    decides check 1: a chapter can only be packed into what the provider
+    really returns.
     """
     low: list[str] = []
     squeezed: list[str] = []
     for b in blocks:
-        block_max = int(b.get("max_tokens") or config.DEFAULT_MAX_TOKENS)
+        declared = int(b.get("max_tokens") or config.DEFAULT_MAX_TOKENS)
+        cap = config.block_cap(b)
         label = str(b.get("model") or b.get("base_url") or "?")
-        if block_max < MIN_TRANSLATOR_MAX_TOKENS:
-            low.append(f"{label} @ {block_max}")
+        if cap < MIN_TRANSLATOR_MAX_TOKENS:
+            low.append(f"{label} @ {cap}")
         effort = (b.get("extra_body") or {}).get("reasoning_effort")
-        effective = min(wire_cap, block_max)
-        if effort in ("high", "xhigh", "max") and effective < block_max:
-            squeezed.append(f"{label} ({effort}) @ {effective} of {block_max}")
+        effective = min(wire_cap, cap)
+        # Compared against `declared`, NOT `cap`: with max_tokens_limit in play
+        # cap IS the limit, so comparing to it would make the check self-
+        # defeating and leave the worst case (a reasoning model pinned below
+        # the budget it was measured to need) undiagnosed.
+        if effort in ("high", "xhigh", "max") and effective < declared:
+            squeezed.append(f"{label} ({effort}) @ {effective} of {declared}")
     if low:
-        print(f"[warn] config: providers.translator max_tokens below "
+        print(f"[warn] config: providers.translator output cap below "
               f"{MIN_TRANSLATOR_MAX_TOKENS} - chapters cannot be packed into "
               f"them: {', '.join(low)}")
     if squeezed:
-        print(f"[warn] config: translate_max_output_tokens caps a reasoning "
-              f"translator below its own max_tokens, which can stop it "
-              f"converging (reasoning draws from the same budget as the "
-              f"answer): {', '.join(squeezed)}")
+        print(f"[warn] config: the output cap squeezes a reasoning translator "
+              f"below its own max_tokens (via translate_max_output_tokens or "
+              f"max_tokens_limit), which can stop it converging (reasoning "
+              f"draws from the same budget as the answer): "
+              f"{', '.join(squeezed)}")
 
 
 def _pack_chunks(source_lines: list[str], pack_cap: int, escalated: int,
@@ -1329,15 +1354,18 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 max_out = int(_cfg_value(cfg, "translate_max_output_tokens"))
                 translator_blocks = config.provider_list(cfg, "translator")
                 # Model arrays: the first block no longer speaks for the
-                # whole job -- a block's own max_tokens is a hard limit the
+                # whole job -- a block's own cap is a hard limit the
                 # pipeline must not raise, so pack against the SMALLEST across
                 # blocks. A block that omits max_tokens contributes
                 # DEFAULT_MAX_TOKENS, which is deliberate: an omission is
                 # "unset", not "unlimited", and silently treating it as
                 # unlimited would let one forgotten key size the whole job.
+                # block_cap() folds in any max_tokens_limit, so a block whose
+                # provider refuses above N packs to N even when the block
+                # asked for more -- otherwise parts would be sized for a
+                # response the provider will truncate.
                 provider_max = min(
-                    int(b.get("max_tokens") or config.DEFAULT_MAX_TOKENS)
-                    for b in translator_blocks
+                    config.block_cap(b) for b in translator_blocks
                 )
                 _check_translator_caps(translator_blocks, wire_cap=max_out)
                 pack_cap = min(max_out, provider_max)
@@ -1869,6 +1897,16 @@ def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = Fals
         for file in files:
             try:
                 outcome = run_chapter(project_dir, file, cfg, force=force)
+            except (PipelineError, client.LLMFatal):
+                # A provider call that exhausted its retries, or an
+                # irrecoverable provider code, stops the batch. The old
+                # "one bad chapter must not abort the batch" catch marked the
+                # chapter needs-review and moved to the next file, which turned
+                # a dead API key into a whole run of needs-review chapters and
+                # a misleading exit 1. LLMFatal is also a PipelineError (see
+                # client.LLMFatal); both are named so the intent survives any
+                # future change to that hierarchy.
+                raise
             except Exception as exc:  # noqa: BLE001 - one bad chapter must not abort the batch
                 reason = str(exc).strip() or type(exc).__name__
                 print(f"[FAIL] {file}: {reason.splitlines()[0]}")

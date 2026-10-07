@@ -13,11 +13,19 @@ config._normalize_providers) merges the candidates into the final response
 under the same JSON schema the task itself uses, so every downstream
 validator treats it exactly like a single-model reply.
 
-Failure policy: individual candidate failures are tolerated with a [warn]
-while any survivor remains (all failed re-raises the last error); a failed
-consensus call degrades to the first surviving candidate verbatim instead
-of failing the task -- the synthesis is an enhancement, never a new single
-point of failure.
+Failure policy: TERMINAL. Every failure — a candidate that exhausted its
+retries, or a consensus call that exhausted its retries — stops the run with one
+[FAIL] line per failed candidate and a `fatal` event in the orchestration log.
+There is no survivor fallback and no `degraded` downgrade, deliberately: a
+chapter built from whichever model happened to survive is not the chapter the
+project configured, and the old silent path cost the multi-model merge (the
+thing the run was configured for) while leaving the output looking translated.
+Provider failures the provider itself calls irrecoverable (Z.AI auth, balance,
+invalid parameter, quota-exhausted) never reach the retry ladder at all --
+client raises LLMFatal on the first response.
+
+The synthesis is therefore no longer "an enhancement that can be skipped", which
+is what this docstring used to claim.
 """
 
 from __future__ import annotations
@@ -92,6 +100,21 @@ def _trace_hook(project_dir: Path, job: str, extra: dict | None = None,
     return hook
 
 
+def _log_fatal(project_dir: Path, chapter: str | None, job: str,
+               reason: str) -> None:
+    """Record a terminal consensus failure in the orchestration log.
+
+    Tier 1, not tier 2: this is a pipeline event about the run, not the
+    pipeline's reading of one model output. logger.log_event already swallows
+    its own failures (`logger.py:326`), so it cannot break the path that is
+    about to raise.
+    """
+    logger.log_event(project_dir, {
+        "event": "fatal", "chapter": chapter, "where": "consensus",
+        "job": job, "reason": reason,
+    })
+
+
 def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
          json_schema: dict | None = None,
          max_tokens: int | None = None,
@@ -116,8 +139,16 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     candidates need.
 
     The fan-out candidates themselves ARE clamped by client.chat to their own
-    block's max_tokens, so a task cap above a block's limit can never raise
-    that block past what its provider accepts.
+    block's cap, so a task cap above a block's limit can never raise that
+    block past what its provider accepts.
+
+    enforce_ceiling=False raises the FLOOR, never removes the ceiling. A block
+    that declares `max_tokens_limit` -- its provider's hard rejection
+    threshold, distinct from the budget it asks for -- is still clamped to it
+    by client._resolve_cap, because that limit is not negotiable and no merge
+    is worth an HTTP 400. Without it, a consensus block set to its provider's
+    real limit under a larger task cap was sent the task cap and the merge
+    silently degraded to the first candidate.
     """
     blocks = config.provider_list(cfg, job)
     if len(blocks) == 1:
@@ -169,22 +200,29 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
 
     survivors = [(i, outcomes[i - 1]) for i in range(1, n + 1)
                  if outcomes[i - 1] is not None]
-    for i in range(1, n + 1):
-        if errors[i - 1] is not None:
-            print(f"[warn] consensus: {job} candidate {i}/{n} "
-                  f"({_model_label(blocks[i - 1])}) failed: {errors[i - 1]} "
-                  "- continuing with the remaining candidates")
-    if not survivors:
-        raise errors[-1]
-    if len(survivors) == 1:
-        logger.log_event(project_dir, {
-            "event": "degraded", "chapter": chapter, "where": "consensus",
-            "reason": f"{job}: only one candidate survived; used verbatim "
-                      "without a consensus call",
-        })
-        print(f"[warn] consensus: {job}: only one candidate survived - "
-              "using it without a consensus call")
-        return survivors[0][1]
+    failures = [(i, errors[i - 1]) for i in range(1, n + 1)
+                if errors[i - 1] is not None]
+    if failures:
+        # Every failure is collected and NAMED first -- the operator needs to
+        # know which models failed, not just the last one to raise -- and then
+        # the run stops. There is deliberately no "continue with the remaining
+        # candidates" path: a provider failure that survives its retries means
+        # the configured provider cannot do the job, and a chapter built from
+        # whichever model happened to survive is not the chapter the project
+        # configured. It also used to be silent -- the multi-model merge quietly
+        # became a single-model call behind one [warn] line.
+        #
+        # This one check also covers the old "only one candidate survived"
+        # branch: reaching a survivor count below n IS reaching a failure, so
+        # there is no separate single-survivor state left to guard.
+        for i, exc in failures:
+            print(f"[FAIL] consensus: {job} candidate {i}/{n} "
+                  f"({_model_label(blocks[i - 1])}) failed: "
+                  f"{type(exc).__name__}: {exc}")
+        _log_fatal(project_dir, chapter, job,
+                   f"{len(failures)}/{n} candidates failed after their retries "
+                   f"- the run stops rather than merging a partial fan-out")
+        raise failures[0][1]
 
     # Synthesize: the consensus provider judges the candidates against the
     # original task prompt (which carries the output contract) and writes
@@ -211,20 +249,21 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     # at the arbitrator's own budget -- which is routinely smaller than the
     # candidates it has to merge (see config.local.example.mixed.json:
     # translator 256000, consensus 65536).
+    #
+    # It is a FLOOR, not a licence to ignore the provider: client._resolve_cap
+    # still clamps this to the block's `max_tokens_limit`, so a block whose
+    # declared max_tokens IS its provider's real limit (Z.AI: 131072) merges at
+    # that limit rather than being sent the task cap and 400ing.
     c_max = max(max_tokens or 0, int(cblock.get("max_tokens") or 0)) or None
-    try:
-        return client.chat(
-            cblock, c_prompt, json_schema=json_schema, max_tokens=c_max,
-            enforce_ceiling=False,
-            meta_hook=_trace_hook(project_dir, "consensus",
-                                  {"consensus_for": job}, chapter))
-    except Exception as exc:  # noqa: BLE001 - degrade, never fail the task
-        first = survivors[0][0]
-        logger.log_event(project_dir, {
-            "event": "degraded", "chapter": chapter, "where": "consensus",
-            "reason": f"{job}: consensus call failed ({exc}); used candidate "
-                      f"{first} without merging",
-        })
-        print(f"[warn] consensus: {job}: consensus call failed ({exc}) - "
-              f"using candidate {first} without merging")
-        return survivors[0][1]
+    # No try/except around the merge. A synthesis that fails after its retries
+    # used to be logged as `degraded` and answered with candidate 1's text
+    # verbatim -- the single worst failure in the pipeline, because the chapter
+    # looked translated and the multi-model merge everyone configured had never
+    # run. `client.LMFatal` (an irrecoverable provider code) is raised by
+    # client.chat itself; an exhausted retry raises `LLMError`, which is fatal
+    # for the same reason and is re-raised here so no stage absorbs it.
+    return client.chat(
+        cblock, c_prompt, json_schema=json_schema, max_tokens=c_max,
+        enforce_ceiling=False,
+        meta_hook=_trace_hook(project_dir, "consensus",
+                              {"consensus_for": job}, chapter))

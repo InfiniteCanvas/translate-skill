@@ -459,6 +459,33 @@ def provider_list(cfg: dict, job: str) -> list:
     return [blocks] if isinstance(blocks, dict) else blocks
 
 
+def block_cap(block: dict) -> int:
+    """The largest output this provider block can actually return.
+
+    `max_tokens` is what the block ASKS for; `max_tokens_limit` -- when
+    authored -- is what its provider will ACCEPT. The effective cap is the
+    smaller, and it is the single source of truth for every reader: what
+    client.chat sends (including the consensus synthesis, whose floor is set
+    elsewhere), and what pipeline packs a chapter into.
+
+    The two keys exist because `max_tokens` alone cannot express both. A
+    consensus block set to 65536 may be deliberately under-provisioned to
+    merge much larger candidates (consensus.chat raises it with max()), or it
+    may be the provider's real rejection threshold (Z.AI refuses anything
+    above 131072). Same number, opposite intent, and only the second may not
+    be exceeded. Absent the limit this is exactly `max_tokens`, so no existing
+    project changes.
+
+    `max_tokens_limit` is NOT schema-validated -- same as `max_tokens`, per
+    references/file-formats.md -- so a non-numeric value raises the same
+    ValueError from int() that a non-numeric `max_tokens` does. Absence, null
+    and 0 all mean "no declared limit" via the repo-wide `or` idiom.
+    """
+    cap = int(block.get("max_tokens") or DEFAULT_MAX_TOKENS)
+    limit = block.get("max_tokens_limit")
+    return min(cap, int(limit)) if limit else cap
+
+
 def _as_number(key: str, value: object) -> int | float:
     """Shared numeric validation behind get_number(): int/float (bool
     excluded -- bool is an int subclass, and a JSON true/false in a numeric

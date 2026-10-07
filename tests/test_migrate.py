@@ -86,7 +86,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
-from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012  # noqa: E402
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -1514,11 +1514,11 @@ def case_13_v011() -> None:
               isinstance(v011.DESCRIPTION, str)
               and "\n" not in v011.DESCRIPTION, "")
 
-        # v012 is the chain head: chain() is ascending, so the head is the
+        # v014 is the chain head: chain() is ascending, so the head is the
         # LAST entry, and current_version() is what init/migrate actually use.
-        check("13k v012 is the chain head",
-              migrations.chain()[-1].VERSION == 12
-              and migrations.current_version() == 12,
+        check("13k v014 is the chain head",
+              migrations.chain()[-1].VERSION == 14
+              and migrations.current_version() == 14,
               f"chain_head={migrations.chain()[-1].VERSION} "
               f"current={migrations.current_version()}")
 
@@ -1526,6 +1526,15 @@ def case_13_v011() -> None:
         check("13m v012: DESCRIPTION is one line",
               isinstance(v012.DESCRIPTION, str)
               and "\n" not in v012.DESCRIPTION, "")
+
+        check("13n v013: VERSION matches the filename", v013.VERSION == 13, "")
+        check("13o v013: DESCRIPTION is one line",
+              isinstance(v013.DESCRIPTION, str)
+              and "\n" not in v013.DESCRIPTION, "")
+        check("13p v014: VERSION matches the filename", v014.VERSION == 14, "")
+        check("13q v014: DESCRIPTION is one line",
+              isinstance(v014.DESCRIPTION, str)
+              and "\n" not in v014.DESCRIPTION, "")
 
 
 def case_14_v012() -> None:
@@ -1610,6 +1619,221 @@ def case_14_v012() -> None:
               f"out={out_legacy}")
 
 
+def case_15_v013() -> None:
+    """v013 is REPORT-ONLY, like v012: it names the number the consensus
+    synthesis will send and leaves config.json byte-identical.
+
+    The condition is on the SYNTHESIS CAP (max(task cap, block cap)) exceeding
+    the consensus block's declared max_tokens -- NOT on
+    translate_max_output_tokens merely being above providers.consensus
+    .max_tokens. That inversion was an earlier draft's bug: since v012 a block
+    below the ceiling is explicitly SUPPORTED (file-formats.md), so the naive
+    comparison would warn on healthy projects and stay silent on the real one.
+
+    Pinned here: the report fires on the broken shape, stays quiet on a
+    supported one, defers to an existing max_tokens_limit, never rewrites, and
+    is idempotent.
+    """
+    import json as _json
+
+    def make(root: Path, name: str, *, ceiling: int, consensus_max: int,
+             limit: int | None = None, blocks: int = 2) -> Path:
+        proj = root / name
+        proj.mkdir(parents=True)
+        translator = [{"base_url": "http://fake:1/v1", "model": f"m{i}",
+                       "max_tokens": 128000} for i in range(blocks)]
+        cblock: dict = {"base_url": "http://fake:2/v1", "model": "c0",
+                        "max_tokens": consensus_max}
+        if limit is not None:
+            cblock["max_tokens_limit"] = limit
+        (proj / "config.json").write_text(_json.dumps({
+            "translate_max_output_tokens": ceiling,
+            "providers": {"translator": translator, "consensus": [cblock]},
+            "version": 12,
+        }, indent=2) + "\n", encoding="utf-8")
+        return proj
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+
+        # The failing shape: the merge would be sent 256000 against a block
+        # that declares 128000 -- a 400 on any provider whose real limit is the
+        # declared number.
+        proj = make(root, "over", ceiling=256000, consensus_max=128000)
+        before = (proj / "config.json").read_text(encoding="utf-8")
+        out = v013.migrate(proj, src)
+        report = "\n".join(out)
+        check("15a v013: a synthesis above the consensus block is reported",
+              any("max_tokens_limit" in line for line in out)
+              and any(line.startswith("[info]") for line in out), f"out={out}")
+        check("15b v013: the report names the SENT cap and the declared cap",
+              "256000" in report and "128000" in report, f"report={report}")
+        check("15c v013: the report says the shape is supported, not broken",
+              "supported" in report and "Nothing was rewritten" in report,
+              f"report={report}")
+        check("15d v013: config.json is byte-identical (report-only)",
+              before == (proj / "config.json").read_text(encoding="utf-8"),
+              "config.json was rewritten")
+        check("15e v013: idempotent -- a second run reports the same thing",
+              v013.migrate(proj, src) == out, f"{v013.migrate(proj, src)!r}")
+
+        # The supported shape since v012: ceiling above the block, but the
+        # ceiling is BELOW what the synthesis would need, so nothing is sent
+        # past the declared cap and there is nothing to report.
+        proj_ok = make(root, "ok", ceiling=65536, consensus_max=128000)
+        out_ok = v013.migrate(proj_ok, src)
+        check("15f v013: a synthesis at or below the block reports [ok]",
+              any(line.startswith("[ok]") for line in out_ok)
+              and not any(line.startswith("[warn]") for line in out_ok),
+              f"out={out_ok}")
+
+        # Already declared: defer, and say so.
+        proj_set = make(root, "set", ceiling=256000, consensus_max=128000,
+                        limit=131072)
+        out_set = v013.migrate(proj_set, src)
+        check("15g v013: an existing max_tokens_limit is respected, not re-asked",
+              any(line.startswith("[ok]") and "131072" in line
+                  for line in out_set)
+              and not any("add" in line for line in out_set), f"out={out_set}")
+
+        # A single-model translator never fans out, so there is no consensus
+        # call to bound -- reporting here would be a false positive.
+        proj_single = make(root, "single", ceiling=256000,
+                           consensus_max=128000, blocks=1)
+        out_single = v013.migrate(proj_single, src)
+        check("15h v013: a single-block translator is not reported",
+              any(line.startswith("[ok]") for line in out_single)
+              and not any(line.startswith("[info]") for line in out_single),
+              f"out={out_single}")
+
+        # An omitted consensus block inherits translator[0] at load time, but
+        # the raw file has none -- stay quiet rather than guessing.
+        proj_absent = root / "absent"
+        proj_absent.mkdir()
+        (proj_absent / "config.json").write_text(_json.dumps({
+            "translate_max_output_tokens": 256000,
+            "providers": {"translator": [
+                {"base_url": "http://fake:1/v1", "model": "m0",
+                 "max_tokens": 128000},
+                {"base_url": "http://fake:1/v1", "model": "m1",
+                 "max_tokens": 128000}]},
+            "version": 12,
+        }, indent=2) + "\n", encoding="utf-8")
+        out_absent = v013.migrate(proj_absent, src)
+        check("15i v013: an absent consensus block is tolerated quietly",
+              out_absent == [], f"out={out_absent}")
+
+        # A corrupt config is v001's business; report the skip, do not raise.
+        proj_bad = root / "bad"
+        proj_bad.mkdir()
+        (proj_bad / "config.json").write_text("{not json", encoding="utf-8")
+        out_bad = v013.migrate(proj_bad, src)
+        check("15j v013: an unreadable config.json reports a skip, not a raise",
+              any(line.startswith("[warn]") and "not readable" in line
+                  for line in out_bad), f"out={out_bad}")
+
+
+def case_16_v014() -> None:
+    """v14 is REPORT-ONLY, like v012/v013: it announces that a provider failure
+    is now fatal, and reports the one thing that would newly stop a run at its
+    first call -- a provider block with no usable credential.
+
+    Nothing is rewritten, and the severity split is deliberate: a block naming
+    no credential source at all is a `[FAIL]` (it cannot become valid without
+    editing the file), while an `api_key_env` that is merely unset in THIS shell
+    is a `[warn]` (very common, and often correct for the shell the operator
+    will actually use). A migration must not refuse to run because of a shell's
+    environment.
+    """
+    import json as _json
+    import os as _os
+
+    def make(root: Path, name: str, block: dict) -> Path:
+        proj = root / name
+        proj.mkdir(parents=True)
+        (proj / "config.json").write_text(_json.dumps({
+            "providers": {"translator": [block]}, "version": 13,
+        }, indent=2) + "\n", encoding="utf-8")
+        return proj
+
+    env = "NOVEL_TRANSLATOR_TEST_KEY"
+    prev = _os.environ.pop(env, None)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            src = root / "ship"
+            src.mkdir()
+
+            # An inline key always resolves.
+            proj_ok = make(root, "inline", {"base_url": "http://a/v1",
+                                            "model": "m0", "api_key": "sk-x"})
+            out_ok = v014.migrate(proj_ok, src)
+            check("16a v014: a resolvable credential reports [ok]",
+                  any(line.startswith("[ok]") for line in out_ok), f"out={out_ok}")
+            check("16b v014: nothing is rewritten (report-only)",
+                  _json.loads((proj_ok / "config.json").read_text(
+                      encoding="utf-8"))["version"] == 13, "config.json was rewritten")
+            check("16c v014: idempotent",
+                  v014.migrate(proj_ok, src) == out_ok, "second run differs")
+
+            # An unset api_key_env is a warn, not a fail: the operator's real
+            # shell may well have it.
+            proj_env = make(root, "env", {"base_url": "http://a/v1",
+                                          "model": "m0", "api_key_env": env})
+            out_env = v014.migrate(proj_env, src)
+            check("16d v014: an unset api_key_env is a [warn], not a [FAIL]",
+                  any(line.startswith("[warn]") and env in line
+                      for line in out_env)
+                  and not any(line.startswith("[FAIL]") for line in out_env),
+                  f"out={out_env}")
+
+            # The same block once the variable IS set.
+            _os.environ[env] = "sk-live"
+            out_set = v014.migrate(proj_env, src)
+            check("16e v014: the same block reports [ok] once the env var is set",
+                  any(line.startswith("[ok]") for line in out_set),
+                  f"out={out_set}")
+            _os.environ.pop(env, None)
+
+            # No credential source at all: only editing the file fixes it.
+            proj_bad = make(root, "none", {"base_url": "http://a/v1",
+                                           "model": "m0"})
+            out_bad = v014.migrate(proj_bad, src)
+            check("16f v014: no credential at all is a [FAIL] naming the block",
+                  any(line.startswith("[FAIL]") and "providers.translator[0]"
+                      and "api_key_env" in line for line in out_bad),
+                  f"out={out_bad}")
+
+            # An omitted job inherits the translator's array at load time, so
+            # the translator's credential covers it -- reporting it would be a
+            # false positive on every project that does not spell out `glossary`.
+            proj_inherit = make(root, "inherit", {"base_url": "http://a/v1",
+                                                  "model": "m0"})
+            out_inherit = v014.migrate(proj_inherit, src)
+            check("16g v014: an inherited job is not reported as keyless",
+                  not any("providers.glossary" in line for line in out_inherit),
+                  f"out={out_inherit}")
+
+            # A legacy single-dict job block must not raise.
+            proj_legacy = root / "legacy"
+            proj_legacy.mkdir()
+            (proj_legacy / "config.json").write_text(_json.dumps({
+                "providers": {"translator": {"base_url": "http://a/v1",
+                                             "model": "m0", "api_key": "sk-x"}},
+                "version": 13,
+            }, indent=2) + "\n", encoding="utf-8")
+            out_legacy = v014.migrate(proj_legacy, src)
+            check("16h v014: a legacy single-dict provider block is tolerated",
+                  any(line.startswith("[ok]") for line in out_legacy),
+                  f"out={out_legacy}")
+    finally:
+        _os.environ.pop(env, None)
+        if prev is not None:
+            _os.environ[env] = prev
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -1629,6 +1853,8 @@ def main() -> int:
     case_12_v010()
     case_13_v011()
     case_14_v012()
+    case_15_v013()
+    case_16_v014()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

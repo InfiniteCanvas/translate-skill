@@ -241,6 +241,8 @@ def recheck_chapters(
             raw_notes = data.get("notes") if isinstance(data, dict) else None
             if not isinstance(raw_notes, list):
                 raise ValueError("expected a 'notes' array")
+        except client.LLMFatal:
+            raise
         except Exception as exc:  # noqa: BLE001 - keep existing notes, keep going
             print(f"[tn] {file}: [warn] note generation failed - keeping existing notes: {exc}")
             failed.append(file)

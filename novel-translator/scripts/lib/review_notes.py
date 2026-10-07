@@ -303,6 +303,8 @@ def _model_findings(
                     "suggestion": suggestion if isinstance(suggestion, str) else "",
                     "origin": "model",
                 })
+        except client.LLMFatal:
+            raise
         except Exception as exc:  # one bad batch must not kill the whole review
             errors.append(f"batch {i}/{n}: {exc}")
             print(f"[notes] warn batch {i}/{n} review failed - {exc}")

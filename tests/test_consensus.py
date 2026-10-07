@@ -133,6 +133,13 @@ def read_log_events(proj: Path) -> list[dict]:
     return events
 
 
+def _events_named(proj: Path, name: str) -> list[str]:
+    """Reasons of every logged event with this name, for a negative assertion
+    ("this event must no longer be emitted here")."""
+    return [str(e.get("reason", "")) for e in read_log_events(proj)
+            if e.get("event") == name]
+
+
 def reset_globals() -> None:
     """Per-case module resets: the announce dedup and the logger's run
     pointer (so each sandbox's logs/ owns its run's trace)."""
@@ -356,50 +363,66 @@ def case_c_meta_keys() -> None:
 
 
 def case_d_second_candidate_fails() -> None:
-    """Candidate 2 fails: exact [warn] lines, no consensus call, survivor
-    1's text returned verbatim."""
+    """Candidate 2 fails after its retries: the run STOPS.
+
+    This case used to pin the opposite -- survivor 1's text returned verbatim
+    with a `[warn] ... continuing with the remaining candidates`. That fallback
+    is gone. A chapter assembled from whichever model happened to answer is not
+    the chapter the project configured, and the multi-model merge the run was
+    set up for silently did not happen.
+    """
     reset_globals()
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj")
         cfg = two_block_cfg(block("c-merge", temperature=0.2))
         fake = FakeChat(fail_models=("m2",))
         buf = io.StringIO()
+        exc: Exception | None = None
         with patched_chat(fake), contextlib.redirect_stdout(buf):
-            text = consensus.chat(proj, cfg, "translator", TASK_PROMPT)
+            try:
+                consensus.chat(proj, cfg, "translator", TASK_PROMPT)
+            except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+                exc = caught
         out = buf.getvalue()
-        check("d1 candidate 2 failed: survivor 1 returned, no consensus call",
-              text == "reply-m1" and len(fake.consensus()) == 0,
-              f"text={text!r} con={len(fake.consensus())}")
-        check("d2 candidate 2 failed: exact per-candidate + single-survivor warns",
-              "[warn] consensus: translator candidate 2/2 (m2) failed: boom m2 "
-              "- continuing with the remaining candidates" in out
-              and "[warn] consensus: translator: only one candidate survived - "
-              "using it without a consensus call" in out,
+        check("d1 candidate 2 failed: the call raises instead of returning",
+              exc is not None and isinstance(exc, client.LLMError),
+              f"exc={exc!r}")
+        check("d2 candidate 2 failed: no consensus call was made",
+              len(fake.consensus()) == 0, f"con={len(fake.consensus())}")
+        check("d3 candidate 2 failed: one [FAIL] naming the model, no fallback",
+              "[FAIL] consensus: translator candidate 2/2 (m2) failed: "
+              "LLMError: boom m2" in out
+              and "continuing with the remaining candidates" not in out,
               f"out={out!r}")
 
 
 def case_e_first_candidate_fails() -> None:
-    """The mirror: candidate 1 fails, survivor 2's text wins."""
+    """The mirror: candidate 1 fails, and that stops the run too."""
     reset_globals()
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj")
         cfg = two_block_cfg(block("c-merge", temperature=0.2))
         fake = FakeChat(fail_models=("m1",))
         buf = io.StringIO()
+        exc: Exception | None = None
         with patched_chat(fake), contextlib.redirect_stdout(buf):
-            text = consensus.chat(proj, cfg, "translator", TASK_PROMPT)
-        out = buf.getvalue()
-        check("e1 candidate 1 failed: survivor 2 returned via the single-survivor path",
-              text == "reply-m2" and len(fake.consensus()) == 0
-              and "[warn] consensus: translator candidate 1/2 (m1) failed: boom m1 "
-              "- continuing with the remaining candidates" in out
-              and "[warn] consensus: translator: only one candidate survived - "
-              "using it without a consensus call" in out,
-              f"text={text!r} out={out!r}")
+            try:
+                consensus.chat(proj, cfg, "translator", TASK_PROMPT)
+            except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+                exc = caught
+        check("e1 candidate 1 failed: raises, no survivor is substituted",
+              exc is not None and isinstance(exc, client.LLMError)
+              and len(fake.consensus()) == 0
+              and "candidate 1/2 (m1) failed: LLMError: boom m1"
+              in buf.getvalue(), f"exc={exc!r} out={buf.getvalue()!r}")
 
 
 def case_f_all_candidates_fail() -> None:
-    """Every candidate failed: the last error re-raises (client.LLMError)."""
+    """Every candidate failed: raises, and NAMES every one of them.
+
+    Naming all failures before raising is the point -- an operator fixing a
+    broken fan-out needs to know which models failed, not only the first.
+    """
     reset_globals()
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj")
@@ -414,33 +437,44 @@ def case_f_all_candidates_fail() -> None:
                 exc = caught
         check("f1 all failed: raises client.LLMError",
               isinstance(exc, client.LLMError), f"exc={exc!r}")
-        check("f2 all failed: both per-candidate warns printed before the raise",
-              "[warn] consensus: translator candidate 1/2 (m1) failed: boom m1 "
-              "- continuing with the remaining candidates" in buf.getvalue()
-              and "[warn] consensus: translator candidate 2/2 (m2) failed: boom m2 "
-              "- continuing with the remaining candidates" in buf.getvalue(),
+        check("f2 all failed: BOTH candidates are named before the raise",
+              "[FAIL] consensus: translator candidate 1/2 (m1) failed: "
+              "LLMError: boom m1" in buf.getvalue()
+              and "[FAIL] consensus: translator candidate 2/2 (m2) failed: "
+              "LLMError: boom m2" in buf.getvalue(),
               f"out={buf.getvalue()!r}")
 
 
 def case_g_consensus_call_fails() -> None:
-    """The consensus call itself fails: degrade to the first survivor
-    verbatim with the exact [warn] -- never a new point of failure."""
+    """The merge itself fails: fatal, NOT a degrade.
+
+    This was the worst failure in the pipeline. The chapter came out looking
+    translated, `chapters.json` said `translated`, and the multi-model merge
+    everyone configured had simply never run -- behind one `[warn]` line and a
+    tier-1 `degraded` event nobody reads during a batch.
+    """
     reset_globals()
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj")
         cfg = two_block_cfg(block("c-merge", temperature=0.2))
         fake = FakeChat(fail_consensus=True)
         buf = io.StringIO()
+        exc: Exception | None = None
         with patched_chat(fake), contextlib.redirect_stdout(buf):
-            text = consensus.chat(proj, cfg, "translator", TASK_PROMPT)
-        out = buf.getvalue()
-        check("g1 consensus call failed: candidate 1's text returned verbatim",
-              text == "reply-m1" and len(fake.consensus()) == 1,
-              f"text={text!r}")
-        check("g2 consensus call failed: exact degrade warn printed",
-              "[warn] consensus: translator: consensus call failed "
-              "(consensus endpoint down) - using candidate 1 without merging" in out,
-              f"out={out!r}")
+            try:
+                consensus.chat(proj, cfg, "translator", TASK_PROMPT)
+            except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+                exc = caught
+        check("g1 consensus call failed: raises instead of degrading",
+              exc is not None and isinstance(exc, client.LLMError),
+              f"exc={exc!r}")
+        check("g2 consensus call failed: no 'without merging' fallback remains",
+              "without merging" not in buf.getvalue()
+              and len(fake.consensus()) == 1,
+              f"out={buf.getvalue()!r}")
+        check("g3 consensus call failed: no `degraded` event is emitted",
+              not _events_named(proj, "degraded"),
+              f"events={_events_named(proj, 'degraded')}")
 
 
 def case_h_explicit_consensus_array() -> None:

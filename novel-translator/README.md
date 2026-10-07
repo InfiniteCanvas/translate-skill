@@ -117,10 +117,30 @@ through uv automatically):
    version stamp untouched; a missing repository is backfilled), so
    `migrate --force` refreshes stale
    templates on current projects too. Each applied step is committed
-   once it lands (`migrate: vNNN <description>`). The newest step, v012,
-   **rewrites nothing** (DESCRIPTION: `decouple translate_max_output_tokens
-   from provider max_tokens (the key is now a ceiling a block can lower, not
-   an override; report mismatched translator pairs)`). It reads the raw config
+   once it lands (`migrate: vNNN <description>`). The newest step, v014,
+   **also rewrites nothing** (DESCRIPTION: `a provider failure that exhausts
+   its retries is now fatal (exit 3) instead of degrading quietly, and Z.AI
+   irrecoverable codes skip the retry ladder; report provider blocks with no
+   usable credential`). It adds no key and reads the raw config, reporting the
+   one thing that would now stop a run at its first call rather than degrade:
+   a provider block with no usable credential. `[FAIL]` when the block names
+   no `api_key`/`api_key_env` at all, `[warn]` when an `api_key_env` is merely
+   unset in the shell running `migrate` — common, and usually correct for the
+   shell the operator will actually use. Before it, v013
+   **also rewrites nothing** (DESCRIPTION: `provider max_tokens_limit: a block
+   may declare its provider's hard output ceiling, which binds the consensus
+   synthesis too; report a consensus block the merge would exceed`). It adds no
+   key — `max_tokens_limit` is optional and absent means "no declared limit",
+   so there is nothing to materialize — and reports the case it can see from the
+   file: the consensus merge would be sent more than that block's own
+   `max_tokens`, and the block declares no `max_tokens_limit`. That is the shape
+   that answers `HTTP 400` when the declared number is the provider's wall, and
+   the failure is quiet: the merge degrades to one candidate. The line names the
+   number that would go on the wire and says the configuration is fine as long
+   as your provider accepts it. Before it, v012
+   **also rewrites nothing** (DESCRIPTION: `decouple translate_max_output_tokens
+   from provider max_tokens (the key is now a ceiling a block can lower, not an
+   override; report mismatched translator pairs)`). It reads the raw config
    and reports: where `translate_max_output_tokens` exceeds the tightest
    `providers.translator` block, the block now wins as a hard ceiling and
    chapters pack to the block instead — so a chapter already mid-translation
@@ -690,6 +710,21 @@ to exit`; details land in
   block — that block's settings win, with temperature 0.2 filling what it
   leaves unset); any other omitted job inherits the
   translator's whole array, each element onto the job's own defaults.
+
+  **A failed provider call stops the run.** Any call that fails after its
+  retries prints one `[FAIL]` line and exits 3, instead of falling back to a
+  surviving candidate or a lone one — a chapter built from whichever model
+  happened to answer is not the chapter you configured, and the old fallback
+  lost the multi-model merge silently behind a `[warn]`. A code the provider
+  itself calls irrecoverable (Z.AI auth / no balance / invalid parameter /
+  filtered content — matched by the response body's `error.code`, never by
+  message text) skips the retry ladder entirely: it fails on the first
+  response. `429` rate limits and quota *windows* (which publish a reset time a
+  multi-hour run may clear) stay on the retry ladder; an exhausted retry is
+  fatal either way, so the difference is only how many attempts are spent.
+  `ping` names the code, so a wrong URL is distinguishable from an empty
+  balance. Non-provider errors are unaffected — a missing template or unfilled
+  placeholder is still exit 2.
   Two translator models:
 
       "translator": [
@@ -698,6 +733,21 @@ to exit`; details land in
         { "base_url": "http://100.85.218.125:8889/v1", "model": "Qwen3-235B-A22B",
           "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536, "thinking": false }
       ]
+
+  A block may also carry `max_tokens_limit`: its provider's HARD ceiling (Z.AI
+  refuses anything above 131072), as distinct from `max_tokens`, which is the
+  budget that block asks for. It matters because the consensus merge is the one
+  call sent past a block's own `max_tokens` — a merge is raised to
+  `max(task cap, block cap)` so a small arbitrator can still combine large
+  candidates — so a block whose `max_tokens` happens to be its provider's real
+  wall gets sent the task cap instead, fails, and — as of v014 — stops the run
+  rather than degrading to a single candidate. Present, `max_tokens_limit`
+  bounds every call to the block,
+  merge included, and feeds the packing budget so a chapter is never sized for a
+  response the provider will truncate. It never raises a block: the effective
+  cap is `min(max_tokens, max_tokens_limit)`, so a limit above `max_tokens`
+  does nothing. It bounds the `max_tokens` field only — a provider honoring
+  `extra_body.max_completion_tokens` is outside it.
 - Temperature and `top_p` per provider. The translator defaults to
   temperature 0.7 and `top_p` 1.0 per the Hy-MT2 model card -- tune to
   taste.
@@ -733,9 +783,11 @@ to exit`; details land in
   budget: the whole chapter goes in one call while its expected output
   fits `floor(0.8 × pack_cap) − 256`, and longer
   chapters split into parts that each fit that budget. Since v012
-  `pack_cap` is `min(ceiling, the smallest max_tokens across the translator's
-  blocks)`, so no model in the array truncates its part, and each block is SENT
-  `min(ceiling, its own max_tokens)` — a block's `max_tokens` is a hard
+  `pack_cap` is `min(ceiling, the smallest EFFECTIVE cap across the
+  translator's blocks)` — a block's effective cap being
+  `min(max_tokens, max_tokens_limit)` — so no model in the array truncates its
+  part, and each block is SENT
+  `min(ceiling, its own effective cap)` — a block's `max_tokens` is a hard
   provider limit the pipeline may lower but never raise, so a block below the
   ceiling wins and that is a supported configuration, not a defect; a
   truncating part retries once at `max(ceiling, ~1.5x pack_cap)` bounded by the

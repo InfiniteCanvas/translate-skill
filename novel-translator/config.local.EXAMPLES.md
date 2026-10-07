@@ -207,14 +207,55 @@ Two consequences of raising the translator cap:
   `[info]`, not an error). Raising the ceiling alone does nothing while a block
   sits below it.
 - It also drives chapter packing at `floor(0.8 × pack_cap) − 256`, where
-  `pack_cap` is `min(ceiling, smallest translator block)` — about 52k
-  characters per part at 64k, **about 200k at 256k**. A chapter that
-  previously split now translates in one call. That is fine for typical
-  chapters (the measured one was ~8k characters) but means an unusually large
-  chapter is no longer split at all.
+  `pack_cap` is `min(ceiling, smallest translator block's effective cap)`. In
+  the mixed file that is `min(256000, 128000)` — the GLM translator block is the
+  smallest, and it has to be: Z.AI's real wall is 131072, so its block cannot
+  claim 256000 however high the ceiling goes. The budget is therefore the 128k
+  one (about 52k characters per part), **not** "about 200k at 256k". Only the
+  MiniMax translator block actually receives the 256,000.
 
 Small jobs and the retry bound are unchanged: `glossary`, `recap`, `profile`
 and `annotator` stay at 64k, and `max_attempts` still bounds retries.
+
+### `max_tokens_limit`: when a block's `max_tokens` IS the provider's wall
+
+The mixed file's `consensus` block declares `"max_tokens_limit": 131072`
+alongside `"max_tokens": 128000`, and it is worth knowing why, because the two
+keys look redundant and are not.
+
+The consensus merge is the one call the pipeline sends past a block's own
+`max_tokens` — `consensus.chat` raises it to `max(task cap, block cap)`, so an
+arbitrator set to 65536 can still merge two 256,000-token chapters. That is a
+floor on what the block *wants*.
+
+Z.AI, on the other hand, has a wall: it answers
+`HTTP 400 code 1210 — 限制数值范围[1,131072]` for anything above 131072. So
+with the mixed file's 256,000 ceiling, the merge was sent **256,000** to a
+block declaring 128,000, was refused, and — this is the part that matters — the
+failure is not loud: the merge degrades to the first candidate and the chapter
+still translates. You lose the multi-model merge and see one `[warn]` line.
+
+`max_tokens_limit` is how a block says "this is what my provider will accept",
+as opposed to `max_tokens`, which says "this is what I want". Absent, it is
+exactly `max_tokens` and nothing changes; present, it bounds every call to the
+block, including the merge. Set it to your provider's documented ceiling, below
+`max_tokens`. It also feeds the packing budget, so a chapter is never sized for
+a response the provider will truncate.
+
+Two things it deliberately does **not** do:
+
+- It does not raise a block. A limit *above* `max_tokens` does nothing at all —
+  the effective cap is `min(max_tokens, max_tokens_limit)`. If you want a bigger
+  merge budget, raise `max_tokens` (which is the supported way to make the merge
+  larger than the block's default) or point `consensus` at a model with room.
+- It does not touch `extra_body.max_completion_tokens`. That is a *different*
+  parameter, merged alongside `max_tokens` rather than instead of it, and the
+  MiniMax blocks below rely on it. If your provider honors it, that value is
+  outside this ceiling.
+
+One inheritance wrinkle: an omitted `consensus` block inherits the translator's
+**first** block, including this key. If the two point at different providers,
+set `max_tokens_limit` on the `consensus` block explicitly.
 
 ### `MiniMax-M3`: use `thinking`, and note the different failure shape
 
