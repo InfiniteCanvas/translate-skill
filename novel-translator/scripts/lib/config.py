@@ -43,11 +43,29 @@ DEFAULTS: dict = {
     # roughly how many source characters to include in the prompt.
     "style_sample_chapters": 4,
     "style_sample_chars": 12000,
-    # Full request/response trace, one log per CLI invocation (see log_llm_keep_runs).
+    # Two-tier trace (see lib/logger.py). Tier 1 is the orchestration
+    # timeline -- run/chapter lifecycle, stage transitions, gate verdicts,
+    # degradations, and a per-call llm_call summary; it NEVER carries a
+    # prompt or a response. Tier 2 is one file per chapter carrying the
+    # full model exchange. Both tiers are written per (chapter, invocation).
+    #
+    # Tier-1 structural events. false leaves the chapter tier-2 files and
+    # both index.jsonl indexes untouched -- only the orchestration timeline
+    # goes away.
+    "log_orchestration": True,
+    # llm_request/llm_response lines ONLY (the prompt/response bodies and
+    # the metadata they carry). result/chunk/feedback and both indexes are
+    # unconditional, so log_llm:false still leaves a chapter's tier-2 file
+    # with the pipeline's own per-chunk record.
     "log_llm": True,
-    # One logs/llm-*.jsonl per CLI invocation; at each run's start older
-    # logs are pruned to the newest log_llm_keep_runs files (by mtime).
-    "log_llm_keep_runs": 5,
+    # The prompt/response strings inside those two lines. false keeps
+    # finish_reason/usage/elapsed_s/error and records prompt_chars /
+    # response_chars instead -- the call stays accountable without the text.
+    "log_prompt_bodies": True,
+    # Retention for the logs/ root and logs/project/ buckets, by mtime.
+    "log_llm_keep_runs": 10,
+    # Retention per chapter directory, independent of every other chapter.
+    "log_chapter_keep_runs": 3,
     # Rebuild the epub in a parallel subprocess after every chapter that
     # finishes translation (serialized; one final build at batch end
     # guarantees completeness). Set false to build only via build-epub.

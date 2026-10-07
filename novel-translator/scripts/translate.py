@@ -40,7 +40,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, consensus, cover, epub, fix, glossary, logger, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs  # noqa: E402
+from lib import client, config, consensus, cover, epub, fix, glossary, logger, logreport, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
@@ -63,6 +63,47 @@ class CliError(Exception):
 
 def _fail(message: str) -> None:
     print(f"[FAIL] {message}", file=sys.stderr)
+
+
+def _run_start(project_dir: Path, cfg: dict, manifest: list[dict] | None,
+               command: str, **extra) -> None:
+    """Open the invocation's orchestration timeline and the project bucket's
+    index.jsonl.
+
+    Emitted from the cmd_ layer, not translate.main: main is a thin
+    dispatcher with no config, manifest or results in scope. `ping` is
+    excluded on purpose -- its probe bypasses consensus.chat, so its run_end
+    could only report fabricated zeros.
+    """
+    logger.log_event(project_dir, {
+        "event": "run_start", "command": command,
+        "argv": list(sys.argv[1:]),
+        "provider_jobs": {job: [b.get("model") or "" for b in blocks]
+                          for job, blocks in sorted(cfg.get("providers", {}).items())
+                          if isinstance(blocks, list)},
+        "manifest": ({"chapters": len(manifest),
+                      "pending": sum(1 for e in manifest or []
+                                     if e.get("status") == "pending")}
+                     if manifest is not None else None),
+        **extra,
+    })
+    logger.index_line(project_dir, None, "open", command=command)
+
+
+def _run_end(project_dir: Path, command: str, outcome: str,
+             results: dict | None = None) -> None:
+    """Close the invocation's timeline. `results` is run_range's per-outcome
+    chapter counts, present only for translate/retry; calls and tokens come
+    from the logger's counters, which accumulate before gating."""
+    stats = logger.take_run_stats(project_dir)
+    logger.log_event(project_dir, {
+        "event": "run_end", "command": command, "outcome": outcome,
+        "chapters": ({k: len(v) for k, v in results.items() if v}
+                     if results is not None else None),
+        "calls": stats["calls"], "tokens": stats["tokens"],
+        "elapsed_s": stats["elapsed_s"],
+    })
+    logger.index_line(project_dir, None, "close", outcome=outcome)
 
 
 def _load_config(project_dir: Path) -> dict:
@@ -802,9 +843,12 @@ def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
     )
 
     try:
+        _run_start(project_dir, cfg, None, "profile",
+                   chapters=sample_chapters, chars=sample_chars)
         prof = profile_mod.generate_profile(project_dir, cfg, sample_chapters, sample_chars)
     except Exception as exc:  # noqa: BLE001 - any generation failure is exit 1
         _fail(f"style profile generation failed: {type(exc).__name__}: {exc}")
+        _run_end(project_dir, "profile", "failed")
         return 1
 
     novel_info["style_profile"] = prof
@@ -816,6 +860,7 @@ def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
     if (project_dir / "style.md").is_file():
         print("[warn] style.md exists and takes precedence over the profile - delete it to activate the profile")
     print(f"style_summary: {prof.get('style_summary', '')}")
+    _run_end(project_dir, "profile", "completed")
     print(f"background: {prof.get('background', '')}")
     return 0
 
@@ -922,6 +967,7 @@ def cmd_translate(args: argparse.Namespace, project_dir: Path) -> int:
     manifest = _load_manifest(project_dir)
     _probe_glossary(project_dir)
     force = bool(args.force)
+    _run_start(project_dir, cfg, manifest, "translate", force=force)
 
     if args.next is not None:
         if args.next < 1:
@@ -942,6 +988,7 @@ def cmd_translate(args: argparse.Namespace, project_dir: Path) -> int:
 
     print(f"[init] translating {len(files)} chapter(s)" + (" (force)" if force else ""))
     results = pipeline.run_range(project_dir, files, cfg, force=force)
+    _run_end(project_dir, "translate", "completed", results)
 
     print()
     print(
@@ -959,6 +1006,7 @@ def cmd_retry(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     manifest = _load_manifest(project_dir)
     _probe_glossary(project_dir)
+    _run_start(project_dir, cfg, manifest, "retry", failed=bool(args.failed))
     if args.failed:
         files = [
             e["file"]
@@ -987,6 +1035,7 @@ def cmd_retry(args: argparse.Namespace, project_dir: Path) -> int:
     project.save_manifest(project_dir, manifest)
 
     results = pipeline.run_range(project_dir, files, cfg, force=False)
+    _run_end(project_dir, "retry", "completed", results)
 
     print()
     print(
@@ -1025,10 +1074,15 @@ def cmd_tn(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     manifest = _load_manifest(project_dir)
     files = pipeline.parse_range(args.chapters, manifest)
+    _run_start(project_dir, cfg, manifest, "tn",
+               dry_run=bool(args.dry_run), chapters=len(files))
     result = tn_recheck.recheck_chapters(
         project_dir, manifest, files, cfg, dry_run=bool(args.dry_run)
     )
     logger.log_event(project_dir, {"event": "tn_recheck", **result})
+    # One aggregate event for N chapters, no `chapter` field -- it summarizes
+    # the command, while each chapter's annotator exchange is tier 2.
+    _run_end(project_dir, "tn", "completed")
     prefix = "[dry-run] " if args.dry_run else ""
     print(
         f"{prefix}[ok] tn re-check: {result['scanned']} chapter(s) scanned, "
@@ -1193,10 +1247,13 @@ def cmd_review_notes(args: argparse.Namespace, project_dir: Path) -> int:
     batch_size = int(args.batch_size) if args.batch_size is not None else None
     if batch_size is not None and batch_size < 1:
         raise CliError("--batch-size must be a positive integer")
+    _run_start(project_dir, cfg, None, "review", subject="notes",
+               chapters=args.chapters)
     review_notes.review_notes(
         project_dir, cfg, chapters=args.chapters, batch_size=batch_size
     )
     vcs.commit(project_dir, "review: notes audit")
+    _run_end(project_dir, "review", "completed")
     return 0
 
 
@@ -1247,8 +1304,11 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError("--batch-size must be a positive integer")
     _probe_glossary(project_dir)
     g = glossary.load(project_dir)
+    _run_start(project_dir, cfg, None, "review", subject="glossary",
+               entries=len(g.get("terms", [])), batch_size=batch_size)
     if not g.get("terms"):
         print("[ok] glossary is empty - nothing to review")
+        _run_end(project_dir, "review", "completed")
         return 0
 
     # Header and per-batch progress print BEFORE/DURING the model calls --
@@ -1312,6 +1372,8 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
     if args.fix and applied:
         subject += f" ({len(applied)} fix(es) applied)"
     vcs.commit(project_dir, subject)
+    _run_end(project_dir, "review", "completed" if not warns else "findings",
+             {"findings": [warns]})
     if warns:
         _fail(f"glossary review: {warns} finding(s) need attention")
         return 1
@@ -1779,6 +1841,28 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="(subject=fix) run the report even if the glossary changed since generation")
     p.set_defaults(func=cmd_review)
 
+    p = sub.add_parser("logs", parents=[common], allow_abbrev=False,
+                       help="show the trace logs: orchestration timeline (tier 1) and per-chapter model IO (tier 2)")
+    p.add_argument("spec", nargs="?",
+                   help="chapter spec, resolved exactly as translate/retry/mark do (7, 1-5, CHAPTER_0007.md); "
+                        "omit to show the newest run")
+    p.add_argument("--run", metavar="RUN_ID",
+                   help="select one run by exact id or unique prefix (scans all three buckets)")
+    p.add_argument("--list", action="store_true",
+                   help="list the available run ids with command, start time and chapter count")
+    io_group = p.add_mutually_exclusive_group()
+    io_group.add_argument("--io", dest="io", action="store_true", default=None,
+                          help="include prompt/response bodies (default: follow config log_prompt_bodies)")
+    io_group.add_argument("--no-io", dest="io", action="store_false",
+                          help="metadata only")
+    p.add_argument("--json", action="store_true",
+                   help="emit one JSON object per event on stdout (and nothing else)")
+    p.add_argument("--last", type=int, default=1, metavar="N",
+                   help="show the newest N runs (default: 1)")
+    p.add_argument("--report", action="store_true",
+                   help="regenerate each matched chapter's report.md from its retained runs")
+    p.set_defaults(func=cmd_logs)
+
     p = sub.add_parser("util", parents=[common], allow_abbrev=False,
                        help="maintenance utilities (replace: rewrite a term across translated chapters)")
     p.add_argument("action", choices=["replace"], help="utility to run")
@@ -1891,6 +1975,262 @@ def resolve_project_dir(args: argparse.Namespace) -> Path:
         or args.project_global                 # before the subcommand
         or "."
     ).resolve()
+
+
+def _log_jsonl(path: Path) -> list[dict]:
+    """Every parseable object in one run file; a truncated line is skipped."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    rows: list[dict] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _known_run_ids(project_dir: Path) -> list[dict]:
+    """Every run this project has, newest first, scanning ALL THREE buckets
+    and deduping on run_id.
+
+    One run_id spans its tier-1 file, every chapter's tier-2 file and the
+    project bucket, so selecting a run selects the whole run. A literal
+    per-file listing would make every multi-chapter run look ambiguous.
+    The root bucket has no index, so its metadata comes from the filename."""
+    found: dict[str, dict] = {}
+
+    def note(run_id: str, command: str, started: str | None,
+             chapters: int | None) -> None:
+        entry = found.setdefault(run_id, {
+            "run_id": run_id, "command": command, "started": started,
+            "chapters": chapters or 0})
+        if started and (entry["started"] is None or started < entry["started"]):
+            entry["started"] = started
+        if entry["command"] in ("", command) and command:
+            entry["command"] = command
+        entry["chapters"] = max(entry["chapters"], chapters or 0)
+
+    for path in sorted((project_dir / "logs").glob("run-*.jsonl")):
+        # Legacy llm-*.jsonl files are neither listed nor matched. The root
+        # bucket has no index, so its command comes from the run_start line
+        # the same file opens with -- never from parsing the filename, whose
+        # <tag> may itself contain dashes.
+        run_id = path.name[len("run-"):-len(".jsonl")]
+        rows = _log_jsonl(path)
+        command = next((str(r.get("command")) for r in rows
+                        if r.get("event") == "run_start" and r.get("command")), "")
+        started = next((str(r.get("ts")) for r in rows if r.get("ts")), None)
+        note(run_id, command, started, None)
+
+    index = project_dir / "logs" / "project" / "index.jsonl"
+    for row in _log_jsonl(index):
+        run_id = row.get("run_id")
+        if not isinstance(run_id, str):
+            continue
+        note(run_id, str(row.get("command") or ""), row.get("ts"),
+             0 if row.get("phase") == "open" else None)
+
+    chapters_dir = project_dir / "logs" / "chapters"
+    if chapters_dir.is_dir():
+        # Accumulate ACROSS chapters: one run that translated N chapters
+        # opens N index lines, so per-file counting would report 1.
+        opens: dict[str, int] = {}
+        starts: dict[str, str] = {}
+        commands: dict[str, str] = {}
+        for chapter_index in sorted(chapters_dir.glob("*/index.jsonl")):
+            for row in _log_jsonl(chapter_index):
+                run_id = row.get("run_id")
+                if not isinstance(run_id, str):
+                    continue
+                if row.get("phase") != "open":
+                    continue
+                opens[run_id] = opens.get(run_id, 0) + 1
+                starts.setdefault(run_id, str(row.get("ts") or ""))
+                commands.setdefault(run_id, str(row.get("command") or ""))
+        for run_id, count in opens.items():
+            note(run_id, commands.get(run_id, ""), starts.get(run_id), count)
+
+    return sorted(found.values(),
+                  key=lambda e: (e["started"] or "", e["run_id"]), reverse=True)
+
+
+def _select_run(available: list[dict], wanted: str) -> dict:
+    """Exact run id, or a unique prefix. An unmatched or ambiguous value is a
+    usage error that lists what is available -- a run id embeds a <pid> the
+    user cannot know, so prefix matching has to be generous and precise."""
+    exact = [e for e in available if e["run_id"] == wanted]
+    if len(exact) == 1:
+        return exact[0]
+    matches = [e for e in available if e["run_id"].startswith(wanted)]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise CliError(f"no run matches '{wanted}' - available: "
+                       + (", ".join(e["run_id"] for e in available) or "(none)"))
+    raise CliError(f"'{wanted}' matches {len(matches)} runs - use the full id: "
+                   + ", ".join(e["run_id"] for e in matches))
+
+
+def _chapter_run_ids(project_dir: Path, stems: list[str]) -> list[str]:
+    """Run ids a set of chapters recorded, newest open first, with stale
+    entries (index lines whose files retention has since removed) skipped.
+    The project index is NOT included: it registers chapter-less runs."""
+    found: dict[str, str] = {}
+    for stem in stems:
+        for row in _log_jsonl(logger.bucket_dir(project_dir, stem) / "index.jsonl"):
+            if row.get("phase") != "open":
+                continue
+            run_id = row.get("run_id")
+            if isinstance(run_id, str):
+                found.setdefault(run_id, str(row.get("ts") or ""))
+    ordered = sorted(found.items(), key=lambda kv: kv[1], reverse=True)
+    # Skip stale entries: an index line whose run file retention has since
+    # removed has nothing left to print.
+    return [run_id for run_id, _ in ordered
+            if any((logger.bucket_dir(project_dir, stem) / f"run-{run_id}.jsonl").is_file()
+                   for stem in stems)]
+
+
+def cmd_logs(args: argparse.Namespace, project_dir: Path) -> int:
+    """Print a chapter's (or a run's) trace timeline from logs/.
+
+    Bare `logs` prints the newest run's tier-1 timeline. With a SPEC the runs
+    come from that chapter's own index, newest first."""
+    cfg = _load_config(project_dir)
+    last = int(args.last)
+    if last < 1:
+        raise CliError("--last must be a positive integer")
+
+    available = _known_run_ids(project_dir)
+    if args.list:
+        if not available:
+            _fail("no logs found for this project")
+            return 1
+        if args.json:
+            for entry in available:
+                print(json.dumps(entry, ensure_ascii=False))
+        else:
+            for entry in available:
+                print(f"{entry['run_id']}  {entry['command'] or '-':<12} "
+                      f"{entry['started'] or '-':<32} "
+                      f"{entry['chapters']} chapter(s)")
+        if not args.json:
+            print(f"[ok] {len(available)} run(s)")
+        return 0
+    if args.run is not None:
+        chosen = _select_run(available, args.run)
+        run_ids = [chosen["run_id"]]
+        stems: list[str] = []
+    elif args.spec:
+        manifest = _load_manifest(project_dir)
+        stems = [Path(f).stem for f in pipeline.parse_range(args.spec, manifest)]
+        run_ids = _chapter_run_ids(project_dir, stems)[:last]
+    else:
+        stems = []
+        run_ids = [e["run_id"] for e in available][:last]
+
+    if not run_ids:
+        if args.spec:
+            _fail(f"no logs for spec: {args.spec} (valid chapters: "
+                  f"{_chapter_range(stems)})")
+        else:
+            _fail("no logs found for this project")
+        return 1
+
+    events = _collect_events(project_dir, stems, run_ids)
+    if not events:
+        _fail(f"no logs for spec: {args.spec} (valid chapters: "
+              f"{_chapter_range(stems)})")
+        return 1
+
+    include_io = (args.io if args.io is not None
+                  else bool(cfg.get("log_prompt_bodies", True)))
+    written = ([logreport.write_full_report(project_dir, stem, io=include_io)
+                for stem in stems] if args.report else [])
+
+    if args.json:
+        for event in events:
+            print(json.dumps(_printable(event, include_io), ensure_ascii=False))
+    elif stems:
+        # A SPEC reads that chapter's OWN bucket: its model IO, across the
+        # runs its index names. The orchestration timeline (tier 1) is the
+        # bare-view's subject, and lives in the root bucket.
+        for stem in stems:
+            print(f"# {stem}")
+            for event in events:
+                if event.get("chapter") not in (stem, f"{stem}.md"):
+                    continue
+                print(_describe(event, include_io))
+    else:
+        # No SPEC: the run's orchestration timeline, in order, no grouping.
+        for event in events:
+            print(_describe(event, include_io))
+    for path in written:
+        if path is not None and not args.json:
+            print(f"[ok] report: {path}")
+    if args.json:
+        # --json emits JSON objects and nothing else: the summary line would
+        # make the stream unparseable. House markers live here, not on
+        # stdout-as-data.
+        return 0
+    print(f"[ok] {len(run_ids)} run(s), {len(events)} event(s)")
+    return 0
+
+
+def _chapter_range(stems: list[str]) -> str:
+    numbers = sorted(int(s.split("_")[1]) for s in stems if "_" in s)
+    return f"{numbers[0]}-{numbers[-1]}" if numbers else "(none)"
+
+
+def _collect_events(project_dir: Path, stems: list[str],
+                    run_ids: list[str]) -> list[dict]:
+    """Timeline rows for the requested chapters across the requested runs,
+    newest file first, preserving the order within each file."""
+    wanted = set(run_ids)
+    paths: list[Path] = []
+    for stem in stems or [None]:
+        directory = logger.bucket_dir(project_dir, stem)
+        for path in sorted(directory.glob("run-*.jsonl"), reverse=True):
+            if path.name[len("run-"):-len(".jsonl")] in wanted:
+                paths.append(path)
+    if not stems:
+        for path in sorted((project_dir / "logs").glob("run-*.jsonl"),
+                           reverse=True):
+            if path.name[len("run-"):-len(".jsonl")] in wanted:
+                paths.append(path)
+    events: list[dict] = []
+    for path in paths:
+        events.extend(_log_jsonl(path))
+    return events
+
+
+def _printable(event: dict, include_io: bool) -> dict:
+    if include_io or event.get("event") not in ("llm_request", "llm_response"):
+        return event
+    return {k: v for k, v in event.items() if k not in ("prompt", "response")}
+
+
+def _describe(event: dict, include_io: bool) -> str:
+    name = event.get("event", "?")
+    chapter = event.get("chapter")
+    prefix = f"{chapter} " if chapter else ""
+    bits = [f"{prefix}{name}"]
+    for key in ("stage", "phase", "outcome", "verdict", "job",
+                "model", "finish_reason", "elapsed_s", "calls", "attempts"):
+        if key in event and event[key] is not None:
+            bits.append(f"{key}={event[key]}")
+    if include_io:
+        for key in ("prompt", "response"):
+            if isinstance(event.get(key), str):
+                bits.append(f"{key}={event[key][:200]}")
+    return "  ".join(bits)
 
 
 def main(argv: list[str] | None = None) -> int:

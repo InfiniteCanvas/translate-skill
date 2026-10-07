@@ -86,7 +86,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
-from migrations import v002, v004, v005, v006, v007, v008, v010  # noqa: E402
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -1436,6 +1436,93 @@ def case_12_v010() -> None:
               f"lines={v010.migrate(empty, src)!r}")
 
 
+def case_13_v011() -> None:
+    """v011: the two-tier log layout.
+
+    The three NEW keys (log_orchestration, log_prompt_bodies,
+    log_chapter_keep_runs) are folded in by materialize_config, and
+    log_llm_keep_runs is rewritten 5 -> 10 -- but ONLY when the raw file
+    still holds exactly 5, v009's "untouched default" rule. A project that
+    chose another number keeps it.
+
+    The fixture writes the literal 5 on purpose: folding config.DEFAULTS
+    after v011 yields 10, so a fixture built from DEFAULTS would never
+    exercise the rewrite branch at all.
+
+    The rewrite is on the RAW file, and happens BEFORE materialize_config,
+    because load_config deep-merges the NEW default (10) UNDER the file's own
+    contents -- a still-on-disk 5 would win over it and the bump would
+    silently vanish.
+    """
+    def make(root: Path, name: str, keep_runs) -> Path:
+        proj = root / name
+        proj.mkdir(parents=True)
+        (proj / "config.json").write_text(json.dumps({
+            "version": 10,
+            "providers": {"translator": [{"base_url": "http://x",
+                                          "model": "m"}]},
+            "log_llm": True,
+            "log_llm_keep_runs": keep_runs,
+        }, indent=2) + "\n", encoding="utf-8")
+        return proj
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"           # no templates -> sync_templates stays silent
+        src.mkdir()
+
+        proj = make(root, "on-default", 5)
+        lines = v011.migrate(proj, src)
+        after = json.loads((proj / "config.json").read_text(encoding="utf-8"))
+        check("13a v011: the 5 -> 10 rewrite is reported",
+              any("log_llm_keep_runs 5 -> 10" in line for line in lines),
+              f"{lines}")
+        check("13b v011: the three new keys were added",
+              after["log_orchestration"] is True
+              and after["log_prompt_bodies"] is True
+              and after["log_chapter_keep_runs"] == 3,
+              f"{ {k: after[k] for k in ('log_orchestration', 'log_prompt_bodies', 'log_chapter_keep_runs') if k in after} }")
+        check("13c v011: log_llm_keep_runs is now 10",
+              after["log_llm_keep_runs"] == 10, f"{after['log_llm_keep_runs']}")
+        check("13d v011: the keys it did not touch are untouched",
+              after["log_llm"] is True and after["version"] == 10,
+              f"{after}")
+        check("13e v011: idempotent -- the second call reports nothing",
+              v011.migrate(proj, src) == [],
+              f"{v011.migrate(proj, src)!r}")
+
+        # A project that CHOSE a different number keeps it.
+        proj2 = make(root, "chosen", 25)
+        v011.migrate(proj2, src)
+        after2 = json.loads((proj2 / "config.json").read_text(encoding="utf-8"))
+        check("13f v011: a value other than 5 is left alone",
+              after2["log_llm_keep_runs"] == 25, f"{after2['log_llm_keep_runs']}")
+        check("13g v011: but the new keys are still added",
+              after2["log_chapter_keep_runs"] == 3, "")
+
+        # --dry-run writes nothing and still names the bump.
+        proj3 = make(root, "dry", 5)
+        dry = v011.migrate(proj3, src, dry_run=True)
+        check("13h v011: --dry-run reports the rewrite without writing",
+              any("log_llm_keep_runs 5 -> 10" in line for line in dry)
+              and json.loads(
+                  (proj3 / "config.json").read_text(encoding="utf-8")
+              )["log_llm_keep_runs"] == 5, f"{dry}")
+
+        check("13i v011: VERSION matches the filename", v011.VERSION == 11, "")
+        check("13j v011: DESCRIPTION is one line",
+              isinstance(v011.DESCRIPTION, str)
+              and "\n" not in v011.DESCRIPTION, "")
+
+        # v011 is the chain head: chain() is ascending, so the head is the
+        # LAST entry, and current_version() is what init/migrate actually use.
+        check("13k v011: v011 is the chain head",
+              migrations.chain()[-1].VERSION == 11
+              and migrations.current_version() == 11,
+              f"chain_head={migrations.chain()[-1].VERSION} "
+              f"current={migrations.current_version()}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -1453,6 +1540,7 @@ def main() -> int:
     case_10_sync_bom()
     case_11_v008()
     case_12_v010()
+    case_13_v011()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

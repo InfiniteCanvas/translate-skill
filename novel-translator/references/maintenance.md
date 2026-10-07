@@ -1,8 +1,58 @@
 Agent-facing workflows for glossary, review-report, and translator's-note
 maintenance: semantics, flags, defaults, console markers, and exit
-behavior for `review glossary|notes|fix`, `tn`, `glossary
+behavior for `review glossary|notes|fix`, `tn`, `logs`, `glossary
 set|merge|retire|replace|search|count`, and `util replace`. File formats
 and config schemas live in `references/file-formats.md`.
+
+## Reading the trace logs (`logs`)
+
+Read-only. Nothing here mutates project state except `--report`, which
+regenerates a derived `report.md`.
+
+```
+uv run "$SCRIPT" logs                       # newest run's orchestration timeline (tier 1)
+uv run "$SCRIPT" logs 7                     # one chapter's model IO (tier 2)
+uv run "$SCRIPT" logs 1-5 --last 3          # a range, newest 3 runs
+uv run "$SCRIPT" logs --list                # run ids, command, start time, chapter count
+uv run "$SCRIPT" logs --run 20261007-142233-translate-4711
+uv run "$SCRIPT" logs --run 20261007         # unique prefix also works
+uv run "$SCRIPT" logs 7 --json --no-io      # JSON objects on stdout, nothing else
+uv run "$SCRIPT" logs 7 --report --io       # regenerate report.md with model bodies
+```
+
+**Two views.** With no SPEC you get the **orchestration timeline** (tier 1:
+run/chapter lifecycle, stage transitions, gate verdicts, degradations, one
+`llm_call` summary per model call). With a SPEC you get **that chapter's model
+IO** (tier 2: `llm_request` / `llm_response` / `chunk` / `result` /
+`feedback`). A SPEC resolves exactly as `translate` / `retry` / `mark` do —
+`7`, `1-5`, `CHAPTER_0007.md`.
+
+**`--run`** takes an exact run id or a **unique prefix** (a run id embeds a
+`<pid>` the operator cannot know). An unknown or ambiguous value is exit **2**
+and lists the ids that do exist. One run id spans its tier-1 file, every
+chapter's tier-2 file and the project bucket, so selecting a run selects the
+whole run.
+
+**`--io` / `--no-io`** control prompt/response bodies; the default follows
+`log_prompt_bodies` in the project's `config.json`.
+
+**`--json`** emits one JSON object per event and **nothing else** on stdout —
+no summary line, no chapter headers — so the stream pipes straight into `jq`.
+House `[ok]` / `[warn]` / `[FAIL]` markers still go to stderr on error paths.
+
+**`--last N`** selects the newest N runs (default 1). With a SPEC the runs
+come from that chapter's own `index.jsonl`, newest first.
+
+**`--report`** regenerates `logs/chapters/<stem>/report.md` for each matched
+chapter from its retained runs. `--io` additionally wraps every call that
+actually carried a body in a `<details>` block.
+
+**Exit codes:** 0 printed something; 1 nothing found (no logs at all, or no
+logs for that spec) with a `[FAIL]` line; 2 an out-of-range spec or an
+unusable `--run` value.
+
+A `logs/` directory written before v11 (`llm-*.jsonl`) is never listed,
+matched or pruned.
 
 ## Glossary upkeep
 

@@ -159,24 +159,32 @@ def _nearest_earlier_recap(state: dict, manifest: list[dict], file: str) -> str:
     return ""
 
 
-def _default_chat(project_dir: Path, cfg: dict) -> Callable[[str], str]:
+def _default_chat(project_dir: Path, cfg: dict,
+                  chapter: str | None = None) -> Callable[[str], str]:
     """The recap-provider call, with the pipeline's per-project LLM trace
-    logging (tn_recheck.default_chat's pattern)."""
+    logging (tn_recheck.default_chat's pattern).
+
+    `chapter` is the chapter whose tier-2 bucket the exchange belongs in --
+    for a backfill that is the PREDECESSOR being summarized, not the chapter
+    currently being translated."""
     from lib import pipeline  # local: pipeline imports this module at load time
 
     def chat(prompt: str) -> str:
         return pipeline._chat(project_dir, cfg, "recap", prompt,
-                              json_schema=RECAP_SCHEMA)
+                              json_schema=RECAP_SCHEMA, chapter=chapter)
 
     return chat
 
 
 def _generate(project_dir: Path, cfg: dict, chapter_title: str, body: str,
               previous_recap: str,
-              chat: Callable[[str], str] | None) -> str:
+              chat: Callable[[str], str] | None,
+              chapter: str | None = None) -> str:
     """One recap-provider call over recap.md -> the recap string.
 
-    Raises on any failure (callers treat recap generation as advisory)."""
+    `chapter` only selects the tier-2 bucket when `chat` is the default
+    (tests pass a stub and observe nothing). Raises on any failure (callers
+    treat recap generation as advisory)."""
     from lib import pipeline  # local: pipeline imports this module at load time
 
     tpl = pipeline._load_template(project.paths(project_dir)["templates"], "recap.md")
@@ -191,7 +199,7 @@ def _generate(project_dir: Path, cfg: dict, chapter_title: str, body: str,
         },
         "recap.md",
     )
-    do_chat = chat if chat is not None else _default_chat(project_dir, cfg)
+    do_chat = chat if chat is not None else _default_chat(project_dir, cfg, chapter)
     resp = do_chat(prompt)
     data = client.extract_json(resp)
     recap = data.get("recap") if isinstance(data, dict) else None
@@ -231,7 +239,10 @@ def ensure_recap(project_dir: Path, cfg: dict, manifest: list[dict], file: str,
         fm, body = project.read_chapter(prev_path)
         title = str(fm.get("title") or fm.get("chapter_title") or "")
         previous_recap = _nearest_earlier_recap(state, manifest, prev)
-        recap = _generate(project_dir, cfg, title, body, previous_recap, chat)
+        # The recap describes the PREDECESSOR, so its model call belongs in
+        # the predecessor's tier-2 bucket, next to that chapter's own work.
+        recap = _generate(project_dir, cfg, title, body, previous_recap, chat,
+                          chapter=prev)
         state.setdefault("chapters", {})[Path(prev).stem] = _stamp(recap)
         save_state(project_dir, state)
         print(f"{tag} [init] recap (backfill {prev})")
@@ -256,7 +267,8 @@ def record_recap(project_dir: Path, cfg: dict, file: str,
     (tests pass a stub).
     """
     try:
-        recap = _generate(project_dir, cfg, title, body, prev_recap_text, chat)
+        recap = _generate(project_dir, cfg, title, body, prev_recap_text, chat,
+                          chapter=file)
         state = load_state(project_dir)
         state.setdefault("chapters", {})[Path(file).stem] = _stamp(recap)
         save_state(project_dir, state)

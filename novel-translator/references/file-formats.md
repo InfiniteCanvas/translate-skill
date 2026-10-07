@@ -35,8 +35,21 @@ drift comparison.
 ├── export/              built epubs
 ├── .git/                git repository (created by `init`, backfilled by migrate v003) — skill-managed, see Git history
 ├── .gitignore           skill-managed ignore rules for transient/rebuildable paths (see Git history)
-└── logs/                llm-*-<command>-<pid>.jsonl (one LLM trace per project per CLI invocation, newest log_llm_keep_runs kept); epub-build.log (background epub-build output)
+└── logs/                two-tier trace (see § Two-tier trace logs)
+    ├── run-<run_id>.jsonl      tier 1: this invocation's orchestration timeline
+    ├── project/
+    │   ├── run-<run_id>.jsonl  tier 2: chapter-less model IO (profile, review)
+    │   └── index.jsonl         append-only open/close markers for this invocation
+    ├── chapters/
+    │   └── CHAPTER_NNNN/
+    │       ├── run-<run_id>.jsonl   tier 2: this chapter's model IO
+    │       ├── index.jsonl          append-only open/close markers
+    │       └── report.md            human-readable summary (metadata-only)
+    └── epub-build.log       background epub-build output
 ```
+
+`run_id` is `YYYYMMDD-HHMMSS-<command>-<pid>`, computed once per resolved
+project, so every bucket of one run shares it.
 
 Chapter file names must match `CHAPTER_NNNN.md` and nothing else: **exactly 4**
 zero-padded ASCII digits, no suffix, EXACT case (the pattern carries no
@@ -223,11 +236,14 @@ LLM call.
   "translate_max_output_tokens": 65536, // per-call OUTPUT cap + packing budget for splitting: parts close past floor(0.8*this)-256 of per-line estimated cost; input context is never limited. 64k, raised in v009 from 8192 so a reasoning model drawing from the same budget (measured ~10.5k on GLM-5.3's translator's-notes pass) does not truncate the answer; must stay <= the translator blocks' max_tokens
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation (--style auto only)
   "style_sample_chars": 12000,   // rough source-character budget for the sample (--style auto only)
-  "log_llm": true,               // full request/response LLM trace; false disables the LLM trace lines only
-  "log_llm_keep_runs": 5,        // one llm-*.jsonl per project per CLI invocation; older logs pruned to the newest N (by mtime)
+  "log_orchestration": true,    // tier-1 structural events (see § Two-tier trace logs); false leaves the chapter tier-2 files and both indexes untouched
+  "log_llm": true,               // llm_request/llm_response ONLY; result/chunk/feedback and both indexes are unconditional, so the chapter tier-2 file survives
+  "log_prompt_bodies": true,     // the prompt/response TEXT; false records prompt_chars / response_chars and keeps finish_reason/usage/elapsed_s/error
+  "log_llm_keep_runs": 10,       // retention for logs/ and logs/project/; older runs pruned to the newest N (by mtime)
+  "log_chapter_keep_runs": 3,    // retention per chapter directory, independent of every other chapter
   "review_batch_size": 40,       // entries per `review glossary` / `review notes` model review call; `--batch-size` overrides per run
   "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary` / `review notes`, read back by `review fix`)
-  "version": 10                  // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
+  "version": 11                  // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
 
@@ -964,6 +980,19 @@ actually wants (is `0042a` chapter 43? a second part?), so the TOC decides.
 This step changes no config key and delegates only to
 `common.sync_templates` (idempotent: a second run renames nothing and reports
 only the still-deferred extras).
+`v011` (DESCRIPTION: `two-tier log layout (new log_orchestration,
+log_prompt_bodies, log_chapter_keep_runs; log_llm_keep_runs 5->10)`) folds
+`config.DEFAULTS` in for the three NEW keys, and rewrites
+`log_llm_keep_runs` 5 → 10 in the **raw** config, not the merged form.
+That rewrite is not optional polish: `materialize_config` writes the entire
+merged config on every `init` and `migrate`, so with the old default at 5
+essentially every existing project already carries an explicit `5`, and a
+bare `standard_step()` would preserve it — delivering the retention bump to
+new projects only. The same ambiguity `v009` accepts applies to this number:
+a user who genuinely wanted exactly 5 cannot be told apart from one who
+never touched it, and their 5 is bumped; it is reversible by setting it back,
+after which `migrate` is a no-op. Same trade-off as `v009`: once written, the
+new value is an explicit literal that no longer tracks `DEFAULTS`.
 `--dry-run` writes nothing and reports
 `[git] would initialize the repository (a real run commits after each
 migrate step)` (cmd_migrate prefixes step lines with `[dry-run] `). A
@@ -1149,6 +1178,66 @@ Categories count non-zero entries in the fixed order
 show `other K`); a zero-keep chapter prints `[CHAPTER_0042] [ok] notes: 0
 kept` with no parenthetical, and a zero-drop chapter ends the line at the
 kept clause (no dropped segment, no file pointer).
+
+## Two-tier trace logs (`logs/`)
+
+Every event belongs to **exactly one** tier, and the tiers never mix.
+
+**Tier 1 — orchestration** (`logs/run-<run_id>.jsonl`). What happened in this
+run: `run_start`, `chapter_start`, `stage` (`TRANSLATE`, `VALIDATE`, … each
+with `phase: begin|end` and `elapsed_s`), `gate` (the verdict plus its
+**complete** reason list), `degraded`, `attempt`, `attempt_failed`,
+`balance_advisory`, `glossary_cleanup`, and one `llm_call` metadata summary
+per model call. **Tier 1 never carries a prompt or a response** — `llm_call`
+holds `model`, `usage`, `finish_reason`, `elapsed_s` and `error` only.
+
+**Tier 2 — model IO, per chapter**
+(`logs/chapters/<stem>/run-<run_id>.jsonl`). What the models were given and
+said for one chapter: `llm_request`, `llm_response`, plus the pipeline's own
+reading of individual model outputs — `chunk` (per-part bounds and outcome),
+`result` (the verdict it accepted, the terms it proposed, the notes it kept),
+and `feedback` (the complete accumulated reason history).
+
+A tier-2 event with **no** chapter lands in the project bucket,
+`logs/project/run-<run_id>.jsonl` — that is where `profile` and the `review`
+passes go. The chapter bucket is keyed on the chapter file's **stem**, which
+is exactly the existing `draft/` / `notes/` artifact key. No sanitizing:
+every stem reaching the logger came from a `CHAPTER_RE` match, so it is
+already filesystem-safe.
+
+Any event name not in the tier-2 set defaults to **tier 1**, so an unknown or
+misspelled name can never leak model text into a chapter's file.
+
+### `index.jsonl` and `report.md`
+
+`index.jsonl` (one per bucket) is **append-only and never pruned**, and is
+written unconditionally of both gates: an `open` line with no matching `close`
+is the signal that an invocation died. Retention deliberately does not touch
+it — being the oldest file by mtime, "keep the newest N" would delete exactly
+the file that records the history.
+
+`report.md` (one per chapter) is the human-readable face of those logs:
+header, stage timeline, gate verdicts, and the call table. `chapter_end`
+writes a **metadata-only** report bounded to the current invocation;
+`translate logs <chapter> --report [--io]` regenerates it across every
+retained run, and `--io` additionally wraps each call that actually carried a
+body in a `<details>` block. Model output is HTML-escaped on the way in, so a
+reply containing `</details>` or a fenced block cannot corrupt the structure.
+
+### Gates
+
+| key | default | what `false` removes |
+|---|---|---|
+| `log_orchestration` | `true` | the tier-1 run file only |
+| `log_llm` | `true` | `llm_request` / `llm_response` only — `result`, `chunk` and `feedback` are unconditional |
+| `log_prompt_bodies` | `true` | the `prompt` / `response` strings, replaced by `prompt_chars` / `response_chars` |
+
+The per-call counters are incremented **before** gating, so `chapter_end` and
+`run_end` still report real call and token totals with either switch off.
+Flags are resolved once per invocation, not per event.
+
+Pre-v11 `llm-*.jsonl` files are never listed, never matched and never pruned;
+they are simply left alone.
 
 ## Draft artifacts (`draft/`)
 

@@ -247,7 +247,8 @@ retranslating a chapter refreshes only its own entry).
   '...' (<reason>)`, applied only once the chapter's translation is accepted); kept
   signals are surfaced to the faithfulness reviewer, which
   makes the final pass/fail call on terminology. The `glossary_cleanup`
-  trace events in `logs/llm-*.jsonl` show each removal (source + reason)
+  trace events in the chapter's orchestration timeline
+  (`logs/run-<run_id>.jsonl`) show each removal (source + reason)
   and the kept terms; disable the pruning with `glossary_auto_cleanup:
   false`.
 
@@ -767,30 +768,80 @@ Every file schema (manifest, chapter state, glossary, notes, novel_info)
 is documented in `references/file-formats.md`.
 ## Debugging
 
-Every LLM call logs an `llm_request` line and an `llm_response` line in the
-run log — `logs/llm-<timestamp>-<command>-<pid>.jsonl`, one file per project per CLI
-invocation: the request (params + full prompt, written before the call) and
-the response (raw response, finish_reason, usage, timing), paired by
-`call_id`; a call that hits the 400 fallback (retry without
-`response_format`) adds one extra `llm_request` line for the retried
-request. A multi-model job's fan-out logs one request/response pair per
-candidate (meta `{"job": <job>, "candidate": i, "candidates": n}`, i
-1-based) plus the consensus call (meta `{"job": "consensus",
-"consensus_for": <job>}`), so a job with N models in its array makes
-N + 1 calls per task where the single-model pipeline makes one.
-Pipeline attempts, `balance_advisory` events (which now carry drift
-signals alongside under-use warnings and over-count info),
-`glossary_cleanup` events, `glossary_review` events (entries, batches,
-batch_errors, findings, applied, skipped), `notes_review` events
-(chapters, units, batches, batch_errors, skipped, findings -- one per
-`review notes` run), and `review_fix` events
-(specs_run, applied, noop, failed, skipped_invalid, skipped_conflict,
-changed_chapters, needs_decision -- one per `review fix` run) are
-interleaved in the same
-stream. The console is a
-summary, the log is truth.
-Each run prunes older logs to the newest `log_llm_keep_runs` (default 5);
-disable the LLM lines with `log_llm: false` in config.json.
+Every run writes **two tiers** of trace logs under `logs/`. Each event belongs
+to exactly one tier, and the tiers never mix.
+
+**Tier 1 — orchestration** (`logs/run-<run_id>.jsonl`): what happened in this
+run. `run_start`, `chapter_start`, `stage` (each stage with
+`phase: begin|end` and `elapsed_s`), `gate` (the verdict plus its *complete*
+reason list), `degraded`, `attempt`, `attempt_failed`, `balance_advisory`,
+`glossary_cleanup`, and one `llm_call` metadata summary per model call
+(`model`, `usage`, `finish_reason`, `elapsed_s`, `error`). Tier 1 never
+carries a prompt or a response, so the timeline can't grow a body by
+accident.
+
+**Tier 2 — model IO, per chapter**
+(`logs/chapters/CHAPTER_NNNN/run-<run_id>.jsonl`): what the models were given
+and said for one chapter. `llm_request` (params + full prompt, written before
+the call) and `llm_response` (raw response, finish_reason, usage, timing),
+paired by `call_id`; a call that hits the 400 fallback (retry without
+`response_format`) adds one extra `llm_request` line for the retried request.
+A multi-model job's fan-out logs one request/response pair per candidate (meta
+`{"job": <job>, "candidate": i, "candidates": n}`, i 1-based) plus the
+consensus call (meta `{"job": "consensus", "consensus_for": <job>}`), so a job
+with N models in its array makes N + 1 calls per task where the single-model
+pipeline makes one. Tier 2 also carries the pipeline's own reading of
+individual model outputs: `chunk` (per-part bounds and outcome), `result` (the
+verdict it accepted, the terms it proposed, the notes it kept) and `feedback`
+(the complete accumulated reason history).
+
+A tier-2 event with **no** chapter — `profile`, the `review` passes — lands in
+the project bucket `logs/project/`.
+
+`run_id` is `YYYYMMDD-HHMMSS-<command>-<pid>`, computed once per project, so
+every bucket of one run shares it and the tiers join.
+
+Each bucket also has an **append-only `index.jsonl`** (never pruned): an
+`open` line with no matching `close` marks the invocation that died. And each
+chapter gets a **`report.md`** — header, stage timeline, gate verdicts, call
+table — written metadata-only at `chapter_end` and regenerable with
+`translate logs <chapter> --report [--io]`.
+
+### Reading the logs
+
+```bash
+uv run scripts/translate.py logs                 # newest run's orchestration timeline
+uv run scripts/translate.py logs 7               # one chapter's model IO
+uv run scripts/translate.py logs --list           # run ids, command, start, chapter count
+uv run scripts/translate.py logs --run 20261007   # exact id or unique prefix
+uv run scripts/translate.py logs 7 --json --no-io # JSON objects on stdout, nothing else
+uv run scripts/translate.py logs 7 --report --io  # regenerate report.md with bodies
+```
+
+Exit 0 printed something, 1 nothing found, 2 a bad spec or `--run` value.
+`references/maintenance.md` has the full flag reference.
+
+### Tuning
+
+| key | default | effect |
+|---|---|---|
+| `log_orchestration` | `true` | `false` removes the tier-1 run file only |
+| `log_llm` | `true` | `false` removes `llm_request`/`llm_response` only — `result`/`chunk`/`feedback` and both indexes stay |
+| `log_prompt_bodies` | `true` | `false` keeps the call accountable (`finish_reason`, `usage`, `elapsed_s`, `error`) and records `prompt_chars`/`response_chars` instead of the text |
+| `log_llm_keep_runs` | `10` | retention for `logs/` and `logs/project/` |
+| `log_chapter_keep_runs` | `3` | retention per chapter directory, independent of every other chapter |
+
+Retention prunes each bucket by modification time and matches the
+`run-<id>.jsonl` name shape only, so `index.jsonl`, `report.md` and
+`epub-build.log` are never touched. Call and token counters accumulate before
+gating, so `chapter_end`/`run_end` still report real totals with either switch
+off. `logs/llm-*.jsonl` files written before v11 are never listed, matched or
+pruned.
+
+Other command-level events (`glossary_review` with entries/batches/findings,
+`notes_review`, `review_fix`) are single tier-1 summary events, one per run.
+
+The console is a summary, the logs are truth.
 
 Background epub builds append their output (including epubcheck results) to
 `logs/epub-build.log`, with `=== epub build after CHAPTER_NNNN.md | timestamp ===`

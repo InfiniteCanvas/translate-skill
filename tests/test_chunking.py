@@ -149,7 +149,8 @@ def make_fake_chat(calls: list[dict],
     (or None) they echo coverage. Verdicts pop from verdicts (default
     SUCCESS); terms/notes/recap answer empty."""
 
-    def fake(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None):
+    def fake(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None,
+            chapter=None):
         calls.append({"job": job, "prompt": prompt, "max_tokens": max_tokens})
         if "verdict" in prompt:
             verdict, reasons = (

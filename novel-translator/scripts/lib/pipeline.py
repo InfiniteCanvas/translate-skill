@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -469,6 +470,7 @@ def _apply_glossary_proposal(
     g: dict, proposal: Any, chapter_order: int, cfg: dict, merge_template: str,
     tag: str, project_dir: Path,
     corpus: str = "", min_occurrences: int = 0,
+    chapter: str | None = None,
 ) -> None:
     """Apply one glossary proposal: add, merge, absorb, or silently skip.
 
@@ -609,7 +611,8 @@ def _apply_glossary_proposal(
         },
         "glossary_merge.md",
     )
-    resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=MERGE_SCHEMA)
+    resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=MERGE_SCHEMA,
+                 chapter=chapter)
     merged = client.extract_json(resp)
     if not isinstance(merged, dict):
         raise ValueError("merge response is not a JSON object")
@@ -651,7 +654,8 @@ def _apply_glossary_proposal(
 
 def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
                            signals: list[dict], source_body: str,
-                           tag: str) -> tuple[list[dict], dict | None]:
+                           tag: str, chapter: str | None = None
+                           ) -> tuple[list[dict], dict | None]:
     """Ask the glossary job whether balance drift-signal terms deserve
     glossary entries; the mundane ones are slated for retirement. Runs on
     advisory drift signals, not gate failures. Returns (signals_to_keep,
@@ -685,7 +689,8 @@ def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
             "sample_lines": "\n".join(sample_lines) if sample_lines else "(none)",
         }
         prompt = fill(tpl, ctx, "glossary_cleanup.md")
-        resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=CLEANUP_SCHEMA)
+        resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=CLEANUP_SCHEMA,
+                     chapter=chapter)
         data = client.extract_json(resp)
         decisions = data.get("decisions") if isinstance(data, dict) else None
         if not isinstance(decisions, list):
@@ -714,6 +719,11 @@ def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
             "kept_sources": [s["source"] for s in signals],
         }
     except Exception as exc:  # noqa: BLE001 - fail-safe: keep every signal
+        logger.log_event(project_dir, {
+            "event": "degraded", "chapter": chapter, "where": "glossary_cleanup",
+            "reason": f"{type(exc).__name__}: {exc} - keeping all signals, "
+                      "retiring nothing",
+        })
         print(f"{tag} [warn] glossary cleanup failed - keeping all signals: {exc}")
         return signals, None
 
@@ -836,13 +846,18 @@ def _response_cut(resp: str) -> bool:
 
 def _chat(project_dir: Path, cfg: dict, job: str, prompt: str,
           json_schema: dict | None = None,
-          max_tokens: int | None = None) -> str:
+          max_tokens: int | None = None,
+          chapter: str | None = None) -> str:
     """client.chat with per-project trace logging of the full exchange,
     fanned out over the job's provider blocks and merged by the consensus
     provider when there is more than one -- consensus.chat owns the trace
-    logging and the fan-out."""
+    logging and the fan-out.
+
+    `chapter` is the chapter's file stem (or None); it is threaded explicitly
+    so the exchange lands in that chapter's tier-2 bucket."""
     return consensus.chat(project_dir, cfg, job, prompt,
-                          json_schema=json_schema, max_tokens=max_tokens)
+                          json_schema=json_schema, max_tokens=max_tokens,
+                          chapter=chapter)
 
 
 def _notes_report_line(tag: str, stem: str, kept: list[dict],
@@ -891,23 +906,107 @@ def _notes_report_line(tag: str, stem: str, kept: list[dict],
 # --------------------------------------------------------------------------
 
 
+def _log_chapter_start(project_dir: Path, file: str, entry: dict,
+                       force: bool, state: dict, lines: int) -> None:
+    """Open the chapter's orchestration timeline, once the resume state and
+    line count are known."""
+    logger.log_event(project_dir, {
+        "event": "chapter_start", "chapter": file,
+        "number": int(entry.get("number", 0)),
+        "lines": lines,
+        "resume_stage": state.get("stage"),
+        "resume_chunks": len(state.get("chunks") or []),
+        "force": force,
+    })
+
+
+def _log_chapter_end(project_dir: Path, file: str, entry: dict, outcome: str,
+                     state: dict, stages_run: list[str], attempts: int,
+                     error: BaseException | None = None) -> None:
+    """Close the chapter's timeline and index.jsonl, on the normal paths and
+    on the crash path alike.
+
+    calls/tokens/elapsed_s come from the logger's per-chapter counters, which
+    accumulate before gating -- so they are non-zero even with
+    log_orchestration off. A crash may have cut aggregation short; the index
+    close line, not these numbers, is the reliable crash signal."""
+    stats = logger.take_chapter_stats(project_dir, file)
+    logger.log_event(project_dir, {
+        "event": "chapter_end", "chapter": file,
+        "number": int(entry.get("number", 0)),
+        "outcome": outcome,
+        "attempts": attempts,
+        "stages_run": list(stages_run),
+        "calls": stats["calls"],
+        "tokens": stats["tokens"],
+        "elapsed_s": stats["elapsed_s"],
+        **({"error": f"{type(error).__name__}: {error}"} if error else {}),
+    })
+    logger.index_line(project_dir, file, "close", outcome=outcome,
+                      attempts=attempts,
+                      stages=len(stages_run), calls=stats["calls"],
+                      tokens=stats["tokens"], elapsed_s=stats["elapsed_s"])
+    # Metadata-only report, bounded to this run. Bodies only on demand, via
+    # `translate logs --report --io`.
+    from lib import logreport  # local: logreport imports logger, not pipeline
+    logreport.write_run_report(project_dir, file,
+                               int(entry.get("number", 0)),
+                               logger.current_run_id(project_dir) or "")
+
+
 def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) -> str:
     """Run the staged pipeline for one chapter.
 
     Returns "translated", "needs-review", or "skipped". Prints progress lines
     prefixed with "[CHAPTER_NNNN] ".
-    """
+
+    The lifecycle wrapper: it resolves the manifest entry, takes the skip
+    decision, opens chapter_start, and closes chapter_end on every exit path
+    including a raise (outcome "crashed"), so a chapter never leaves an
+    unclosed index line behind."""
     paths = project.paths(project_dir)
     manifest = project.load_manifest(project_dir)
     entry = project.find_entry(manifest, file)
     if entry is None:
         raise PipelineError(f"{file}: no manifest entry (run 'init' or 'status' first)")
     tag = f"[CHAPTER_{int(entry['number']):04d}]"
-    stem = Path(file).stem
 
     if entry.get("status") == "translated" and not force:
         print(f"{tag} [ok] already translated - skipped")
         return "skipped"
+
+    # The index open goes in BEFORE the worker runs: index.jsonl is the
+    # crash signal, so it must exist even when the worker dies before it can
+    # report a line count. The tier-1 chapter_start follows inside the worker,
+    # where the resume state and line count are known.
+    logger.index_line(project_dir, file, "open", command="translate",
+                      file=file, number=int(entry.get("number", 0)))
+    logger.note_chapter_start(project_dir, file)
+    try:
+        outcome, state, stages_run, attempts_run = _run_chapter(
+            project_dir, file, cfg, force, paths, manifest, entry, tag)
+    except Exception as exc:  # noqa: BLE001 - recorded, then re-raised unchanged
+        _log_chapter_end(project_dir, file, entry, "crashed", {}, [], 0, exc)
+        raise
+    _log_chapter_end(project_dir, file, entry, outcome, state, stages_run,
+                     attempts_run)
+    return outcome
+
+
+def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
+                 paths: dict, manifest: list[dict], entry: dict,
+                 tag: str) -> tuple[str, dict, list[str]]:
+    """The staged pipeline proper. Returns (outcome, state, stages_run) so
+    the lifecycle wrapper can report them; run_chapter owns the logging."""
+    stem = Path(file).stem
+    # Stages this invocation actually entered, in order. A resumed chapter
+    # enters fewer than the full set, and the log says so.
+    stages_run: list[str] = []
+    # Attempts this invocation actually ran, counted at the top of the loop.
+    # Derived from state["attempt"] instead it would be wrong: that counter
+    # increments only on FAILURE, so it reads 0 after a clean first pass and
+    # 3 after three failures -- neither is the number of attempts run.
+    attempts_run = 0
 
     if force:
         for artifact in (f"{stem}.state.json", f"{stem}.md", f"{stem}.lines.json"):
@@ -990,9 +1089,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         print(f"{tag} [warn] {file}: source chapter has no content - marked needs-review")
         project.set_status(manifest, file, "needs-review")
         project.save_manifest(project_dir, manifest)
-        return "needs-review"
+        return "needs-review", state, stages_run, attempts_run
     body_for_counts = "\n".join(source_lines)
     chapter_order = int(entry.get("order", 0))
+    _log_chapter_start(project_dir, file, entry, force, state, len(source_lines))
 
     templates_dir = paths["templates"]
     tpl_translation = _load_template(templates_dir, "translation.md")
@@ -1028,6 +1128,65 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         state["stage"] = next_stage
         save_state(paths["draft"], file, state)
 
+    def stage_enter(stage: str) -> float:
+        """Record a stage transition and start its clock. Returns the start
+        time for stage_exit.
+
+        Called just inside the stage's resume guard, so a resumed chapter
+        enters only the stages it actually reaches and emits no TRANSLATE
+        event."""
+        if stage not in stages_run:
+            stages_run.append(stage)
+        started = time.monotonic()
+        logger.log_event(project_dir, {
+            "event": "stage", "chapter": file, "stage": stage, "phase": "begin",
+            "attempt": int(state.get("attempt", 0) or 0) + 1})
+        return started
+
+    def stage_exit(stage: str, started: float) -> None:
+        """Close a stage transition. Reached only when the stage's body ran
+        to completion -- a stage that raises out of the pipeline deliberately
+        (PipelineError) leaves no end event, because it did not end, and the
+        crash is recorded by chapter_end and the index close line."""
+        logger.log_event(project_dir, {
+            "event": "stage", "chapter": file, "stage": stage, "phase": "end",
+            "attempt": int(state.get("attempt", 0) or 0) + 1,
+            "elapsed_s": round(time.monotonic() - started, 2)})
+
+    def log_gate(stage: str, verdict: str, reasons: list[str]) -> None:
+        """A gate verdict with the COMPLETE reason list -- attempt_failed
+        truncates feedback to the last three, so without this the earlier
+        reasons exist nowhere in the log."""
+        logger.log_event(project_dir, {
+            "event": "gate", "chapter": file, "stage": stage,
+            "verdict": verdict, "reasons": list(reasons)})
+
+    def log_result(kind: str, **fields: Any) -> None:
+        """The pipeline's reading of ONE model output: the verdict it
+        accepted, the terms it proposed, the notes it kept. Tier 2, and
+        unconditional -- this is what you want when model logging is off."""
+        logger.log_event(project_dir, {"event": "result", "chapter": file,
+                                       "kind": kind, **fields})
+
+    def log_chunk(k: int, total: int, lo: int, hi: int, max_tokens: int,
+                  attempt: int, outcome: str, problem: str = "") -> None:
+        """Per-chunk bounds and outcome, so a multi-part chapter's packing
+        and each part's corrective retry are readable without diffing
+        prompts."""
+        logger.log_event(project_dir, {
+            "event": "chunk", "chapter": file, "index": k + 1, "total": total,
+            "lo": lo + 1, "hi": hi, "max_tokens": max_tokens,
+            "attempt": attempt, "outcome": outcome,
+            **({"problem": problem} if problem else {}),
+        })
+
+    def log_feedback(stage: str) -> None:
+        """The COMPLETE accumulated feedback history for this attempt, not
+        the last three entries attempt_failed carries."""
+        logger.log_event(project_dir, {
+            "event": "feedback", "chapter": file, "stage": stage,
+            "reasons": list(state["feedback"])})
+
     def balance_signals_section() -> str:
         """Render kept balance drift signals for the FAITH reviewer; empty
         when the counter found nothing worth flagging."""
@@ -1061,6 +1220,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         return ctx
 
     while True:
+        attempts_run += 1
         # Recomputed every attempt so retries benefit from the expanded glossary.
         pairs = glossary.contextual(g, body_for_counts, int(_cfg_value(cfg, "contextual_glossary_cap")))
         glossary_str = glossary.render_contextual(pairs)
@@ -1073,6 +1233,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
 
         # ---------------- TRANSLATE ----------------
         if start_idx <= _STAGE_IDX["TRANSLATE"]:
+            _t0 = stage_enter("TRANSLATE")
             try:
                 print(f"{tag} [init] TRANSLATE (attempt {state['attempt'] + 1})")
                 logger.log_event(project_dir, {"event": "attempt", "chapter": file,
@@ -1167,6 +1328,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                             project_dir, cfg, "translator", prompt,
                             json_schema=TRANSLATION_SCHEMA,
                             max_tokens=call_max_tokens,
+                            chapter=file,
                         )
                         parse_note = ""
                         try:
@@ -1242,7 +1404,11 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                             )
                             prompt = fill(tpl_translation, retry_ctx, "translation.md")
                         else:
+                            log_chunk(k, n_chunks, lo, hi, call_max_tokens,
+                                      chunk_attempt, "failed", problem)
                             raise ValueError(f"TRANSLATE {problem}")
+                    log_chunk(k, n_chunks, lo, hi, call_max_tokens,
+                              chunk_attempt, "ok")
                     tlines.extend(clines)
                     # Persist the validated chunk immediately: a crash or
                     # Ctrl-C loses at most the in-flight chunk. The title
@@ -1267,6 +1433,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             except Exception as exc:  # noqa: BLE001 - becomes retry feedback
                 state["feedback"].append(f"TRANSLATE failed: {type(exc).__name__}: {exc}")
                 failed_stage = "TRANSLATE"
+            stage_exit("TRANSLATE", _t0)
 
         lines: list[str] = []
         # Kept balance drift signals for the FAITH reviewer; resets every
@@ -1279,6 +1446,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             lines = list(state["lines"] or [])
 
         if failed_stage is None and start_idx <= _STAGE_IDX["VALIDATE"]:
+            _t0 = stage_enter("VALIDATE")
             advance("VALIDATE")
             # ---------------- VALIDATE ----------------
             issues: list[str] = []
@@ -1295,9 +1463,12 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                         issues.append(f"Line {i}: translation line is empty but source is not")
             if issues:
                 state["feedback"].extend(issues)
+                log_gate("VALIDATE", "fail", issues)
                 failed_stage = "VALIDATE"
+            stage_exit("VALIDATE", _t0)
 
         if failed_stage is None and start_idx <= _STAGE_IDX["BALANCE"]:
+            _t0 = stage_enter("BALANCE")
             advance("BALANCE")
             # ---------------- BALANCE (advisory) ----------------
             # All three tiers (drift signals, usage floor, over-count
@@ -1334,7 +1505,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                         # reviewer, which owns the verdict.
                         drift_signals, pending_cleanup = _cleanup_drift_signals(
                             project_dir, cfg, tpl_glossary_cleanup,
-                            drift_signals, body_for_counts, tag,
+                            drift_signals, body_for_counts, tag, chapter=file,
                         )
                     for f in drift_signals:
                         print(f"{tag} [warn] balance drift signal: {f['message']}")
@@ -1347,8 +1518,10 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     "event": "balance_advisory", "chapter": file,
                     "error": f"{type(exc).__name__}: {exc}",
                 })
+            stage_exit("BALANCE", _t0)
 
         if failed_stage is None and start_idx <= _STAGE_IDX["FAITH"]:
+            _t0 = stage_enter("FAITH")
             advance("FAITH")
             # ---------------- FAITH ----------------
             try:
@@ -1358,7 +1531,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     "faithfulness.md",
                 )
                 print(f"{tag} [init] FAITH")
-                resp = _chat(project_dir, cfg, "reviewer", prompt, json_schema=VERDICT_SCHEMA)
+                resp = _chat(project_dir, cfg, "reviewer", prompt,
+                              json_schema=VERDICT_SCHEMA, chapter=file)
                 data = client.extract_json(resp)
                 verdict = data.get("verdict") if isinstance(data, dict) else None
                 reasons = data.get("reasons") if isinstance(data, dict) else None
@@ -1371,14 +1545,24 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     if not fb:
                         fb = ["faithfulness review rejected the translation without giving reasons"]
                     state["feedback"].extend(fb)
+                    log_gate("FAITH", "fail", fb)
+                    log_result("faithfulness", verdict=verdict,
+                               reasons=fb, accepted=False)
                     failed_stage = "FAITH"
+                else:
+                    log_gate("FAITH", "pass", [])
+                    log_result("faithfulness", verdict=verdict,
+                               reasons=[], accepted=True)
             except PipelineError:
                 raise
             except Exception as exc:  # noqa: BLE001 - becomes retry feedback
                 state["feedback"].append(f"FAITH review failed: {type(exc).__name__}: {exc}")
+                log_gate("FAITH", "error", [f"{type(exc).__name__}: {exc}"])
                 failed_stage = "FAITH"
+            stage_exit("FAITH", _t0)
 
         if failed_stage is None and start_idx <= _STAGE_IDX["GLOSSARY_EXPAND"]:
+            _t0 = stage_enter("GLOSSARY_EXPAND")
             advance("GLOSSARY_EXPAND")
             # ---------------- GLOSSARY_EXPAND (non-fatal) ----------------
             # Runs only on the attempt FAITH just accepted: new terms lock in
@@ -1400,7 +1584,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     "glossary_expand.md",
                 )
                 print(f"{tag} [init] GLOSSARY_EXPAND")
-                resp = _chat(project_dir, cfg, "glossary", prompt, json_schema=TERMS_SCHEMA)
+                resp = _chat(project_dir, cfg, "glossary", prompt,
+                              json_schema=TERMS_SCHEMA, chapter=file)
                 data = client.extract_json(resp)
                 raw_terms = data.get("terms") if isinstance(data, dict) else None
                 if not isinstance(raw_terms, list):
@@ -1414,21 +1599,34 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     except Exception as exc:  # noqa: BLE001 - fail open: expansion is auxiliary
                         print(f"{tag} [warn] occurrence gate disabled - source corpus unreadable: {type(exc).__name__}: {exc}")
                         min_occ = 0
+                applied_terms: list[str] = []
+                skipped_terms: list[str] = []
                 for proposal in eligible:
                     try:
                         _apply_glossary_proposal(g, proposal, chapter_order, cfg, tpl_glossary_merge, tag, project_dir,
-                                                 corpus=corpus, min_occurrences=min_occ)
+                                                 corpus=corpus, min_occurrences=min_occ,
+                                                 chapter=file)
+                        source = (proposal.get("source")
+                                  if isinstance(proposal, dict) else None)
+                        applied_terms.append(str(source))
                     except PipelineError:
                         raise
                     except Exception as exc:  # noqa: BLE001 - skip this proposal only
                         print(f"{tag} [warn] skipped glossary proposal: {exc}")
+                        skipped_terms.append(
+                            f"{proposal.get('source') if isinstance(proposal, dict) else '?'}: {exc}")
+                log_result("glossary_expand", proposed=len(raw_terms),
+                           eligible=len(eligible), applied=applied_terms,
+                           skipped=skipped_terms)
             except PipelineError:
                 raise
             except Exception as exc:  # noqa: BLE001 - glossary expansion is auxiliary
                 print(f"{tag} [warn] glossary expansion failed: {type(exc).__name__}: {exc}")
+            stage_exit("GLOSSARY_EXPAND", _t0)
             glossary.save(project_dir, g)
 
         if failed_stage is None and start_idx <= _STAGE_IDX["TN_GENERATE"]:
+            _t0 = stage_enter("TN_GENERATE")
             advance("TN_GENERATE")
             # ---------------- TN_GENERATE (parse failures non-fatal) ----------------
             try:
@@ -1439,19 +1637,23 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                     "tn_generate.md",
                 )
                 print(f"{tag} [init] TN_GENERATE")
-                resp = _chat(project_dir, cfg, "annotator", prompt, json_schema=NOTES_SCHEMA)
+                resp = _chat(project_dir, cfg, "annotator", prompt,
+                              json_schema=NOTES_SCHEMA, chapter=file)
                 data = client.extract_json(resp)
                 raw_notes = data.get("notes") if isinstance(data, dict) else None
                 if not isinstance(raw_notes, list):
                     raise ValueError("expected a 'notes' array")
                 state["notes"] = raw_notes
+                log_result("tn_generate", notes_returned=len(raw_notes))
             except PipelineError:
                 raise
             except Exception as exc:  # noqa: BLE001 - notes are optional
                 print(f"{tag} [warn] note generation failed - continuing without notes: {exc}")
                 state["notes"] = []
+            stage_exit("TN_GENERATE", _t0)
 
         if failed_stage is None and start_idx <= _STAGE_IDX["TN_DEDUP"]:
+            _t0 = stage_enter("TN_DEDUP")
             advance("TN_DEDUP")
             # ---------------- TN_DEDUP ----------------
             # max_notes is enforced HERE (not by trusting the model): the
@@ -1474,9 +1676,13 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
                 print(f"{tag} [warn] {warning}")
             tn.save_dropped(project_dir, file, dropped)
             print(_notes_report_line(tag, stem, kept_notes, dropped))
+            log_result("tn_dedup", notes_returned=len(state["notes"] or []),
+                       kept=len(kept_notes), dropped=len(dropped))
+            stage_exit("TN_DEDUP", _t0)
 
         if failed_stage is None:
             # ---------------- ASSEMBLE ----------------
+            _t0 = stage_enter("ASSEMBLE")
             advance("ASSEMBLE")
             out_path = paths["translated"] / file
             assemble.assemble(out_path, fm, state["title"] or "", list(lines))
@@ -1506,7 +1712,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             story.record_recap(project_dir, cfg, file,
                                state["title"] or "", "\n".join(lines),
                                prev_recap, tag)
-            return "translated"
+            stage_exit("ASSEMBLE", _t0)
+            return "translated", state, stages_run, attempts_run
 
         # ---------------- failure handling ----------------
         assert failed_stage is not None
@@ -1531,6 +1738,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             # implicitly when ASSEMBLE deletes the state file.
             state["rejected"] = list(lines)
         save_state(paths["draft"], file, state)
+        log_feedback(failed_stage)
         logger.log_event(project_dir, {"event": "attempt_failed", "chapter": file,
                                     "attempt": state["attempt"], "stage": failed_stage,
                                     "feedback": list(state["feedback"][-3:])})
@@ -1541,7 +1749,7 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
             for item in state["feedback"]:
                 print(f"{tag} [FAIL] feedback: {item}")
             print(f"{tag} [FAIL] gave up after {state['attempt']} attempts - marked needs-review")
-            return "needs-review"
+            return "needs-review", state, stages_run, attempts_run
         # else: loop back to TRANSLATE with the accumulated feedback
 
 

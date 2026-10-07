@@ -54,6 +54,22 @@ def _recap_part(recap_state: dict, manifest: list[dict], file: str) -> str:
         return ""
 
 
+def make_chat(project_dir: Path, cfg: dict,
+              chapter: str) -> Callable[[str], str]:
+    """A chapter-bound annotator call.
+
+    Built per chapter, not once: cmd_tn never enters run_chapter, so a single
+    closure could not know which chapter it was annotating, and every
+    chapter's prompt/response would land in the project bucket with no chapter
+    tag to attribute it to."""
+    def chat(prompt: str) -> str:
+        return pipeline._chat(
+            project_dir, cfg, "annotator", prompt,
+            json_schema=pipeline.NOTES_SCHEMA, chapter=chapter,
+        )
+    return chat
+
+
 def _note_signatures(notes: list[dict]) -> list[tuple]:
     """Comparable form of a note set: (line, term, note, category) per
     entry, so 'changed' means the sidecar content really differs (a
@@ -92,12 +108,8 @@ def recheck_chapters(
     paths = project.paths(project_dir)
     prefix = "[dry-run] " if dry_run else ""
 
-    def default_chat(prompt: str) -> str:
-        return pipeline._chat(
-            project_dir, cfg, "annotator", prompt, json_schema=pipeline.NOTES_SCHEMA
-        )
-
-    do_chat = chat or default_chat
+    def default_chat_for(chapter: str) -> Callable[[str], str]:
+        return make_chat(project_dir, cfg, chapter)
 
     # Run-level setup: the template, config knobs, and novel background are
     # the same for every chapter, so load them once instead of per chapter.
@@ -210,6 +222,7 @@ def recheck_chapters(
         chapter_background = pipeline.background_section(novel_background, recap_part)
 
         try:
+            do_chat = chat if chat is not None else default_chat_for(file)
             prompt = fill(
                 tpl,
                 {

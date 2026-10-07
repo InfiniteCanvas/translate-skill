@@ -118,7 +118,8 @@ def make_fake_chat(calls: list[dict], verdicts: list[tuple[str, list[str]]]):
     """pipeline._chat replacement: records {"job", "prompt"} per call and
     answers from the scripted verdict queue / canned role responses."""
 
-    def fake(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None):
+    def fake(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None,
+            chapter=None):
         calls.append({"job": job, "prompt": prompt})
         if "verdict" in prompt:
             verdict, reasons = verdicts.pop(0)

@@ -21,7 +21,8 @@ term)` prints between the FAITH and GLOSSARY_EXPAND init lines; glossary.json
 after the run is exactly {"terms": [], "retired": ["灵石"]} (whole-file
 equality -- the deferred retire and the GLOSSARY_EXPAND save must agree),
 find() no longer resolves 灵石, and retired_sources() == {"灵石"}; the
-per-invocation trace (logs/llm-*.jsonl, filtered by event type, never by
+per-invocation trace (the tier-1 orchestration timeline at
+logs/run-*.jsonl, filtered by event type, never by
 line index -- the run also writes attempt and balance_advisory events)
 contains exactly one glossary_cleanup event with chapter
 "CHAPTER_0001.md", removed == [{"source": "灵石", "reason": "mundane mock
@@ -109,7 +110,8 @@ def capture(fn, *args, **kwargs):
     return result, buf.getvalue(), exc
 
 
-def fake_chat(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None):
+def fake_chat(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None,
+              chapter=None):
     """pipeline._chat replacement (mock_server.py prompt sniffing). Branch
     conditions and their order are load-bearing: the QUOTED '"notes"' /
     '"note"' forms must precede everything else that could match a notes
@@ -245,8 +247,10 @@ def case_cleanup_flow() -> None:
               f"retired_sources={glossary.retired_sources(after)!r}")
 
         # ---- trace (filter by event type; never by line index)
+        # glossary_cleanup / attempt / balance_advisory are tier-1
+        # orchestration events, so they live in the tier-1 root bucket.
         events = []
-        for log_path in sorted((proj / "logs").glob("llm-*.jsonl")):
+        for log_path in sorted((proj / "logs").glob("run-*.jsonl")):
             for line in log_path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     events.append(json.loads(line))
@@ -322,7 +326,7 @@ def case_truncated_retry_cap() -> None:
         orig = pipeline._chat
 
         def fake(project_dir, cfg, job, prompt, json_schema=None,
-                 max_tokens=None):
+                 max_tokens=None, chapter=None):
             if job == "translator":
                 calls.append(max_tokens)
                 if len(calls) == 1:
@@ -407,7 +411,7 @@ def case_zero_line_source() -> None:
         orig = pipeline._chat
 
         def fake(project_dir, cfg, job, prompt, json_schema=None,
-                 max_tokens=None):
+                 max_tokens=None, chapter=None):
             llm_calls.append(job)
             raise AssertionError("LLM called for an empty source chapter")
 

@@ -650,6 +650,19 @@ background build too. Builds produce no git commits — `export/`,
   `review-report.md` findings, change auto-retirement
   (`glossary_auto_cleanup`, the `retired` list), or check a term's
   significance (`glossary count`).
+- **Reading the trace logs**: every run writes two tiers under `logs/` —
+  an orchestration timeline (`logs/run-<run_id>.jsonl`: run and chapter
+  lifecycle, stage transitions, gate verdicts, degradations, one `llm_call`
+  summary per model call, never a body) and the model IO for each chapter
+  (`logs/chapters/CHAPTER_NNNN/run-<run_id>.jsonl`), each with an
+  append-only `index.jsonl` whose unclosed `open` line marks an invocation
+  that died, plus a `report.md` per chapter. Run `uv run "$SCRIPT" logs` for
+  the newest run's timeline, `uv run "$SCRIPT" logs <chapter>` for that
+  chapter's model IO, `--list` to enumerate runs, `--json` for a clean
+  stream, `--report [--io]` to regenerate a report with model bodies. Read
+  this when the user asks why a chapter failed, what a model actually
+  returned, what a gate rejected, where the token cost went, or what happened
+  before a crash.
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.

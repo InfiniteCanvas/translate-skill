@@ -119,9 +119,14 @@ def two_block_cfg(cblock: dict, b1: dict | None = None,
 
 
 def read_log_events(proj: Path) -> list[dict]:
-    """Every parsed JSONL line under <proj>/logs/."""
+    """Every parsed JSONL run line under <proj>/logs/, at any depth.
+
+    These cases make chapter-less calls, so their model IO lands in the
+    project bucket (logs/project/) rather than the tier-1 root -- a
+    chapter-carrying case would land under logs/chapters/<stem>/. Recursing
+    finds all three without the helper needing to know which."""
     events: list[dict] = []
-    for path in sorted((proj / "logs").glob("llm-*.jsonl")):
+    for path in sorted((proj / "logs").rglob("run-*.jsonl")):
         events.extend(json.loads(line)
                       for line in path.read_text(encoding="utf-8").splitlines()
                       if line.strip())

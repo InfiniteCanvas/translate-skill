@@ -2,7 +2,10 @@
 job's array, then let the consensus provider synthesize the final response.
 
 A job with a single provider block behaves exactly as the pre-consensus
-pipeline did -- one client.chat call, trace-logged with {"job": job, ...}.
+pipeline did -- one client.chat call. Every call is trace-logged by the
+_trace_hook below: an llm_call summary on the tier-1 orchestration timeline
+(never a body), plus llm_request/llm_response in the calling chapter's
+tier-2 bucket, or the project bucket when the call is chapter-less.
 A job with two or more blocks runs the same prompt through every model in
 parallel; each response becomes a labeled candidate, and one extra call to
 the "consensus" job's provider (always exactly one block, enforced by
@@ -57,23 +60,48 @@ def _model_label(block: dict) -> str:
         return "(unresolved model)"
 
 
-def _trace_hook(project_dir: Path, cfg: dict, job: str,
-                extra: dict | None = None):
-    """meta_hook that trace-logs with a job tag, gated on log_llm -- the
-    single logging owner for every call routed through this module."""
-    enabled = bool(cfg.get("log_llm", config.DEFAULTS["log_llm"]))
+def _trace_hook(project_dir: Path, job: str, extra: dict | None = None,
+                chapter: str | None = None):
+    """meta_hook that trace-logs with a job tag -- the single logging owner
+    for every call routed through this module.
 
+    `chapter` is bound HERE, on the calling (main) thread, before any fan-out
+    worker starts; ThreadPoolExecutor does not copy context to workers and does
+    not need to, because the value is already a closure constant.
+
+    The hook reads no config and applies no gate: log_event routes both lines
+    by tier and gates them against the per-project flags it resolved itself.
+    That matters twice over -- the two lines have DIFFERENT gates (llm_call is
+    orchestration, llm_request/llm_response are model IO), and reading the
+    caller's cfg here would create a second flag source that disagrees with
+    log_event's in any sandbox without a config.json."""
     def hook(meta: dict) -> None:
-        if enabled:
-            logger.log_event(project_dir, {"job": job, **(extra or {}), **meta})
+        if meta.get("event") == "llm_response":
+            logger.log_event(project_dir, {
+                "event": "llm_call", "job": job, "chapter": chapter,
+                **(extra or {}),
+                "model": meta.get("model"),
+                "usage": meta.get("usage"),
+                "finish_reason": meta.get("finish_reason"),
+                "elapsed_s": meta.get("elapsed_s"),
+                "error": meta.get("error"),
+            })
+        logger.log_event(project_dir, {"job": job, "chapter": chapter,
+                                       **(extra or {}), **meta})
 
     return hook
 
 
 def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
          json_schema: dict | None = None,
-         max_tokens: int | None = None) -> str:
+         max_tokens: int | None = None,
+         chapter: str | None = None) -> str:
     """client.chat for a job, with multi-model fan-out and consensus merging.
+
+    `chapter` is the calling chapter's file stem, or None for a chapter-less
+    job (profile, the review passes); it decides which tier-2 bucket the model
+    exchange lands in and is threaded explicitly so the logger never has to
+    infer it.
 
     Single-block job: one call, meta tagged {"job": job} -- byte-identical
     trace lines to the old pipeline._chat. Multi-block job: one parallel
@@ -88,7 +116,8 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     if len(blocks) == 1:
         return client.chat(blocks[0], prompt, json_schema=json_schema,
                            max_tokens=max_tokens,
-                           meta_hook=_trace_hook(project_dir, cfg, job))
+                           meta_hook=_trace_hook(project_dir, job,
+                                                 chapter=chapter))
 
     n = len(blocks)
     if (job, n) not in _ANNOUNCED:
@@ -112,8 +141,9 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
         futures = [
             pool.submit(client.chat, block, prompt,
                         json_schema=json_schema, max_tokens=max_tokens,
-                        meta_hook=_trace_hook(project_dir, cfg, job,
-                                              {"candidate": i, "candidates": n}))
+                        meta_hook=_trace_hook(project_dir, job,
+                                              {"candidate": i, "candidates": n},
+                                              chapter))
             for i, block in enumerate(blocks, start=1)
         ]
         for i, future in enumerate(futures):
@@ -140,6 +170,11 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     if not survivors:
         raise errors[-1]
     if len(survivors) == 1:
+        logger.log_event(project_dir, {
+            "event": "degraded", "chapter": chapter, "where": "consensus",
+            "reason": f"{job}: only one candidate survived; used verbatim "
+                      "without a consensus call",
+        })
         print(f"[warn] consensus: {job}: only one candidate survived - "
               "using it without a consensus call")
         return survivors[0][1]
@@ -167,10 +202,15 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     try:
         return client.chat(
             cblock, c_prompt, json_schema=json_schema, max_tokens=c_max,
-            meta_hook=_trace_hook(project_dir, cfg, "consensus",
-                                  {"consensus_for": job}))
+            meta_hook=_trace_hook(project_dir, "consensus",
+                                  {"consensus_for": job}, chapter))
     except Exception as exc:  # noqa: BLE001 - degrade, never fail the task
         first = survivors[0][0]
+        logger.log_event(project_dir, {
+            "event": "degraded", "chapter": chapter, "where": "consensus",
+            "reason": f"{job}: consensus call failed ({exc}); used candidate "
+                      f"{first} without merging",
+        })
         print(f"[warn] consensus: {job}: consensus call failed ({exc}) - "
               f"using candidate {first} without merging")
         return survivors[0][1]

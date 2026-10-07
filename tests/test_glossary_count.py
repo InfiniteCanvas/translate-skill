@@ -772,7 +772,8 @@ def make_gate_chat(terms_responses: list[list[dict]]):
     and a 1-line translation -- one chapter = one run of the fake."""
     queue = list(terms_responses)
 
-    def fake(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None):
+    def fake(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None,
+            chapter=None):
         if "verdict" in prompt:
             return json.dumps({"verdict": "SUCCESS", "reasons": []},
                               ensure_ascii=False)
@@ -872,7 +873,7 @@ def case_12_merge_category_coercion() -> None:
 
     def fake_chat_factory(merged: dict):
         def fake(project_dir, cfg, job, prompt, json_schema=None,
-                 max_tokens=None):
+                 max_tokens=None, chapter=None):
             return json.dumps(merged, ensure_ascii=False)
         return fake
 
