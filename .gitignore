@@ -4,7 +4,14 @@ __pycache__/
 
 # Build artifacts
 *.epub
+*.zip
 export/
+
+# Local probe/diagnostic output. Contains raw model reasoning and translated
+# prose from a copyrighted work -- see probe-artifacts/README.md. Artifacts,
+# not source: safe to delete, never committed.
+probe-artifacts/
+probe_examples.py
 
 # Local agent/tooling session state
 .zcode/
@@ -15,3 +22,8 @@ config.local.json
 
 # uv PEP 723 script lockfiles (created next to scripts on uv run)
 *.py.lock
+
+# Sample translation project dropped in for manual testing of the logs
+# surfaces. It is itself a git repository (with its own .git/), so leaving
+# it tracked would make git treat the whole thing as a nested-repo gitlink.
+example_project/

@@ -6,8 +6,8 @@ and config schemas live in `references/file-formats.md`.
 
 ## Reading the trace logs (`logs`)
 
-Read-only. Nothing here mutates project state except `--report`, which
-regenerates a derived `report.md`.
+Read-only. Nothing here mutates project state except `--report` and `--html`,
+which regenerate a derived report.
 
 ```
 uv run "$SCRIPT" logs                       # newest run's orchestration timeline (tier 1)
@@ -18,6 +18,7 @@ uv run "$SCRIPT" logs --run 20261007-142233-translate-4711
 uv run "$SCRIPT" logs --run 20261007         # unique prefix also works
 uv run "$SCRIPT" logs 7 --json --no-io      # JSON objects on stdout, nothing else
 uv run "$SCRIPT" logs 7 --report --io       # regenerate report.md with model bodies
+uv run "$SCRIPT" logs --html                # whole-project dashboard -> logs/report.html
 ```
 
 **Two views.** With no SPEC you get the **orchestration timeline** (tier 1:
@@ -47,9 +48,33 @@ come from that chapter's own `index.jsonl`, newest first.
 chapter from its retained runs. `--io` additionally wraps every call that
 actually carried a body in a `<details>` block.
 
-**Exit codes:** 0 printed something; 1 nothing found (no logs at all, or no
-logs for that spec) with a `[FAIL]` line; 2 an out-of-range spec or an
-unusable `--run` value.
+**`--html`** writes `logs/report.html`, the project-wide dashboard: every
+retained log in one self-contained page — a per-chapter ledger of stage
+durations tinted by outcome, token spend per job and per model, gate verdicts,
+the unclosed-run crash signal, the epub build history, and a **call ledger**
+listing every model call of every chapter's latest run. It is handled
+*before* run selection, so it writes a page even when this invocation has no
+events to print, and it always covers the **whole project** — a SPEC does not
+narrow it. `_run_end` refreshes the same file after every `translate`/`retry`/
+`tn`/`review`/`profile` run, so it is normally already current; run it by hand
+after an interrupt, which hard-exits without reaching `_run_end`. Console:
+`[ok] html: <path>`.
+
+**Bodies are always embedded, uncapped.** Clicking a row in the ledger
+expands it — anywhere in the row, not just the call id, and Enter/Space work
+too: the prompt, the response parsed into its schema's view (a
+source-vs-translation side-by-side for `lines`, tables for `terms`/`notes`/
+`decisions`, a badge for `verdict`), the raw body, and the request params.
+There is no `--html-io` flag and no byte cap — the old 200 KB cap dropped 84 of
+131 bodies on a real project, oldest run first, and separating bodies behind a
+flag only produced "why is it still saying no bodies" reports on a project that
+plainly had them. Embedding costs ~36 ms against a 981 s chapter. The page
+makes no network requests.
+
+**Exit codes:** 0 printed something (and, with `--html`, wrote the page); 1
+nothing found (no logs at all, or no logs for that spec) with a `[FAIL]` line,
+or the dashboard could not be written; 2 an out-of-range spec or an unusable
+`--run` value.
 
 A `logs/` directory written before v11 (`llm-*.jsonl`) is never listed,
 matched or pruned.

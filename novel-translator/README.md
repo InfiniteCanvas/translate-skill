@@ -874,6 +874,17 @@ chapter gets a **`report.md`** — header, stage timeline, gate verdicts, call
 table — written metadata-only at `chapter_end` and regenerable with
 `translate logs <chapter> --report [--io]`.
 
+The project as a whole gets **`logs/report.html`**, refreshed automatically at
+the end of every run and rebuildable with `translate logs --html`: one
+self-contained page assembling every retained log — a per-chapter ledger of
+stage durations tinted by outcome, token spend per job and per model, gate
+verdicts, the unclosed-run crash signal, the epub build history, and a **call
+ledger** covering every model call of every chapter's latest run. Clicking a
+call expands its prompt and its parsed response (a source-vs-translation
+side-by-side for translation, tables for glossary terms and notes, a badge for
+a review verdict). Bodies are always embedded and uncapped. No network
+requests, no CDN.
+
 ### Reading the logs
 
 ```bash
@@ -883,9 +894,11 @@ uv run scripts/translate.py logs --list           # run ids, command, start, cha
 uv run scripts/translate.py logs --run 20261007   # exact id or unique prefix
 uv run scripts/translate.py logs 7 --json --no-io # JSON objects on stdout, nothing else
 uv run scripts/translate.py logs 7 --report --io  # regenerate report.md with bodies
+uv run scripts/translate.py logs --html           # whole-project dashboard
 ```
 
-Exit 0 printed something, 1 nothing found, 2 a bad spec or `--run` value.
+Exit 0 printed something, 1 nothing found (or, with `--html`, the dashboard
+could not be written), 2 a bad spec or `--run` value.
 `references/maintenance.md` has the full flag reference.
 
 ### Tuning

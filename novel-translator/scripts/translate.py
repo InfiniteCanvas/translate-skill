@@ -40,7 +40,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, consensus, cover, epub, fix, glossary, logger, logreport, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs  # noqa: E402
+from lib import client, config, consensus, cover, epub, fix, glossary, logger, logdashboard, logreport, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs  # noqa: E402
 from lib import profile as profile_mod  # noqa: E402
 from lib import styles as styles_mod  # noqa: E402
 
@@ -94,7 +94,13 @@ def _run_end(project_dir: Path, command: str, outcome: str,
              results: dict | None = None) -> None:
     """Close the invocation's timeline. `results` is run_range's per-outcome
     chapter counts, present only for translate/retry; calls and tokens come
-    from the logger's counters, which accumulate before gating."""
+    from the logger's counters, which accumulate before gating.
+
+    Also refreshes the project-wide HTML dashboard. It runs AFTER
+    run_range's scheduler.finalize(), so the epub state it reads is settled,
+    and it is metadata-only and bounded (~8 KB of index files in, ~30 KB of
+    HTML out). See logdashboard.refresh for why this path does not use
+    project.atomic_write_text's 6.3s retry ladder."""
     stats = logger.take_run_stats(project_dir)
     logger.log_event(project_dir, {
         "event": "run_end", "command": command, "outcome": outcome,
@@ -104,6 +110,9 @@ def _run_end(project_dir: Path, command: str, outcome: str,
         "elapsed_s": stats["elapsed_s"],
     })
     logger.index_line(project_dir, None, "close", outcome=outcome)
+    # After the index close, so the dashboard's own crash-signal scan sees this
+    # run as settled. Never raises.
+    logdashboard.refresh(project_dir)
 
 
 def _load_config(project_dir: Path) -> dict:
@@ -1863,6 +1872,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="show the newest N runs (default: 1)")
     p.add_argument("--report", action="store_true",
                    help="regenerate each matched chapter's report.md from its retained runs")
+    p.add_argument("--html", action="store_true",
+                   help="write the project-wide HTML dashboard to logs/report.html "
+                        "(always whole-project; a SPEC does not narrow it; "
+                        "embeds the latest run's prompt/response bodies per chapter)")
     p.set_defaults(func=cmd_logs)
 
     p = sub.add_parser("util", parents=[common], allow_abbrev=False,
@@ -2104,8 +2117,25 @@ def cmd_logs(args: argparse.Namespace, project_dir: Path) -> int:
     """Print a chapter's (or a run's) trace timeline from logs/.
 
     Bare `logs` prints the newest run's tier-1 timeline. With a SPEC the runs
-    come from that chapter's own index, newest first."""
+    come from that chapter's own index, newest first.
+
+    `--html` short-circuits all of that: the dashboard is a whole-project
+    artifact assembled from every bucket, so it must not be gated on whether
+    THIS invocation's event stream happens to be non-empty. Handled before the
+    selection and the "no events" bail below, both of which read only the
+    orchestration tier -- a project whose retention has emptied that tier would
+    otherwise exit 1 having written nothing.
+    """
     cfg = _load_config(project_dir)
+    if args.html:
+        path = logdashboard.write_dashboard(project_dir)
+        if args.json:
+            # --json emits JSON objects and nothing else (see below).
+            return 0 if path is not None else 1
+        if path is not None:
+            print(f"[ok] html: {path}")
+        return 0 if path is not None else 1
+
     last = int(args.last)
     if last < 1:
         raise CliError("--last must be a positive integer")

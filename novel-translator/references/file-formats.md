@@ -37,6 +37,7 @@ drift comparison.
 ├── .gitignore           skill-managed ignore rules for transient/rebuildable paths (see Git history)
 └── logs/                two-tier trace (see § Two-tier trace logs)
     ├── run-<run_id>.jsonl      tier 1: this invocation's orchestration timeline
+    ├── report.html             project-wide HTML dashboard (see § report.html)
     ├── project/
     │   ├── run-<run_id>.jsonl  tier 2: chapter-less model IO (profile, review)
     │   └── index.jsonl         append-only open/close markers for this invocation
@@ -1288,7 +1289,7 @@ already filesystem-safe.
 Any event name not in the tier-2 set defaults to **tier 1**, so an unknown or
 misspelled name can never leak model text into a chapter's file.
 
-### `index.jsonl` and `report.md`
+### `index.jsonl`, `report.md` and `report.html`
 
 `index.jsonl` (one per bucket) is **append-only and never pruned**, and is
 written unconditionally of both gates: an `open` line with no matching `close`
@@ -1303,6 +1304,109 @@ writes a **metadata-only** report bounded to the current invocation;
 retained run, and `--io` additionally wraps each call that actually carried a
 body in a `<details>` block. Model output is HTML-escaped on the way in, so a
 reply containing `</details>` or a fenced block cannot corrupt the structure.
+
+`report.html` (one per **project**, at `logs/report.html`) is the same idea at
+project scale: every retained log assembled into one self-contained page. Two
+writers — `_run_end` refreshes it after every `translate`/`retry`/`tn`/
+`review`/`profile` run, and `translate logs --html` writes it on demand; the
+latter is the path that matters after an interrupt, since `main()` hard-exits
+without reaching `_run_end`.
+
+Its spine is the chapter `index.jsonl` close lines, **not** tier 1, because
+`index.jsonl` is never pruned while tier 1 keeps only `log_llm_keep_runs`
+runs. Tier 1 is therefore a **windowed enrichment**: it adds stage spans and
+gate verdicts for the runs still inside the retention window, and it is the
+only source of **spend outside any chapter**.
+
+The per-call ledger, the per-model split and every call-derived total are read
+from **tier 2** — the chapter's own `logs/chapters/<stem>/run-<run_id>.jsonl`.
+Tier 2 is the better source, not merely a fallback: an `llm_response` line
+carries everything tier 1's `llm_call` summary does (`job`, `model`,
+`candidate`/`candidates`, `consensus_for`, `usage`, `elapsed_s`,
+`finish_reason`, `error`) plus `call_id` and `url`, and the bucket is already
+chapter-scoped so nothing needs filtering. Tier 1's rows are used only for a
+chapter with no tier-2 call record — i.e. one written while `log_llm` was off,
+the one thing that gate removes. Every total is labelled with the source it
+came from, so the page cannot silently change meaning.
+
+**One run per chapter, and it is the one the ledger bar reports.** The call
+ledger reads the run that `index.jsonl`'s last `open` line names — the same run
+whose close line supplies every chapter figure. This matters: with
+`log_chapter_keep_runs: 3` a *closed* older run's file coexists with a newer
+run's file, so preferring the last `close` line picks the **older** run and puts
+one run's bar beside another run's calls. When that run has no body the ledger
+falls back to the newest file on disk, and the row says which basis it used.
+
+`llm_request` and `llm_response` are joined on `call_id`. Both sides are stored
+and the ordering is what gets de-duplicated — de-duplicating per-side instead
+emits every paired call **twice**, and de-duplicating the store drops the
+response so every call reads as unpaired with no body. A call present on one
+side only (a run killed mid-flight) is kept and flagged `unpaired`, never
+discarded. `result` and `chunk` rows carry no `call_id` and are shown in their
+own table as stage events, so the ledger holds only calls and nothing is lost.
+
+**Response shape is decided by the parsed key set, never by `job` or
+`consensus_for`.** One job name drives several schemas — `glossary` alone runs
+expand (`{terms}`), merge (a flat
+`{source, translation, definition, category}` object) and cleanup
+(`{decisions}`) — and `consensus_for` records only the job name, so it cannot
+say which template ran. Dispatch therefore matches the key set against a
+registry and falls back to a **generic renderer** (object → key/value list,
+array of objects → table over the union of keys, array of scalars → list,
+scalar/null → text). The registry is data, so a schema added later degrades to
+"readable" rather than to raw JSON. `json.loads` is tried on the raw body and
+then on a ```` ```json ````-stripped copy, because a fenced response is real and
+`json.loads` rejects it.
+
+**Fan-out width is read, never assumed.** `providers.<job>` is an array of
+blocks, so the number of candidates is whatever the project configured. The
+side-by-side source view is therefore N candidate columns plus one consensus
+column, each headed by the model name from that call's own record — because
+candidate `1` is a *different model* for a different job, and on a real project
+the reviewer's order is the reverse of the translator's. Source lines are
+recovered from the translator prompt by a **balanced scan that respects string
+literals and escapes**, never a regex: novel prose contains `[`, `]`, `{` and
+`}` inside the line strings, which desyncs any bracket-counting pattern (the
+obvious one fails on 20/20 real prompts). The scan is marker-free, so moving a
+heading in `assets/templates/translation.md` cannot silently break it.
+
+Every absence is reported rather than rendered as zero, because a plausible
+wrong total is the worst thing a diagnostic can do:
+
+- the orchestration tier missing (stage spans and gate verdicts only — the
+  per-call view survives, but **spend outside any chapter** — `profile` /
+  `review` / `tn` record their calls *only* in tier 1's `run_end`, because the
+  project index close line carries `outcome` alone — does not);
+- an `epub-build.log` whose final block is half-written by a live build child;
+- a bucket whose chapter is absent from `chapters.json`, or whose stem predates
+  the `CHAPTER_NNNN` naming;
+- a run with no body file, which falls back to the newest file on disk.
+
+Stage spans are keyed on `(stage, attempt)` and **summed across attempts**,
+which deliberately differs from `report.md`'s stage table — that one keys on
+stage name and so shows only the final attempt. The bar must account for every
+second the run spent.
+
+The page makes **no network requests**: no CDN, no webfont, no absolute URL, no
+`fetch`/`XMLHttpRequest`/`<iframe>`/`<link>`. Bodies are **always** embedded and
+there is **no cap** — the removed 200 KB cap was pure loss, since embedding
+every body costs ~36 ms against a 981 s chapter, while the cap dropped 84 of 131
+bodies on a real project and, because it accumulated in ascending file order,
+dropped the *oldest* runs first. There is no second mode: `--html-io` is gone.
+
+All model text travels in **one** `<script type="application/json">` blob and is
+read only through `JSON.parse`; the renderer never puts a log-derived value into
+`innerHTML`. The blob is encoded as
+`json.dumps(records, ensure_ascii=False).replace("<", "\\u003c")` and **must not
+be `html.escape`d**: `<script>` is a *rawtext* element, so the HTML parser never
+decodes character references inside it, `textContent` hands `&quot;` back
+literally, and `JSON.parse` fails at position 1. Since every response body
+contains a quote, that breaks every record on the page. `<` is the only
+character that can terminate a script element and `<` is a valid JSON string
+escape, so the substitution is lossless — a body holding a literal closing tag
+round-trips byte-identical. Note that Python's `html.unescape` is **not** a
+faithful stand-in for the browser here: simulating with it passes green for the
+broken encoding, which is how the defect survives review.
 
 ### Gates
 

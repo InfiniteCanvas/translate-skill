@@ -384,11 +384,17 @@ def take_chapter_stats(project_dir: Path | str, chapter: str | None) -> dict[str
 
 
 def take_run_stats(project_dir: Path | str) -> dict[str, Any]:
-    """Read-and-reset the whole invocation's call/token totals for run_end."""
+    """Read-and-reset the whole invocation's call/token totals for run_end.
+
+    Both return paths carry the SAME keys. The no-run branch used to omit
+    `elapsed_s`, which made `_run_end` raise KeyError when it was reached for a
+    project that had logged nothing yet (nothing starts a run before _run_end
+    today, but the shape must not differ by branch).
+    """
     with _LOG_LOCK:
         run = _paths.get(str(Path(project_dir).resolve()))
         if run is None:
-            return {"calls": 0, "tokens": {}}
+            return {"calls": 0, "tokens": {}, "elapsed_s": 0.0}
         calls = 0
         tokens: dict[str, int] = {}
         started = time.monotonic()

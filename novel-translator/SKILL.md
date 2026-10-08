@@ -696,7 +696,11 @@ background build too. Builds produce no git commits — `export/`,
   that died, plus a `report.md` per chapter. Run `uv run "$SCRIPT" logs` for
   the newest run's timeline, `uv run "$SCRIPT" logs <chapter>` for that
   chapter's model IO, `--list` to enumerate runs, `--json` for a clean
-  stream, `--report [--io]` to regenerate a report with model bodies. Read
+  stream, `--report [--io]` to regenerate a report with model bodies. A
+  whole-project dashboard is written to `logs/report.html` at the end of every
+  run and rebuildable with `uv run "$SCRIPT" logs --html`; prefer it when the question is about the
+  project as a whole — which chapters are slow, where the tokens went, what is
+  unclosed, what each model actually returned — and read the page rather than the JSONL. Read
   this when the user asks why a chapter failed, what a model actually
   returned, what a gate rejected, where the token cost went, or what happened
   before a crash.
