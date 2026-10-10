@@ -30,6 +30,31 @@ Defaults, key names, exit codes, flags, console output, or schemas that
 changed in code must be propagated to the matching docs. If code changed, run
 `uv run tests/run_all.py` and make it pass before calling the task done.
 
+## Comments: the code documents itself
+
+`novel-translator/scripts/**.py` carries no prose `#` comments. Docstrings are
+the only prose allowed, because they are attached to the definition they
+describe and are read as API. The only comment constructs permitted in source
+are the functional ones a tool parses rather than a human reads: a line-1
+shebang, a PEP 723 `# /// script` block (uv resolves dependencies from it), and
+`# type: ignore[...]`. Everything else goes.
+
+The maintainer's reason: a stale comment that contradicts the code is worse
+than no comment, because it misleads a reader -- and an AI reading this repo
+cannot tell a stale comment from a true one.
+
+Design rationale does not belong in a code comment. Put it in the doc mirror
+(`SKILL.md`, `README.md`, `references/*.md`) per the section above, where it
+is maintained deliberately instead of rotting beside the code. Do not
+re-add explanatory comments to restore clarity.
+
+`tests/**.py` follows the same rule with one exception, reserved for
+integration suites: a suite that exercises real system behaviour end to end
+may keep a module docstring stating what the SUITE covers and which system
+behaviour it enforces. Never comment an individual test, and never comment a
+unit-test file at all -- there, the test's name and its assertions are the
+specification.
+
 ## Provider routing: quality outranks quota cost
 
 The maintainer holds paid Z.AI and MiniMax coding plans and has stated that
@@ -51,8 +76,9 @@ prompt templates in `novel-translator/assets/templates/`, must ship a new
 migration script in `novel-translator/scripts/migrations/` building on the
 latest one:
 
-- Name it `vNNN.py`, with NNN = highest existing version + 1 (currently
-  `v001.py` … `v012.py`, so the next is `v013.py`).
+- Name it `vNNN.py`, with NNN = highest existing version + 1 — read the
+  current head off `scripts/migrations/` rather than from this file, which
+  deliberately does not track it.
 - The module must define `VERSION` (int, equal to the NNN in the filename),
   `DESCRIPTION` (one line), and
   `migrate(project_dir, templates_src, dry_run=False, force=False, confirm=None) -> list[str]`
