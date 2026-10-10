@@ -29,25 +29,14 @@ from typing import IO
 
 _SCRIPT_PATH = Path(__file__).resolve().parent.parent / "translate.py"
 
-# Bound for the reaper's blocking wait. The build child's slowest step,
-# epubcheck, bounds itself at 300s (epub.run_epubcheck) and every other
-# step is local file I/O, so a child still running past that plus a margin
-# is hung for another reason and gets killed.
 _REAP_TIMEOUT = 360
 
-# finalize()'s blocking wait announces itself once after 30s so a long (but
-# legitimate) build does not read as a hang; the loop polls at 1s granularity
-# and keeps waiting to _REAP_TIMEOUT before killing.
 _FINALIZE_WARN_S = 30
 _FINALIZE_POLL_S = 1.0
 
 if sys.platform == "win32":
-    # Own process group for the build child: taskkill /T walks the tree by
-    # pid either way, but the group keeps the child addressable as a unit.
     _SPAWN_EXTRA = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
 else:
-    # Own session/process group: the tree kill is os.killpg on the child's
-    # group, which must therefore never be our own group.
     _SPAWN_EXTRA = {"start_new_session": True}
 
 
@@ -61,14 +50,12 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     tool that itself fails (taskkill missing, its own timeout, a killpg
     error) is warned about instead."""
     if sys.platform == "win32":
-        # Guarded so a broken/missing taskkill (or its own timeout) cannot
-        # blow up abort()'s KeyboardInterrupt handler with a traceback.
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
                 stdin=subprocess.DEVNULL, timeout=60,
             )
-        except Exception as exc:  # noqa: BLE001 - never raise from a kill
+        except Exception as exc:
             print(f"[warn] epub auto-build: failed to kill builder "
                   f"(taskkill: {exc}) - it may still be running")
     else:
@@ -76,7 +63,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except ProcessLookupError:
             try:
-                proc.kill()  # the pid vanished between getpgid and the signal
+                proc.kill()
             except ProcessLookupError:
                 pass
         except OSError as exc:
@@ -89,10 +76,10 @@ class AutoBuildScheduler:
 
     def __init__(self, project_dir: Path):
         self._project_dir = Path(project_dir)
-        self._pending: str | None = None   # reason of the latest unspawned build
+        self._pending: str | None = None
         self._proc: subprocess.Popen | None = None
         self._log_fh: IO[str] | None = None
-        self._reason: str = ""             # reason of the RUNNING build
+        self._reason: str = ""
 
     def trigger(self, reason: str) -> None:
         """Request a build; spawned at the next poll()/finalize()."""
@@ -127,8 +114,6 @@ class AutoBuildScheduler:
             self._reason = ""
             print("[warn] epub auto-build interrupted")
 
-    # -- internals ---------------------------------------------------------
-
     def _spawn(self, reason: str) -> None:
         log_dir = self._project_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -154,8 +139,6 @@ class AutoBuildScheduler:
             return
         stalled = False
         if wait:
-            # Poll instead of one blocking wait: after _FINALIZE_WARN_S of
-            # silence say so (once), keep waiting to _REAP_TIMEOUT either way.
             waited = 0.0
             warned = False
             while True:
@@ -173,7 +156,7 @@ class AutoBuildScheduler:
                         print(f"[warn] epub auto-build finalize waited "
                               f"{int(waited)}s for the builder to exit")
         elif self._proc.poll() is None:
-            return  # still running
+            return
         code = self._proc.returncode
         self._close_log()
         if stalled:

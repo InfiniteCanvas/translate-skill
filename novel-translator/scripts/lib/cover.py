@@ -23,13 +23,12 @@ from lib import project
 
 COVER_SIZE = (1600, 2560)
 JPEG_QUALITY = 88
-MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
-SCRAPE_DEADLINE_S = 30  # wall-clock budget for the whole scrape, all stages
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+SCRAPE_DEADLINE_S = 30
 _CHUNK_SIZE = 64 * 1024
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (novel-translator)"}
 
-# og:image (property / name) then twitter:image, each in both attribute orders.
 _META_PATTERNS = (
     re.compile(
         r'<meta\s+[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', re.I
@@ -59,8 +58,8 @@ _FONT_CANDIDATES = (
     r"C:\Windows\Fonts\arial.ttf",
 )
 
-_GRADIENT_TOP = (0x1B, 0x1B, 0x3A)  # deep indigo
-_GRADIENT_BOTTOM = (0x0F, 0x2E, 0x2E)  # dark teal
+_GRADIENT_TOP = (0x1B, 0x1B, 0x3A)
+_GRADIENT_BOTTOM = (0x0F, 0x2E, 0x2E)
 
 _TEXT_FILL = (235, 235, 240)
 _TEXT_SHADOW = (8, 8, 16)
@@ -82,8 +81,6 @@ def _save_jpeg(image: Image.Image, path: Path) -> None:
     path = Path(path)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
-        # Format passed explicitly: the .tmp suffix hides it from PIL's
-        # extension sniffing.
         image.save(tmp, "JPEG", quality=JPEG_QUALITY)
         project._replace_with_retry(tmp, path)
     finally:
@@ -116,7 +113,7 @@ def _record_placeholder(project_dir: Path, placeholder: bool) -> None:
             path, json.dumps(info, ensure_ascii=False, indent=2) + "\n",
             newline="\n",
         )
-    except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a run
+    except Exception as exc:
         print(_ascii(f"[warn] cover: recording placeholder state failed: {exc}"))
 
 
@@ -133,7 +130,7 @@ def ensure_cover(
     if url:
         try:
             data = scrape_image(url)
-        except Exception as exc:  # scrape_image never raises; belt and braces
+        except Exception as exc:
             print(_ascii(f"[warn] cover scrape raised {type(exc).__name__}: {exc}"))
             data = None
         if data:
@@ -144,8 +141,6 @@ def ensure_cover(
                     )
                     _save_jpeg(im, cover_path)
                 print(_ascii(f"[cover] scraped from {url}"))
-                # An earlier placeholder run's flag must not outlive a real
-                # cover (removed only on change; absent key -> no write).
                 _record_placeholder(project_dir, placeholder=False)
                 return cover_path
             except Exception as exc:
@@ -203,8 +198,6 @@ def scrape_image(url: str) -> bytes | None:
             resp.close()
             return None
 
-        # HTML: drain the page body (capped), then try og:image /
-        # twitter:image candidates in priority order.
         page = _read_capped(resp, deadline)
         if page is None:
             return None
@@ -282,7 +275,6 @@ def _fit_lines(
         if len(lines) <= max_lines:
             return font, lines
         if size <= 36:
-            # Give up fitting; hard-limit the line count.
             return font, lines[:max_lines]
         size = max(36, int(size * 0.85))
 
@@ -321,7 +313,6 @@ def generate_cover(title: str, author: str, out_path: Path) -> None:
             _draw_centered(draw, line, title_font, y, width)
             y += line_height
 
-        # Author: smaller, near the bottom, shrunk to fit the width.
         author_size = max(48, min(120, int(title_font.size * 0.5)))
         author_font = None
         while author_size >= 30:
@@ -333,6 +324,5 @@ def generate_cover(title: str, author: str, out_path: Path) -> None:
             author_size = max(30, int(author_size * 0.85))
         if author_font is not None and author:
             _draw_centered(draw, author, author_font, height - 340, width)
-    # No truetype font -> gradient only (default bitmap font can't render CJK).
 
     _save_jpeg(image, out_path)

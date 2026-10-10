@@ -42,13 +42,12 @@ import tempfile
 import threading
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config  # noqa: E402
-from lib import logger  # noqa: E402
-from lib import project  # noqa: E402
+from lib import config
+from lib import logger
+from lib import project
 
 PASSED = 0
 FAILED: list[str] = []
@@ -102,9 +101,6 @@ def run_name_ok(path: Path) -> bool:
     """run-YYYYMMDD-HHMMSS-<tag>-<pid>.jsonl for THIS process."""
     return (re.match(r"^run-\d{8}-\d{6}-.+-\d+\.jsonl$", path.name) is not None
             and path.name.endswith(f"-{os.getpid()}.jsonl"))
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_command_tag() -> None:
@@ -166,7 +162,7 @@ def case_3_routing() -> None:
         logger.log_event(root, {"event": "chunk", "chapter": "CHAPTER_0007"})
         logger.log_event(root, {"event": "totally_unknown_event"})
         logger.log_event(root, {"event": "llm_request", "prompt": "p",
-                                "call_id": "b"})  # chapter-less -> project bucket
+                                "call_id": "b"})
 
         tier1 = events_in(root / "logs")
         chapter = events_in(tier2_dir(root, "CHAPTER_0007"))
@@ -227,8 +223,6 @@ def case_4_stem_keying() -> None:
     check("4e stem: no chapter means the project bucket",
           logger._chapter_key(None) is None
           and logger._chapter_key("") is None, "")
-    # An unsafe stem cannot reach the logger at all: discover() admits a file
-    # only on a CHAPTER_RE match, so a stem needing sanitizing is unreachable.
     check("4f stem: every admitted name is already filesystem-safe",
           all(re.fullmatch(r"[A-Za-z0-9._-]{1,64}", k) for k in keys), f"{keys}")
     check("4g stem: the stem matches the draft/ and notes/ artifact key",
@@ -297,7 +291,7 @@ def case_7_prune() -> None:
         for i in range(5):
             p = base / f"run-{i:05d}.jsonl"
             p.write_text("{}\n", encoding="utf-8")
-            os.utime(p, (1000.0 + i * 100, 1000.0 + i * 100))  # oldest first
+            os.utime(p, (1000.0 + i * 100, 1000.0 + i * 100))
         for name in ("index.jsonl", "report.md", "epub-build.log",
                      "llm-00001.jsonl"):
             (base / name).write_text("keep me", encoding="utf-8")
@@ -352,7 +346,6 @@ def case_8_retention() -> None:
             logger.log_event(root, {"event": "chunk", "chapter": "CHAPTER_0001"})
             logger.log_event(root, {"event": "llm_request",
                                     "chapter": "CHAPTER_0002", "prompt": "p"})
-            # A chapter-less call opens (and therefore prunes) the project bucket.
             logger.log_event(root, {"event": "llm_request", "prompt": "p"})
 
         check("8a retention: the root keeps log_llm_keep_runs",
@@ -411,7 +404,6 @@ def case_9_two_projects() -> None:
         check("9f projects: one process is ONE run_id (both projects, both tiers)",
               a_ids == b_ids, f"{a_ids} {b_ids}")
 
-        # Same project: the run file is created once and appended to.
         before = logger._run_path
         b_files = run_files(proj_b / "logs")
         logger.log_event(proj_b, {"event": "b3"})
@@ -426,9 +418,6 @@ def case_9_two_projects() -> None:
               and logger._run_path.parent == proj_b.resolve() / "logs",
               f"run={logger._run_path}")
 
-        # The reset contract: _run_path = None, then the next event still
-        # lands in the right project (a same-second rerun may reuse the
-        # filename, so only the project and the events are pinned).
         reset()
         logger.log_event(proj_b, {"event": "b4"})
         logger.log_event(proj_b, {"event": "chunk", "chapter": "CHAPTER_0009"})
@@ -480,7 +469,7 @@ def case_11_never_raises() -> None:
         root = Path(td) / "bad-payload"
         reset()
         logger.log_event(root, {"event": "result", "chapter": "CHAPTER_0001",
-                                "path": Path("C:/nope")})  # json cannot encode
+                                "path": Path("C:/nope")})
         check("11a never-raise: an unserializable payload is swallowed",
               events_in(tier2_dir(root, "CHAPTER_0001")) == [], "")
 
@@ -615,7 +604,6 @@ def case_15_run_stats() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

@@ -66,12 +66,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file
-# (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config, pipeline, project  # noqa: E402
+from lib import config, pipeline, project
 
 PASSED = 0
 FAILED: list[str] = []
@@ -96,7 +94,7 @@ def capture(fn, *args, **kwargs):
     try:
         with contextlib.redirect_stdout(buf):
             result = fn(*args, **kwargs)
-    except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+    except Exception as caught:
         exc = caught
     return result, buf.getvalue(), exc
 
@@ -147,12 +145,6 @@ def write_source(root: Path, name: str, text: str) -> None:
         fh.write(text)
 
 
-# One 3-line chapter, plain body lines without frontmatter (the shape the
-# sibling suites' BODIES use): a 3-line source keeps the default
-# translate_max_output_tokens far from chunking, so every chapter is one
-# translate call and [lo, hi) is the whole chapter. No trailing newline:
-# read_chapter's no-frontmatter path returns the file text verbatim, so a
-# trailing "\n" would split into a phantom 4th empty source line.
 BODIES = {
     "CHAPTER_0001.md": "第一行。\n第二行。\n第三行。",
 }
@@ -182,9 +174,6 @@ def make_project(root: Path, name: str, cfg_extra: dict | None = None) -> Path:
     (proj / "draft").mkdir()
     (proj / "translated").mkdir()
     return proj
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_unit_empty() -> None:
@@ -356,7 +345,6 @@ def case_6_give_up() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

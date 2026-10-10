@@ -40,9 +40,6 @@ from lib.pipeline import _lang_name, fill
 KINDS = ("restates", "overexplains", "wrong", "misanchored")
 SEVERITIES = ("warn", "info")
 
-# NO additionalProperties inside items -- strict nested schemas truncated
-# sglang guided decoding historically (same constraint as review.py's
-# REVIEW_SCHEMA).
 FINDINGS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -122,9 +119,6 @@ def audit_notes(project_dir: Path, cfg: dict, chapters: str | None = None,
     it to exit 2); per-chapter problems (missing/unreadable translated or
     source file) warn and skip, never abort the run."""
     if batch_size is None:
-        # get_number maps a null/garbage review_batch_size to a clean
-        # ValueError; a cfg without the key (test fixtures) keeps the
-        # DEFAULTS fallback.
         batch_size = int(
             config.get_number(cfg, "review_batch_size")
             if "review_batch_size" in cfg
@@ -145,8 +139,6 @@ def audit_notes(project_dir: Path, cfg: dict, chapters: str | None = None,
     for file in files:
         notes = tn.load_notes(project_dir, file)
         if not notes:
-            # No sidecar (or an unreadable one, already warned by load_notes)
-            # or an empty note list: nothing to audit.
             continue
         translated_path = paths["translated"] / file
         if not translated_path.is_file():
@@ -166,23 +158,13 @@ def audit_notes(project_dir: Path, cfg: dict, chapters: str | None = None,
             skipped.append(file)
             continue
 
-        # Sidecar indexes refer to the clean body: strip stray legacy [^N]
-        # markers per line exactly like the epub builder's sidecar path
-        # (line indexes preserved; only the marker text is removed).
         body_lines = [tn._MARKER_RE.sub("", line) for line in body.split("\n")]
-        # Source pairing: VALIDATE line-aligned the two bodies; the same
-        # leading-title drop as the pipeline keeps the alignment (a body
-        # line repeating the frontmatter chapter_title was consumed by the
-        # title field).
         source_lines, _dropped = project.drop_leading_chapter_title(
             src_body.split("\n"), fm_s
         )
 
         scanned.append(file)
         for note in notes:
-            # idx is assigned to EVERY note (unit or deterministic finding)
-            # in manifest/note order, so findings sort back into reading
-            # order by idx alone.
             idx = len(units) + len(findings)
             term = note.get("term") if isinstance(note.get("term"), str) else ""
             resolved = _resolve_line(note, body_lines)
@@ -207,8 +189,6 @@ def audit_notes(project_dir: Path, cfg: dict, chapters: str | None = None,
                 "note": note.get("note", ""),
                 "category": note.get("category"),
                 "translated_line": body_lines[resolved],
-                # Source body may be shorter (hand-edited translation); an
-                # empty pairing is still reviewable.
                 "source_line": (source_lines[resolved]
                                 if resolved < len(source_lines) else ""),
                 "context_before": "\n".join(body_lines[max(0, resolved - 2):resolved]),
@@ -217,8 +197,6 @@ def audit_notes(project_dir: Path, cfg: dict, chapters: str | None = None,
 
     model, batches, batch_errors = _model_findings(project_dir, cfg, units, batch_size)
     findings.extend(model)
-    # Warns first, then reading order (idx is monotonic in chapter/note
-    # order) -- same severity-first sort as review.py.
     findings.sort(key=lambda f: (SEVERITIES.index(f["severity"]), f["idx"]))
     return {
         "chapters": scanned,
@@ -242,7 +220,7 @@ def _model_findings(
     batches = [units[i:i + batch_size] for i in range(0, len(units), batch_size)]
     n = len(batches)
     for i, batch in enumerate(batches, 1):
-        print(f"[notes] reviewing batch {i}/{n}")  # LLM calls are slow; show life
+        print(f"[notes] reviewing batch {i}/{n}")
         try:
             lines = "\n".join(json.dumps(unit, ensure_ascii=False) for unit in batch)
             prompt = fill(
@@ -305,7 +283,7 @@ def _model_findings(
                 })
         except client.LLMFatal:
             raise
-        except Exception as exc:  # one bad batch must not kill the whole review
+        except Exception as exc:
             errors.append(f"batch {i}/{n}: {exc}")
             print(f"[notes] warn batch {i}/{n} review failed - {exc}")
     return findings, n, errors
@@ -395,8 +373,6 @@ def write_report(project_dir: Path, *, result: dict, cfg: dict) -> Path:
     ]
 
     path = Path(project_dir) / report_name
-    # review_report_path may name a subdirectory; the write side creates it
-    # on demand (same as the glossary report writer).
     path.parent.mkdir(parents=True, exist_ok=True)
     project.atomic_write_text(path, "\n".join(lines), newline="\n")
     return path
@@ -416,8 +392,6 @@ def review_notes(project_dir: Path, cfg: dict, chapters: str | None = None,
     logger.log_event(project_dir, {"event": "notes_review", **result})
     if not result["chapters"]:
         if result["skipped"]:
-            # Sidecars existed but every selected chapter failed to load:
-            # "[ok] nothing to review" would be wrong.
             print(f"[warn] no chapter notes reviewed: {len(result['skipped'])} "
                   "chapter(s) skipped (see failures above)")
         else:

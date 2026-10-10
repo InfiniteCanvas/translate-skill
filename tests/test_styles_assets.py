@@ -33,12 +33,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file
-# (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import styles  # noqa: E402
+from lib import styles
 
 PASSED = 0
 FAILED: list[str] = []
@@ -58,8 +56,6 @@ def case_shipped_styles_load() -> None:
     """Every shipped style guide parses and loads through the real loader:
     non-empty description header, non-empty body, no template placeholder
     syntax anywhere, and load_style returns exactly the parsed body."""
-    # The REAL shipped directory, never swapped: enumerate whatever the
-    # skill ships today (a style added later is picked up automatically).
     shipped = sorted(styles.STYLES_DIR.glob("*.md"))
     check("1a shipped: assets/styles holds .md style guides",
           bool(shipped), f"styles_dir={styles.STYLES_DIR}")
@@ -68,8 +64,6 @@ def case_shipped_styles_load() -> None:
           len(names) == len(set(names)), f"names={names}")
 
     with tempfile.TemporaryDirectory() as td:
-        # A project WITHOUT styles/ overrides, so every load resolves to
-        # the shipped assets (load_style checks the project first).
         proj = Path(td)
         for path in shipped:
             name = path.stem
@@ -111,7 +105,6 @@ def case_unknown_style_raises() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

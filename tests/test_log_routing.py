@@ -40,7 +40,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import client, config, consensus, logger, story, tn_recheck  # noqa: E402
+from lib import client, config, consensus, logger, story, tn_recheck
 
 PASSED = 0
 FAILED: list[str] = []
@@ -144,9 +144,6 @@ def two_block_cfg() -> dict:
                           ("translator", "reviewer", "glossary", "annotator",
                            "recap")}
             | {"consensus": [block("c1")]}}
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_routing_table() -> None:
@@ -253,8 +250,6 @@ def case_4_fanout_binding() -> None:
               all(e.get("chapter") == "CHAPTER_0042.md"
                   for e in calls + events(chapter_dir(root, "CHAPTER_0042"))), "")
         names = [e["event"] for e in events(chapter_dir(root, "CHAPTER_0042"))]
-        # Worker threads append concurrently, so the ORDER is not fixed --
-        # only the counts are.
         check("4d fanout: the chapter's tier-2 file holds 3 requests + 3 responses",
               sorted(names) == sorted(["llm_request", "llm_response"] * 3),
               f"{names}")

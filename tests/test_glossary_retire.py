@@ -1,21 +1,3 @@
-"""Tests for glossary.retire(): canonical-source recording and seed honoring.
-
-retire() must record the ENTRY's canonical source in glossary.json's
-"retired" list even when the match came via a variant (retiring 靈根 retires
-灵根), so seed() can never re-add the term under its canonical spelling
-while it still appears in the catalogue and the source corpus. The return
-list echoes the caller-supplied lookup key (what the user typed), sources
-with no matching entry are silently ignored (nothing written), and repeated
-retires of the same canonical source never duplicate the "retired" entry.
-
-All project fixtures are built inside tempfile.TemporaryDirectory()
-sandboxes per case -- repo fixtures are never touched.
-
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
-
-    uv run tests/test_glossary_retire.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6.0"]
@@ -25,11 +7,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import glossary  # noqa: E402
+from lib import glossary
 
 PASSED = 0
 FAILED: list[str] = []
@@ -148,9 +129,6 @@ def case_4_seed_honors_retired() -> None:
     """seed() must not re-add a retired source even though the catalogue
     lists it and the corpus still contains it (count >= min_count). The
     pre-retire twin project proves seed() WOULD have added it."""
-    # Precondition twin: identical corpus, glossary emptied WITHOUT retiring
-    # -> seed re-adds 灵根 (added=1). This pins that the skip in the retired
-    # project comes from the 'retired' list, not from the corpus or catalogue.
     with tempfile.TemporaryDirectory() as td:
         twin = make_seeded_corpus_project(td)
         glossary.save(twin, {"terms": []})
@@ -158,9 +136,6 @@ def case_4_seed_honors_retired() -> None:
         check("4a seed: control project (no retirement) re-adds 灵根",
               added == 1 and skipped == 0, f"added={added} skipped={skipped}")
 
-    # Retire via the VARIANT, then seed: the canonical 灵根 recorded by
-    # retire() must keep the catalogue term out (the variant string 靈根 the
-    # user typed would NOT have matched the catalogue's 灵根).
     with tempfile.TemporaryDirectory() as td:
         root = make_seeded_corpus_project(td)
         removed = glossary.retire(root, ["靈根"])
@@ -205,7 +180,6 @@ def case_5_dedup_and_order() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

@@ -1,23 +1,3 @@
-"""Tests for glossary.upsert(): normalize + insert-or-replace semantics.
-
-upsert() is the storage primitive behind seed() and GLOSSARY_EXPAND's
-add path. Covered: the alt_translations preservation contract -- an absent
-`alt_translations` key must NOT mean "clear" (a minimal caller passing
-source/translation only keeps the existing entry's alts), while an
-explicitly present key (even an empty list) overwrites, and a brand-new
-entry without the key gets [] -- plus the surrounding normalization
-(variants None -> [], category/origin/first_seen_chapter defaults) and the
-return value: True for an in-place replacement, False for an append. The
-in-place replacement swaps the exact list slot (position preserved), and a
-replacement carrying its own alts keeps them verbatim.
-
-All fixtures are plain in-memory glossary dicts. Self-contained PASS/FAIL
-script (no pytest). The lib modules import pyyaml, so run via uv (deps
-declared inline below):
-
-    uv run tests/test_glossary_upsert.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6.0"]
@@ -25,11 +5,10 @@ declared inline below):
 import sys
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import glossary  # noqa: E402
+from lib import glossary
 
 PASSED = 0
 FAILED: list[str] = []
@@ -55,13 +34,9 @@ def seeded_entry() -> dict:
     }
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_alt_preservation() -> None:
     """The alt_translations contract: absent key preserves the existing
     value, explicit key (even []) overwrites, brand-new entry gets []."""
-    # Absent key -> the existing entry's alts survive the replacement
     g = {"terms": [seeded_entry()]}
     replaced = glossary.upsert(g, {
         "source": "灵根", "translation": "spiritual root",
@@ -73,7 +48,6 @@ def case_1_alt_preservation() -> None:
           and entry["alt_translations"] == ["spirit core"],
           f"replaced={replaced} alts={entry.get('alt_translations')!r}")
 
-    # Explicit [] overwrites (a deliberate "no accepted variants anymore")
     g = {"terms": [seeded_entry()]}
     replaced = glossary.upsert(g, {
         "source": "灵根", "translation": "spiritual root",
@@ -83,7 +57,6 @@ def case_1_alt_preservation() -> None:
           replaced is True and g["terms"][0]["alt_translations"] == [],
           f"alts={g['terms'][0].get('alt_translations')!r}")
 
-    # Explicit non-empty list overwrites with its own value
     g = {"terms": [seeded_entry()]}
     glossary.upsert(g, {
         "source": "灵根", "translation": "spiritual root",
@@ -93,7 +66,6 @@ def case_1_alt_preservation() -> None:
           g["terms"][0]["alt_translations"] == ["root", "essence"],
           f"alts={g['terms'][0].get('alt_translations')!r}")
 
-    # Brand-new entry without the key -> []
     g = {"terms": []}
     appended = glossary.upsert(g, {"source": "道基", "translation": "dao base"})
     check("1d default: brand-new entry without the key gets []",
@@ -101,7 +73,6 @@ def case_1_alt_preservation() -> None:
           and g["terms"][0]["alt_translations"] == [],
           f"appended={appended} entry={g['terms'][0]}")
 
-    # Brand-new entry with an explicit None -> [] as well
     g = {"terms": []}
     glossary.upsert(g, {"source": "道基", "translation": "dao base",
                         "alt_translations": None})
@@ -109,7 +80,6 @@ def case_1_alt_preservation() -> None:
           g["terms"][0]["alt_translations"] == [],
           f"alts={g['terms'][0].get('alt_translations')!r}")
 
-    # Lookup by variant replaces THAT entry (find() semantics), alts preserved
     g = {"terms": [seeded_entry(),
                    {"source": "other", "translation": "x"}]}
     glossary.upsert(g, {"source": "靈根", "translation": "spirit essence"})
@@ -160,7 +130,6 @@ def case_2_normalization_and_position() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

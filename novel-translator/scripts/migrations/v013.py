@@ -69,18 +69,12 @@ DESCRIPTION = ("provider max_tokens_limit: a block may declare its provider's "
                "hard output ceiling, which binds the consensus synthesis too; "
                "report a consensus block the merge would exceed")
 
-# The real Z.AI ceiling, quoted only as the motivating example in the report
-# text. The migration never assumes this number -- it is the user's provider
-# that decides, and the line asks rather than asserts.
 _LIMIT_KEY = "max_tokens_limit"
 
 
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    # Read the RAW file for v012's reason: load_config deep-merges the defaults
-    # underneath, which would fill in an omitted consensus block and hide the
-    # very inheritance this step is reporting on.
     cfg_path = Path(project_dir) / "config.json"
     lines: list[str] = []
 
@@ -106,15 +100,9 @@ def migrate(project_dir: Path, templates_src: Path,
 
     declared = _as_int(cblock.get("max_tokens"))
     if declared is None:
-        # An unset max_tokens fills in as DEFAULT_MAX_TOKENS at load time; the
-        # synthesis then sends max(task cap, 65536), which the ceiling check
-        # below still evaluates correctly. Report it as that number rather than
-        # staying silent about a limit the runtime will apply.
         declared = 65536
 
     if cblock.get(_LIMIT_KEY):
-        # Already declared: say so and stop. Nothing here can improve on a
-        # limit the user has already set.
         lines.append(
             f"[ok] config: providers.consensus declares {_LIMIT_KEY} "
             f"({cblock[_LIMIT_KEY]}) - the merge is clamped there and can "
@@ -122,9 +110,6 @@ def migrate(project_dir: Path, templates_src: Path,
         return lines + common.sync_templates(
             project_dir, templates_src, dry_run, force, confirm)
 
-    # The synthesis cap for each multi-model job is max(task cap, block cap).
-    # Only jobs that actually FAN OUT need a consensus call at all, so a
-    # single-block job is not a finding.
     exceeded = [(job, max(cap, declared))
                 for job, cap in _task_caps(raw, providers)
                 if cap > declared]

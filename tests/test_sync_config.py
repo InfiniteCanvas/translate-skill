@@ -45,21 +45,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ and translate.py live at novel-translator/scripts relative to this
-# file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config  # noqa: E402
-import translate as translate_mod  # noqa: E402
-from translate import CliError  # noqa: E402
+from lib import config
+import translate as translate_mod
+from translate import CliError
 
 PASSED = 0
 FAILED: list[str] = []
 
-# The skill's real root, restored around the init case. cmd_sync_config and
-# cmd_init read translate.SKILL_ROOT at call time, so rebinding the module
-# global is enough to point both at a fixture -- no monkeypatching library.
 REAL_SKILL_ROOT = translate_mod.SKILL_ROOT
 
 
@@ -90,9 +85,6 @@ def read_config(project_dir: Path) -> dict:
     return json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_load_absent_and_malformed() -> None:
     """Absent -> None (never an error); bad shapes -> ValueError."""
     with tempfile.TemporaryDirectory() as td:
@@ -119,8 +111,6 @@ def case_1_load_absent_and_malformed() -> None:
             check("1c non-object: array body raises ValueError",
                   "must contain a JSON object" in str(exc), f"message={exc}")
 
-        # A version key in the overlay would make `migrate` replay or skip
-        # steps, so it is rejected outright rather than silently dropped.
         write_overlay(root, {"version": 99, "source_lang": "zh"})
         try:
             config.load_local_config(root)
@@ -135,7 +125,6 @@ def case_1_load_absent_and_malformed() -> None:
               config.load_local_config(root) == {"source_lang": "ja"},
               f"got={config.load_local_config(root)}")
 
-        # utf-8-sig: a hand-edited file saved with a BOM must still load.
         (root / config.LOCAL_CONFIG_NAME).write_text(
             json.dumps({"a": 1}), encoding="utf-8-sig")
         check("1f BOM: overlay saved with a BOM loads",
@@ -180,10 +169,6 @@ def case_2_merge_semantics() -> None:
           and project_cfg["providers"]["translator"][0]["model"] == "project-model",
           f"base was mutated: {project_cfg}")
 
-    # A partial provider block (model only) must NOT wipe the project's
-    # base_url: replacing the array here would drop the endpoint, and the
-    # missing value would then fall back to the hard-coded DEFAULT_BASE_URL
-    # -- silently pointing the next run at a different server.
     partial = config.merge_overlay(project_cfg, {
         "providers": {"translator": {"model": "only-model"}}})
     check("2f partial: dict block merges into every project block",
@@ -191,8 +176,6 @@ def case_2_merge_semantics() -> None:
           == [{"base_url": "http://project:8888/v1", "model": "only-model"}],
           f"got={partial['providers']['translator']}")
 
-    # A multi-block (consensus fan-out) job: the partial overlay applies to
-    # every block, and no block is dropped or duplicated.
     fanout = {"providers": {"translator": [
         {"base_url": "http://a/v1", "model": "m-a"},
         {"base_url": "http://b/v1", "model": "m-b"},
@@ -237,20 +220,15 @@ def case_3_apply_overlay_writes_raw_merged_form() -> None:
               f"got={on_disk['providers']['translator'][0]}")
         check("3d apply: version stamp preserved verbatim",
               on_disk["version"] == 8, f"version={on_disk['version']}")
-        # The file must NOT gain every DEFAULTS key: a minimal diff keeps the
-        # change reviewable and leaves `version` untouched by the merge.
         check("3e apply: no DEFAULTS keys expanded into the file",
               "auto_build_epub" not in on_disk,
               f"keys={sorted(on_disk)}")
 
-        # Re-running with the same overlay is a no-op (idempotent).
         again, lines2 = config.apply_overlay(project, overlay)
         check("3f idempotent: re-applying the same overlay changes nothing",
               again == [] and "no changes" in lines2[0],
               f"changed={again}, lines={lines2}")
 
-        # An overlay that would make the config unloadable must be rejected
-        # BEFORE the working file is touched.
         before = read_config(project)
         try:
             config.apply_overlay(project, {
@@ -301,13 +279,11 @@ def case_5_cmd_sync_config() -> None:
         args = argparse.Namespace(project=str(project), dry_run=False,
                                  force=False)
 
-        # No overlay at all: a clean no-op, NOT an error.
         translate_mod.SKILL_ROOT = skill
         try:
             rc = translate_mod.cmd_sync_config(args, project)
             check("5a no overlay: exit 0 no-op", rc == 0, f"rc={rc}")
 
-            # Uninitialized project with an overlay present -> CliError (2).
             write_overlay(skill, {"source_lang": "ja"})
             try:
                 translate_mod.cmd_sync_config(args, project)
@@ -317,7 +293,6 @@ def case_5_cmd_sync_config() -> None:
                 check("5b uninitialized: missing config.json raises CliError",
                       "init" in str(exc), f"message={exc}")
 
-            # Malformed overlay -> CliError (exit 2), never a traceback.
             write_overlay(skill, "{ broken")
             try:
                 translate_mod.cmd_sync_config(args, project)
@@ -327,7 +302,6 @@ def case_5_cmd_sync_config() -> None:
                 check("5c malformed overlay: raises CliError",
                       "config" in str(exc), f"message={exc}")
 
-            # The real thing: overlay merges into the project config.
             write_config(project, {
                 "source_lang": "zh",
                 "target_lang": "en",
@@ -366,8 +340,6 @@ def case_6_init_applies_overlay() -> None:
         root = Path(td)
         skill = root / "skill"
         (skill / "assets" / "templates").mkdir(parents=True)
-        # init requires at least one shipped template, and reads the
-        # catalogues dir only when present (absence just warns).
         (skill / "assets" / "templates" / "translation.md").write_text(
             "placeholder\n", encoding="utf-8")
         write_overlay(skill, {
@@ -490,14 +462,13 @@ def case_8_corrupt_base_config_is_a_clean_error() -> None:
             except ValueError as exc:
                 check(f"8 corrupt ({label}): raises ValueError (not TypeError/AttributeError)",
                       True, f"message={exc}")
-            except Exception as exc:  # noqa: BLE001 - the regression itself
+            except Exception as exc:
                 check(f"8 corrupt ({label}): raises ValueError (not TypeError/AttributeError)",
                       False, f"raised {type(exc).__name__}: {exc}")
             check(f"8 corrupt ({label}): file left byte-identical",
                   (project / "config.json").read_bytes() == before,
                   "config.json was modified by a refused merge")
 
-    # And the CLI turns it into the documented exit 2, not a traceback.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         project = root / "proj"
@@ -510,13 +481,12 @@ def case_8_corrupt_base_config_is_a_clean_error() -> None:
                 ["sync-config", "--project", str(project)])
             check("8 cli: corrupt config.json exits 2 (not a traceback/exit 1)",
                   code == 2, f"code={code}")
-        except Exception as exc:  # noqa: BLE001 - a traceback escaping main()
+        except Exception as exc:
             check("8 cli: corrupt config.json exits 2 (not a traceback/exit 1)",
                   False, f"escaped main(): {type(exc).__name__}: {exc}")
         finally:
             translate_mod.SKILL_ROOT = REAL_SKILL_ROOT
 
-    # No false positives: every legitimate shape still merges.
     for label, body in [
         ("plain object", '{"source_lang": "zh", "version": 8}'),
         ("empty object", "{}"),
@@ -530,11 +500,10 @@ def case_8_corrupt_base_config_is_a_clean_error() -> None:
                     project, {"seed_min_count": 3})
                 check(f"8 legit ({label}): still merges cleanly",
                       lines and lines[0].startswith("[ok]"), f"lines={lines}")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 check(f"8 legit ({label}): still merges cleanly", False,
                       f"{type(exc).__name__}: {exc}")
 
-    # A BOM'd config.json is legitimate and must keep working (utf-8-sig).
     with tempfile.TemporaryDirectory() as td:
         project = Path(td)
         (project / "config.json").write_text(
@@ -544,7 +513,7 @@ def case_8_corrupt_base_config_is_a_clean_error() -> None:
             check("8 BOM: utf-8-sig config.json still merges",
                   config.load_config(project)["seed_min_count"] == 9,
                   "BOM'd file was not handled")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             check("8 BOM: utf-8-sig config.json still merges", False,
                   f"{type(exc).__name__}: {exc}")
 
@@ -559,7 +528,6 @@ def case_9_corrupt_overlay_is_a_clean_error() -> None:
     config.local.json surfaced as a traceback and exit 1 instead of the
     documented exit 2.
     """
-    # Rejected at load time, naming the overlay file.
     for label, payload in [
         ("providers is a list", '{"providers": ["x"]}'),
         ("providers is a string", '{"providers": "oops"}'),
@@ -575,8 +543,6 @@ def case_9_corrupt_overlay_is_a_clean_error() -> None:
                 check(f"9 load ({label}): overlay rejected with ValueError",
                       "providers" in str(exc), f"message={exc}")
 
-    # And apply_overlay refuses it directly, even for a hand-built overlay
-    # that never went through load_local_config.
     for label, over in [
         ("overlay providers list", {"providers": ["x"]}),
         ("overlay providers number", {"providers": 7}),
@@ -594,14 +560,13 @@ def case_9_corrupt_overlay_is_a_clean_error() -> None:
             except ValueError as exc:
                 check(f"9 apply ({label}): raises ValueError", True,
                       f"message={exc}")
-            except Exception as exc:  # noqa: BLE001 - the regression itself
+            except Exception as exc:
                 check(f"9 apply ({label}): raises ValueError", False,
                       f"raised {type(exc).__name__}: {exc}")
             check(f"9 apply ({label}): file untouched",
                   (project / "config.json").read_bytes() == before,
                   "config.json modified by a refused merge")
 
-    # CLI level: a bad overlay exits 2 with one [FAIL], no traceback.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         project = root / "proj"
@@ -615,13 +580,12 @@ def case_9_corrupt_overlay_is_a_clean_error() -> None:
                 ["sync-config", "--project", str(project)])
             check("9 cli: bad overlay providers exits 2 (no traceback)",
                   code == 2, f"code={code}")
-        except Exception as exc:  # noqa: BLE001 - a traceback escaping main()
+        except Exception as exc:
             check("9 cli: bad overlay providers exits 2 (no traceback)",
                   False, f"escaped main(): {type(exc).__name__}: {exc}")
         finally:
             translate_mod.SKILL_ROOT = REAL_SKILL_ROOT
 
-    # init must SURVIVE a bad overlay (warn, do not abort).
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         skill = root / "skill"
@@ -711,19 +675,16 @@ def case_10_shipped_examples_are_valid() -> None:
         if not path.is_file():
             continue
 
-        # Valid JSON object, and it must pass the REAL reader (shape rules,
-        # no `version`, providers must be an object).
         with tempfile.TemporaryDirectory() as td:
             write_overlay(Path(td), path.read_text(encoding="utf-8"))
             try:
                 overlay = config.load_local_config(Path(td))
                 check(f"10 {name}: passes load_local_config", overlay is not None)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 check(f"10 {name}: passes load_local_config", False,
                       f"{type(exc).__name__}: {exc}")
                 continue
 
-            # No inline secrets: examples must model the safe form.
             check(f"10 {name}: carries no inline api_key",
                   config.inline_api_keys(overlay) == [],
                   f"found {config.inline_api_keys(overlay)}")
@@ -733,7 +694,6 @@ def case_10_shipped_examples_are_valid() -> None:
                           overlay.get("providers", {}))),
                   "a block falls back to an inline key")
 
-            # And it must normalize into a usable project config.
             project = Path(td) / "proj"
             project.mkdir()
             (project / "config.json").write_text(
@@ -748,38 +708,17 @@ def case_10_shipped_examples_are_valid() -> None:
                       all(block.get(k) for k in ("base_url", "model"))
                       and bool(config.provider_list(cfg, "translator")),
                       f"block={block!r}")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 check(f"10 {name}: normalizes to a working translator block",
                       False, f"{type(exc).__name__}: {exc}")
 
-        # Every job must be covered. A partial overlay leaves the rest on the
-        # hard-coded DEFAULT_BASE_URL (a LAN sglang box), which fails at the
-        # first ping with a connection error rather than anything obvious.
         named = set(overlay.get("providers", {}))
         missing = sorted(set(config.PROVIDER_JOBS) - named)
         check(f"10 {name}: covers ALL {len(config.PROVIDER_JOBS)} provider jobs",
               not missing, f"jobs left on the default endpoint: {missing}")
 
-        # Reasoning-budget invariants, each measured live against the APIs.
-        #
-        #  * MiniMax-M3 has no depth knob: reasoning_effort is silently
-        #    IGNORED by it. Left on, it inlines a <think> block into content
-        #    and spends the entire cap thinking (4096/4096 tokens,
-        #    finish_reason=length, 30s, no answer). The only thing that stops
-        #    it is extra_body.thinking.type=disabled, which answers directly
-        #    in 42s. So M3 blocks MUST disable thinking.
-        #  * MiniMax-M3.1-Flash-Preview rejects thinking:disabled with HTTP 400
-        #    ("requires adaptive thinking"), so it must stay ON and have its
-        #    depth pinned via reasoning_effort instead. Omitted means the
-        #    server default `max`, which is non-terminating on a real chapter:
-        #    measured 19m51s and zero content. `high`/`xhigh` complete it.
-        #  * Both models also ignore chat_template_kwargs.enable_thinking, so
-        #    a block relying on that is unprotected either way.
         jobs = overlay.get("providers", {})
 
-        # Blocks are read in their EFFECTIVE form (see _effective_blocks): a
-        # per-job arbitrator may be authored partial and inherit from the
-        # global `consensus`, and these checks are about what will run.
         _effective = _effective_blocks
 
         def _labelled(job, block):
@@ -806,11 +745,6 @@ def case_10_shipped_examples_are_valid() -> None:
               not unpinned_flash,
               f"Flash-Preview blocks with no valid reasoning_effort: {unpinned_flash}")
 
-        # `max` is only safe when the cap can hold the reasoning it produces:
-        # at 65536 it does NOT converge (19m51s, finish_reason=length, no
-        # content key at all), at 256000 it converged on every measured run.
-        # So pinning `max` while leaving the old budget would reproduce the
-        # original 20-minute failure -- require the large cap to go with it.
         underbudgeted = sorted(
             _labelled(job, block)
             for job, block in _effective(jobs)
@@ -827,16 +761,6 @@ def case_10_shipped_examples_are_valid() -> None:
         check(f"10 {name}: every block carries the 64k output budget",
               not small, f"blocks below 65536 max_tokens: {small}")
 
-        # Since v012 translate_max_output_tokens is a CEILING, not an override:
-        # client.chat clamps the sent cap down to each block's own max_tokens,
-        # and pipeline packs to min(ceiling, tightest block) so no model in the
-        # array truncates its part. So a translator block BELOW the ceiling is
-        # a supported configuration, not a defect -- the old
-        # `smallest >= max_out` check is now INVERTED, and enforcing it would
-        # forbid exactly the shape this change exists to support.
-        # What still must hold: the ceiling is a sane int, and no translator
-        # block is so small that chapters cannot be packed into it
-        # (pipeline.MIN_TRANSLATOR_MAX_TOKENS).
         max_out = overlay.get("translate_max_output_tokens")
         translator_blocks = _provider_blocks(jobs.get("translator"))
         smallest = min((int(b.get("max_tokens", 0))
@@ -849,15 +773,6 @@ def case_10_shipped_examples_are_valid() -> None:
               f"smallest translator max_tokens={smallest} "
               f"(floor {_pl.MIN_TRANSLATOR_MAX_TOKENS})")
 
-        # The consensus merge is the ONE call allowed past its own block's
-        # max_tokens: consensus.chat raises it to max(task cap, block cap) so
-        # an under-provisioned arbitrator can still combine large candidates.
-        # That is safe only when the block declares `max_tokens_limit` -- its
-        # provider's real ceiling. Without it, an example whose ceiling sits
-        # above the block's own cap is a shipped 400: this is exactly how
-        # config.local.example.zai.json reproduced the original bug, since
-        # every one of its blocks is Z.AI (wall 131072) and `consensus`
-        # inherits translator[0].
         cblocks = _provider_blocks(jobs.get("consensus")) or _provider_blocks(
             jobs.get("translator"))
         unprotected: list[str] = []
@@ -888,7 +803,6 @@ def case_11_per_job_consensus_overlay() -> None:
       an arbitrator is exactly one model
     """
     with tempfile.TemporaryDirectory() as td:
-        # --- added to a project that has no such key -----------------------
         project = Path(td) / "add"
         project.mkdir()
         write_config(project, {
@@ -908,7 +822,6 @@ def case_11_per_job_consensus_overlay() -> None:
               any("consensus_translator" in key for key in changed),
               f"changed={changed}")
 
-        # --- merged key-wise into an existing block -------------------------
         project2 = Path(td) / "merge"
         project2.mkdir()
         write_config(project2, {
@@ -928,11 +841,6 @@ def case_11_per_job_consensus_overlay() -> None:
               merged == {"base_url": "http://project:8888/v1", "model": "new-arb"},
               f"got={merged}")
 
-        # --- the repair path: a fan-out with no consensus is refused at load
-        # (v015), so sync-config must be able to FIX it -- an overlay that adds
-        # `consensus` merges into a config that then validates. Without this,
-        # the rule would be a lockout: the only way to repair the project would
-        # be to edit it by hand.
         project3 = Path(td) / "repair"
         project3.mkdir()
         write_config(project3, {
@@ -958,7 +866,6 @@ def case_11_per_job_consensus_overlay() -> None:
               and len(config.provider_list(repaired, "translator")) == 2,
               f"consensus={config.provider(repaired, 'consensus')!r}")
 
-        # --- an array overlay is rejected before the write ------------------
         before = read_config(project2)
         try:
             config.apply_overlay(project2, {"providers": {
@@ -974,7 +881,6 @@ def case_11_per_job_consensus_overlay() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

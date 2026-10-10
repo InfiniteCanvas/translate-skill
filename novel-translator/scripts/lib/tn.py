@@ -33,22 +33,14 @@ from pathlib import Path
 
 from lib import project
 
-# Legacy baked-in format (epub.py's chapter parser uses the same rules):
-# markers "[^N]" appended to body lines, definitions "[^N]: **term** — note"
-# under a "## Translator's Notes" heading.
 _TN_HEADING = "## Translator's Notes"
 _MARKER_RE = re.compile(r"\[\^\d+\]")
 _MARKER_STRIP_RE = re.compile(r"\s*\[\^\d+\]")
 _DEFINITION_RE = re.compile(r"^\[\^(\d+)\]:\s*(.*)$")
 _TERM_NOTE_RE = re.compile(r"^\*\*(.+?)\*\*\s*\u2014\s*(.*)$")
 
-# The annotator tags each note with one of these categories (the
-# tn_generate.md return schema); anything else -- missing, unknown, wrong
-# type -- silently defaults to "other" (tn._category).
 NOTE_CATEGORIES = ("cultural", "idiom", "wordplay", "honorific", "unit", "other")
 
-# Drop reasons recorded in notes/<stem>.dropped.json, in the fixed report
-# order (low_threshold first, then overflow, then invalid).
 DROP_REASONS = ("low_threshold", "overflow", "invalid")
 
 
@@ -359,12 +351,6 @@ def process(
     seen: set[str] = set()
     updated = dict(history)
 
-    # Comprehension gate (Hy-MT2 convention), before any other validation or
-    # dedup: notes the model marked threshold="low" (case-insensitive) are
-    # discarded, by design -- unless the project opts to keep them
-    # (tn_keep_low_confidence; some models self-assess too harshly). Notes
-    # missing "threshold" or with any other value are kept. The discards are
-    # recorded for review (reason "low_threshold") but stay warning-free.
     if not keep_low:
         survivors: list[object] = []
         for entry in notes:
@@ -420,13 +406,6 @@ def process(
             and last_order != chapter_order
             and 0 <= chapter_order - last_order <= gap
         ):
-            # Recently explained in an earlier chapter (positive distance at
-            # most `gap`): drop without warning. last_order == chapter_order
-            # means this very chapter is being retranslated -- its own note
-            # must be restored, not suppressed; last_order > chapter_order
-            # (negative distance) means an earlier chapter is being
-            # retranslated after a later one already annotated the term --
-            # the reader hits the earlier chapter first, so keep the note.
             continue
 
         times = prev.get("times", 0) if isinstance(prev, dict) else 0
@@ -438,20 +417,9 @@ def process(
         entry["category"] = _category(entry.get("category"))
         kept.append(entry)
 
-    # Cap enforcement, AFTER the gap rule: notes the gap rule suppressed
-    # never consumed a slot, so the kept list truncated here is the most
-    # severe context loss the annotator offered (severity-ordered output).
     if max_notes is not None and len(kept) > max_notes:
         overflowed = kept[max_notes:]
         dropped.extend(_dropped_entry(entry, "overflow") for entry in overflowed)
-        # The reader never saw an overflow-dropped note, so it must not
-        # suppress the term inside the gap window of later chapters: roll
-        # each dropped key back to its input-history entry when one existed
-        # (restoring, not deleting, even when that entry's last_order equals
-        # this chapter's order -- the same-chapter retranslation case), or
-        # remove the key when this call introduced it. Restoring re-points
-        # at the input entry, never mutating it: the input history stays a
-        # pristine lookup table.
         for entry in overflowed:
             key = entry["term"].strip()
             if key in history:
@@ -460,12 +428,6 @@ def process(
                 del updated[key]
         kept = kept[:max_notes]
 
-    # Reading order LAST, after the cap above: the annotator returns
-    # severity-ordered entries so the truncation keeps the most severe
-    # context loss, but the survivors are then re-sorted by the line each
-    # note sits on -- that is the order the reader meets, because the epub
-    # numbers its footnotes straight off this list (a note on line 4 that
-    # ranked first would otherwise print as [1] before [2] on line 1).
     kept.sort(key=_line_sort_key)
 
     return kept, updated, warnings, dropped

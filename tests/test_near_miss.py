@@ -33,13 +33,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# scripts/ (and therefore lib/) lives at novel-translator/scripts relative to
-# this file (CWD-independent); translate.py puts it on sys.path itself.
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import project  # noqa: E402
-from translate import cmd_sync  # noqa: E402
+from lib import project
+from translate import cmd_sync
 
 PASSED = 0
 FAILED: list[str] = []
@@ -61,25 +59,24 @@ def write_lf(path: Path, text: str) -> None:
         fh.write(text)
 
 
-# (filename, expected reason substring, expected flagged?)
 NEAR_MISS_CASES = [
-    ("CHAPTER_001.md", "3 digits, not 4", True),      # 3-digit: newly rejected
-    ("CHAPTER_12.md", "2 digits, not 4", True),       # 2-digit: newly rejected
-    ("CHAPTER_12345.md", "5 digits, not 4", True),    # 5-digit
-    ("CHAPTER_0007.zh.md", "not CHAPTER_NNNN.md", True),  # retired .zh convention
-    ("chapter 7.md", "not CHAPTER_NNNN.md", True),        # space separator
-    ("0007.md", "no CHAPTER_ prefix", True),              # bare number
-    ("CHAPTER_０００７.md", "non-ASCII digits", True),      # full-width
-    ("CHAPTER_٠٠٠７.md", "non-ASCII digits", True),        # Arabic-Indic
-    ("CHAPTER_0042a.md", "letter suffix", True),           # retired extras spelling
-    ("CHAPTER_0007xy.md", "not CHAPTER_NNNN.md", True),    # two-letter suffix
-    ("CHAPTER_0007x.md", "letter suffix", True),           # one-letter suffix
-    ("CHAPTER_0007.txt", "extension", True),               # wrong extension
-    ("README.md", None, False),                           # plainly not a chapter
+    ("CHAPTER_001.md", "3 digits, not 4", True),
+    ("CHAPTER_12.md", "2 digits, not 4", True),
+    ("CHAPTER_12345.md", "5 digits, not 4", True),
+    ("CHAPTER_0007.zh.md", "not CHAPTER_NNNN.md", True),
+    ("chapter 7.md", "not CHAPTER_NNNN.md", True),
+    ("0007.md", "no CHAPTER_ prefix", True),
+    ("CHAPTER_０００７.md", "non-ASCII digits", True),
+    ("CHAPTER_٠٠٠７.md", "non-ASCII digits", True),
+    ("CHAPTER_0042a.md", "letter suffix", True),
+    ("CHAPTER_0007xy.md", "not CHAPTER_NNNN.md", True),
+    ("CHAPTER_0007x.md", "letter suffix", True),
+    ("CHAPTER_0007.txt", "extension", True),
+    ("README.md", None, False),
     ("notes.txt", None, False),
     (".gitkeep", None, False),
-    ("CHAPTER_0007.md", None, False),                     # a real chapter
-    ("chapter_0012.md", None, False),                     # IGNORECASE still matches
+    ("CHAPTER_0007.md", None, False),
+    ("chapter_0012.md", None, False),
 ]
 
 
@@ -133,14 +130,14 @@ def case_3_sync_warns() -> None:
         write_lf(source / "CHAPTER_001.md", "第一章\nbody\n")
         write_lf(source / "CHAPTER_0007.zh.md", "第七章\nbody\n")
         write_lf(source / "README.md", "notes\n")
-        project.sync_manifest(root)          # chapters.json, as init would leave it
+        project.sync_manifest(root)
 
         buf = io.StringIO()
         error: BaseException | None = None
         try:
             with contextlib.redirect_stdout(buf):
                 rc = cmd_sync(argparse.Namespace(), root)
-        except BaseException as exc:  # a traceback here IS the failure
+        except BaseException as exc:
             error = exc
             rc = None
         out = buf.getvalue()

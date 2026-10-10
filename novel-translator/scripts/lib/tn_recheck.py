@@ -50,7 +50,7 @@ def _recap_part(recap_state: dict, manifest: list[dict], file: str) -> str:
                 and entry["recap"].strip()):
             return story.story_part(entry["recap"])
         return ""
-    except Exception:  # noqa: BLE001 - advisory: silent per-chapter degrade
+    except Exception:
         return ""
 
 
@@ -111,10 +111,6 @@ def recheck_chapters(
     def default_chat_for(chapter: str) -> Callable[[str], str]:
         return make_chat(project_dir, cfg, chapter)
 
-    # Run-level setup: the template, config knobs, and novel background are
-    # the same for every chapter, so load them once instead of per chapter.
-    # The glossary too: re-annotation never grows it, so one load serves the
-    # whole run (the per-chapter contextual slice is computed per chapter).
     tpl = pipeline._load_template(paths["templates"], "tn_generate.md")
     max_notes = int(pipeline._cfg_value(cfg, "max_notes_per_chapter"))
     gap = int(pipeline._cfg_value(cfg, "tn_gap_chapters"))
@@ -129,25 +125,13 @@ def recheck_chapters(
         novel_info.get("background") or style_profile.get("background") or ""
     ).strip()
 
-    # Recap parity with the pipeline's TN_GENERATE: the re-check's
-    # annotator must judge the same [Background Information] frame (novel
-    # background + the predecessor's rolling recap), or the two annotators
-    # evaluate different contexts. READ-ONLY: the state is loaded once per
-    # run, never written, and never backfilled (no LLM call); story.
-    # load_state already warns on a malformed file, and anything else
-    # unexpected degrades to a recap-less run.
     try:
         recap_state = story.load_state(project_dir)
-    except Exception as exc:  # noqa: BLE001 - advisory: run without recaps
+    except Exception as exc:
         print(f"[warn] story_state.json unloadable ({exc}) - runs without recap")
         recap_state = {}
 
-    # Threaded across chapters in order and saved after each successfully
-    # processed one, exactly like the pipeline's TN_DEDUP per chapter.
     history = tn.load_history(project_dir)
-    # tn.process bumps times/last_order for every kept note even when the
-    # note text is unchanged, so a history-only drift must count as a
-    # change or the run would dirty the worktree without committing.
     history_before = json.dumps(history, sort_keys=True, ensure_ascii=False)
 
     scanned = 0
@@ -158,7 +142,6 @@ def recheck_chapters(
     failed: list[str] = []
     skipped: list[str] = []
 
-    # Eligibility: skipped chapters warn and continue, never abort the run.
     eligible: list[tuple[dict, str]] = []
     for file in files:
         entry = project.find_entry(manifest, file)
@@ -188,7 +171,6 @@ def recheck_chapters(
         chapter_order = int(entry.get("order", 0))
         scanned += 1
 
-        # ---- load chapters + legacy detection ----
         try:
             _fm, body = project.read_chapter(translated_path)
             fm_s, src_body = project.read_chapter(source_path)
@@ -201,23 +183,14 @@ def recheck_chapters(
         did_migrate = bool(baked) or clean_body != body
         baseline = baked if did_migrate else tn.load_notes(project_dir, file)
 
-        # ---- fresh annotator pass (the re-evaluation) ----
-        # Same leading-title drop as the pipeline: a body line repeating the
-        # frontmatter chapter_title was consumed by the title field.
         source_lines, _dropped = project.drop_leading_chapter_title(
             src_body.split("\n"), fm_s
         )
 
-        # Same glossary frame the pipeline's build_ctx gives tn_generate.md:
-        # the chapter's contextual slice rendered as Hy-MT2 pairs, so the
-        # annotator can tell pinned renderings from translation errors.
         glossary_str = glossary.render_contextual(
             glossary.contextual(g, "\n".join(source_lines), glossary_cap)
         )
 
-        # Same [Background Information] frame the pipeline's
-        # background_section() builds: novel background, then the
-        # predecessor's rolling recap ("" when there is none).
         recap_part = _recap_part(recap_state, manifest, file)
         chapter_background = pipeline.background_section(novel_background, recap_part)
 
@@ -243,15 +216,11 @@ def recheck_chapters(
                 raise ValueError("expected a 'notes' array")
         except client.LLMFatal:
             raise
-        except Exception as exc:  # noqa: BLE001 - keep existing notes, keep going
+        except Exception as exc:
             print(f"[tn] {file}: [warn] note generation failed - keeping existing notes: {exc}")
             failed.append(file)
             continue
 
-        # ---- dedup + write ----
-        # The legacy migration rewrite lands only here, after the annotator
-        # succeeded: a failed run must leave a legacy chapter byte-unchanged
-        # (its baked notes are the only copy on disk until the sidecar write).
         history_in = history
         kept, history, warnings, dropped = tn.process(
             raw_notes, len(body_lines), chapter_order, history, gap, keep_low,
@@ -259,14 +228,6 @@ def recheck_chapters(
         )
         for warning in warnings:
             print(f"[tn] {file}: [warn] {warning}")
-        # A "successful" evaluation that keeps ZERO notes over a chapter
-        # with a non-empty baseline must not destroy it -- before ANY
-        # mutation: save_notes unlinks an empty sidecar, and in the
-        # migration branch the rewrite below would strip the only baked
-        # copy first. Treat it exactly like a failed evaluation: keep
-        # sidecar and markdown, keep the threaded history untouched (no
-        # tn_history write for this chapter), report the file in `failed`
-        # (cmd_tn exits 1). Zero baseline + zero kept stays a benign no-op.
         if not kept and baseline:
             history = history_in
             print(
@@ -277,10 +238,6 @@ def recheck_chapters(
             continue
         if not dry_run:
             if did_migrate:
-                # Surgical rewrite (replace.py's frontmatter rule): keep the
-                # YAML block byte-verbatim, replace only the body. BOM-
-                # tolerant: a leading BOM would hide the frontmatter from
-                # _split_frontmatter and the rewrite would drop it.
                 raw = translated_path.read_text(encoding="utf-8-sig")
                 head, _tail = replace._split_frontmatter(raw)
                 out = (head + "\n\n" if head else "") + clean_body.rstrip("\n") + "\n"
@@ -292,7 +249,6 @@ def recheck_chapters(
             migrated += 1
             print(f"{prefix}[tn] {file}: migrated baked-in notes to sidecar ({len(baked)})")
 
-        # ---- report ----
         before_terms = [str(note.get("term", "")).strip() for note in baseline]
         after_terms = [str(note.get("term", "")).strip() for note in kept]
         bits = []

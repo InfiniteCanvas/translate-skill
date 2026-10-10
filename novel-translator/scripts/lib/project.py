@@ -9,40 +9,10 @@ from pathlib import Path
 
 import yaml
 
-# EXACTLY 4 digit chapter numbers, ALL CAPS, no suffix: "CHAPTER_0001.md" is
-# the ONLY accepted spelling. 9999 chapters is far beyond any novel, and a
-# fixed width removes the padding ambiguity that used to let
-# "Chapter_001.md" and "Chapter_0001.md" both be admitted and both claim
-# chapter 1. The optional letter suffix (Chapter_0042a.md, "extras/bonus
-# chapters") was removed after it turned out nobody used it: it cost a field
-# on the Chapter dataclass, a field in chapters.json, a branch in
-# pipeline._entry_keys, a sort key, and four doc mirrors -- and it carried the
-# one case a migration cannot resolve (what number does "0042a" want?).
-#
-# The pattern is deliberately NOT re.IGNORECASE. Case-insensitivity would let
-# both "Chapter_0042.md" and "CHAPTER_0042.md" match and parse to number 42 --
-# impossible on a case-insensitive filesystem, but two entries with the same
-# number in chapters.json on a case-sensitive one, making "translate 42"
-# ambiguous. Requiring one exact spelling closes that axis for good; a
-# differently-cased name is a near-miss and gets reported instead. Digits are
-# spelled [0-9], never \d: \d also matches full-width/Arabic-Indic decimal
-# digits, so "CHAPTER_０００７.md" would be discovered and int()-collapse onto
-# the real CHAPTER_0007. near_miss_reason() deliberately uses \d so those names
-# are REPORTED instead of vanishing.
 CHAPTER_RE = re.compile(r"^CHAPTER_([0-9]{4})\.md$")
 
-# Looser patterns, used only to decide whether an ignored source/ file is worth
-# warning about. They are never used to discover a chapter, and they stay
-# case-insensitive precisely so the differently-cased near-misses above are
-# recognized and reported. \d here is the point: it catches the
-# full-width/Arabic-Indic digit names CHAPTER_RE rejects.
 _CHAPTERISH_RE = re.compile(r"^chapter[\s_.-]*\d", re.IGNORECASE)
 _BARE_NUMBER_RE = re.compile(r"^\d+$")
-# The tail of a chapter-shaped stem, after "chapter_": digits and NOTHING else.
-# Deliberately has no optional trailing letter, so a retired extra-chapter name
-# ("Chapter_0042a.md") fails the match and gets reported instead of passing as
-# a valid chapter. \d so full-width/Arabic-Indic digits are matched and can be
-# reported rather than silently rejected.
 _CHAPTER_TAIL_RE = re.compile(r"chapter_(\d+)", re.IGNORECASE)
 STATUSES = ("pending", "in-progress", "needs-review", "translated")
 
@@ -50,8 +20,8 @@ STATUSES = ("pending", "in-progress", "needs-review", "translated")
 @dataclass
 class Chapter:
     path: Path
-    file: str      # file name only, e.g. "CHAPTER_0042.md"
-    number: int    # 42
+    file: str
+    number: int
 
 
 def paths(project_dir: Path) -> dict:
@@ -206,8 +176,6 @@ def read_chapter(path: Path) -> tuple[dict, str]:
     YAML fails to parse or is not a mapping.
     """
     path = Path(path)
-    # utf-8-sig: hand-edited chapters saved as UTF-8-with-BOM must not lose
-    # their frontmatter to a leading "\ufeff" on the opening '---' line.
     text = path.read_text(encoding="utf-8-sig")
     lines = text.split("\n")
     if not lines or lines[0].strip() != "---":
@@ -229,14 +197,10 @@ def read_chapter(path: Path) -> tuple[dict, str]:
         while first < len(body_lines) and not body_lines[first].strip():
             first += 1
         last = len(body_lines)
-        # Strip trailing blank lines: a file's final newline would otherwise
-        # become a phantom empty line after body.split("\\n") in the pipeline
-        # (models drop it and fail line-count validation). write_chapter
-        # re-appends exactly one newline, so round-trips are stable.
         while last > first and not body_lines[last - 1].strip():
             last -= 1
         return frontmatter, "\n".join(body_lines[first:last])
-    return {}, text.rstrip("\n")  # no closing '---': treat the whole file as body
+    return {}, text.rstrip("\n")
 
 
 def write_chapter(path: Path, frontmatter: dict, body: str) -> None:
@@ -249,9 +213,6 @@ def write_chapter(path: Path, frontmatter: dict, body: str) -> None:
         + "---\n\n"
         + body
     )
-    # Same utf-8 / LF bytes as the previous direct write_text, but swapped in
-    # atomically: a crash mid-write can no longer leave a truncated chapter
-    # that read_chapter would silently parse as a frontmatter-less body.
     atomic_write_text(Path(path), content, newline="\n")
 
 
@@ -286,7 +247,7 @@ def load_novel_info(project_dir: Path) -> dict:
         return {}
     try:
         loaded = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):  # json.JSONDecodeError is a ValueError
+    except (OSError, ValueError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
 

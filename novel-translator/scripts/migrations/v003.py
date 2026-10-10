@@ -25,14 +25,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-# Relative import: the module is only ever reached through the package
-# (chain() imports it as migrations.v003, and translate.py / the tests both
-# import `migrations` with scripts/ on sys.path), so binding the sibling
-# through the package works regardless of which sys.path root made the
-# package importable.
 from . import common
-# Same reason `common` can import `from lib import config, project`: scripts/
-# is on sys.path in every context that can import `migrations` at all.
 from lib import vcs
 
 VERSION = 3
@@ -43,15 +36,10 @@ DESCRIPTION = ("git history: materialize git_commits default, "
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    # confirm passes straight through to sync_templates: interactivity was
-    # decided once, upstream in cmd_migrate (TTY -> prompt, else None), and
-    # this step never touches stdin itself.
     lines = (
         common.materialize_config(project_dir, dry_run)
         + common.sync_templates(project_dir, templates_src, dry_run, force, confirm)
     )
-    # The git backfill mirrors the helpers' dry-run discipline: a dry run
-    # writes nothing (no .git, no .gitignore) and only reports the intent.
     if dry_run:
         if not vcs.is_repo(project_dir):
             lines.append("[git] would initialize the repository "

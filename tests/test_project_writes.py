@@ -1,31 +1,3 @@
-"""Tests for project-side file writes: chapter discovery and atomic writes.
-
-Covers project.discover's ASCII-digit rule (CHAPTER_RE spells [0-9], never
-\\d: \\d also matches full-width/Arabic-Indic decimal digits, so a
-"CHAPTER_０００７.md" file would be discovered and int()-collapse onto the
-real CHAPTER_0007 -- Unicode-digit names must NOT be discovered while ASCII
-"CHAPTER_0007.md" and the suffixed, differently-cased "chapter_0012b.md"
-still are, with re.IGNORECASE preserved for the name and the a/b suffix),
-the atomic write helpers: atomic_write_text creates a missing parent
-directory (deep paths work on the first write, round-trip their text, and
-leave no *.tmp siblings), _replace_with_retry's exponential backoff (seven
-attempts, sleeping 0.1s..3.2s between them, then the error surfaces: a
-replace failing twice then succeeding lands the file, a permanently busy
-destination re-raises after the full schedule, and a failing atomic write
-leaves the previous content intact with no tmp sibling) -- os/time on the
-project module are swapped for scripted shims per the suite's
-attribute-swap convention, no unittest.mock -- and write_chapter routing
-through the atomic write (frontmatter + body round-trip byte-stable with
-single-LF endings, a failing replace leaves the previous chapter untouched,
-and writing into a not-yet-existing directory succeeds via the inherited
-parent creation).
-
-Self-contained PASS/FAIL script (no pytest). project.py imports pyyaml, so
-run via uv (deps declared inline below):
-
-    uv run tests/test_project_writes.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6.0"]
@@ -37,12 +9,10 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-# scripts/ (and therefore lib/) lives at novel-translator/scripts relative
-# to this file (CWD-independent).
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import project as P  # noqa: E402
+from lib import project as P
 
 PASSED = 0
 FAILED: list[str] = []
@@ -64,9 +34,6 @@ def write_lf(path: Path, text: str) -> None:
         fh.write(text)
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_discovery_ascii_digits() -> None:
     """discover() accepts exactly one spelling: "CHAPTER_NNNN.md" -- all caps,
     ASCII digits, 4 of them. The pattern carries NO re.IGNORECASE, so a
@@ -83,19 +50,19 @@ def case_1_discovery_ascii_digits() -> None:
         source = Path(td) / "source"
         source.mkdir()
         names = [
-            "CHAPTER_0007.md",    # discovered, number 7
-            "CHAPTER_0012.md",    # discovered, number 12
-            "chapter_0099.md",    # lowercase prefix: NOT discovered (case is exact)
-            "Chapter_0013.md",    # title-case prefix: NOT discovered
-            "CHAPTER_0099.MD",    # uppercase extension: NOT discovered
-            "CHAPTER_001.md",     # 3 digits: NOT discovered (padding is fixed)
-            "CHAPTER_12.md",      # 2 digits: NOT discovered (padding is fixed)
-            "CHAPTER_0042a.md",   # extras spelling: NOT discovered (suffix is gone)
-            "CHAPTER_0099A.md",   # 1-letter suffix: NOT discovered (suffix is gone)
-            "CHAPTER_０００７.md",  # full-width digits: NOT discovered
-            "CHAPTER_٠٠٠٧.md",    # Arabic-Indic digits: NOT discovered
-            "CHAPTER_12345.md",   # 5 digits: NOT discovered
-            "CHAPTER_0007.txt",   # wrong extension: NOT discovered
+            "CHAPTER_0007.md",
+            "CHAPTER_0012.md",
+            "chapter_0099.md",
+            "Chapter_0013.md",
+            "CHAPTER_0099.MD",
+            "CHAPTER_001.md",
+            "CHAPTER_12.md",
+            "CHAPTER_0042a.md",
+            "CHAPTER_0099A.md",
+            "CHAPTER_０００７.md",
+            "CHAPTER_٠٠٠٧.md",
+            "CHAPTER_12345.md",
+            "CHAPTER_0007.txt",
         ]
         for name in names:
             write_lf(source / name, "正文\n")
@@ -326,7 +293,6 @@ def case_4_write_chapter_atomic() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

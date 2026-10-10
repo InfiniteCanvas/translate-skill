@@ -42,43 +42,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Plain package import (no cycle: config imports nothing from lib).
 from lib import config
 
 RUN_PREFIX = "run-"
 INDEX_NAME = "index.jsonl"
 
-# Tier 2 -- model IO and the pipeline's reading of INDIVIDUAL model outputs.
-# Tier 1 holds anything that summarizes a run, a chapter, a stage or a command.
-# The set is explicit and the default is tier 1, so an unknown or misspelled
-# event name lands in the orchestration timeline rather than in a chapter's
-# model IO.
 TIER_2_EVENTS = frozenset({
     "llm_request", "llm_response", "result", "chunk", "feedback",
 })
 
-# The two lines that carry bodies, and the fields body-stripping replaces.
 _BODY_EVENTS = frozenset({"llm_request", "llm_response"})
 _BODY_FIELDS = (("prompt", "prompt_chars"), ("response", "response_chars"))
 
-# The current invocation's tier-1 file and the project it belongs to. Both
-# are read on every log_event: `_run_path` is the documented reset contract
-# (assigning None clears every cached path, both tiers, and the counters),
-# and it keeps its precise meaning -- the active tier-1 path of the most
-# recently logged project.
 _run_path: Path | None = None
 _run_project: Path | None = None
 
-# Per-resolved-project cache: run_id, resolved flags, the tier-1 path, the
-# tier-2 paths already opened, and the per-chapter call/token counters that
-# chapter_end and run_end read-and-reset.
 _paths: dict[str, "_Run"] = {}
 
-# log_event is called from worker threads too (the consensus fan-out logs
-# candidate calls concurrently), and its check-then-act on the cache plus the
-# append write are not thread-safe: without serialization two threads could
-# race past the run-file check and interleave partial lines into one file.
-# One lock held for the whole body.
 _LOG_LOCK = threading.Lock()
 
 
@@ -89,9 +69,7 @@ class _Run:
     run_id: str
     flags: dict[str, Any]
     tier1: Path
-    # chapter key (file stem, or None for the project bucket) -> run file
     files: dict[str | None, Path] = field(default_factory=dict)
-    # chapter key -> {"calls": int, "tokens": {job: int}, "started": float}
     counters: dict[str | None, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -105,7 +83,7 @@ def _command_tag() -> str:
     hence best-effort."""
     skip_value = False
     for arg in sys.argv[1:]:
-        if skip_value:  # the directory consumed by a preceding --project
+        if skip_value:
             skip_value = False
             continue
         if arg == "--project":
@@ -209,9 +187,6 @@ def _start_run(proj: Path) -> _Run:
     flags = _resolve_flags(proj)
     tier1 = base / f"{RUN_PREFIX}{run_id}.jsonl"
     if flags["orchestration"]:
-        # Occupy a retention slot before pruning. With log_orchestration off
-        # the tier-1 file is never created -- _run_path still names where it
-        # WOULD be, which keeps it usable as the reset sentinel.
         tier1.touch()
     _prune(base, flags["keep_runs"])
     run = _Run(run_id=run_id, flags=flags, tier1=tier1)
@@ -230,7 +205,7 @@ def _tier2_file(proj: Path, run: _Run, chapter: str | None) -> Path:
     directory = base / "project" if chapter is None else base / "chapters" / chapter
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{RUN_PREFIX}{run.run_id}.jsonl"
-    path.touch()  # occupy a retention slot before pruning
+    path.touch()
     _prune(directory,
            run.flags["keep_runs"] if chapter is None
            else run.flags["chapter_keep_runs"])
@@ -323,7 +298,7 @@ def log_event(project_dir: Path | str, event: dict[str, Any]) -> None:
                 path = run.tier1
                 payload = event
             _append(path, {"ts": _now(), "run_id": run.run_id, **payload})
-        except Exception:  # noqa: BLE001 - logging must never break the pipeline
+        except Exception:
             pass
 
 
@@ -344,7 +319,7 @@ def index_line(project_dir: Path | str, chapter: str | None, phase: str,
             path.parent.mkdir(parents=True, exist_ok=True)
             _append(path, {"ts": _now(), "run_id": run.run_id,
                            "phase": phase, **fields})
-        except Exception:  # noqa: BLE001 - logging must never break the pipeline
+        except Exception:
             pass
 
 
@@ -359,7 +334,7 @@ def note_chapter_start(project_dir: Path | str, chapter: str | None) -> None:
                 run.counters.setdefault(
                     _chapter_key(chapter),
                     {"calls": 0, "tokens": {}, "started": time.monotonic()})
-        except Exception:  # noqa: BLE001 - logging must never break the pipeline
+        except Exception:
             pass
 
 

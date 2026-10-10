@@ -150,7 +150,7 @@ def search(g: dict, query: str, max_distance: int = 2) -> dict:
             distances = [d for _kind, _text, d in hits]
             rank = (0 if 0 in distances else 1, min(distances))
             ranked.append((rank, {"entry": entry, "hits": hits}))
-    ranked.sort(key=lambda pair: pair[0])  # stable: file order survives ties
+    ranked.sort(key=lambda pair: pair[0])
     matches = [match for _rank, match in ranked]
 
     retired: list[tuple[str, int]] = []
@@ -206,18 +206,9 @@ def retire(
             if item is entry:
                 del terms[idx]
                 break
-        # Record the ENTRY's canonical source, not the user-supplied lookup
-        # key: retiring via a variant (靈根) must retire the canonical source
-        # (灵根) or seed()/GLOSSARY_EXPAND would immediately re-add the term.
-        # merge_entries() -- the other writer of "retired" -- records
-        # canonical sources the same way; the two must agree.
         canonical = entry.get("source")
         if isinstance(canonical, str) and canonical and canonical not in retired:
             retired.append(canonical)
-        # Same contract as merge_entries(remove_literal=...): the CLI gate
-        # compares the user literal, so the raw spelling that resolved to
-        # THIS removed entry is recorded too (a canonical-equal or
-        # already-present literal is skipped by the checks below).
         if (
             isinstance(source_literal, str) and source_literal
             and source_literal == source
@@ -265,10 +256,6 @@ def set_fields(
         if not new_translation:
             raise ValueError("empty --translation")
         source = entry.get("source") or ""
-        # balance's shared CJK predicate replaces the old local mirror so
-        # every source-script check pipeline-wide answers identically (same
-        # slightly wider character range -- compat ideographs U+F900-FAFF
-        # and halfwidth katakana U+FF66-FF9F included).
         if (
             isinstance(source, str)
             and source
@@ -317,7 +304,6 @@ def set_fields(
     if alt_translations is not None or add_alt or remove_alt:
         old_alts = list(entry.get("alt_translations") or [])
         if alt_translations is not None:
-            # Replace semantics: split on comma, strip, drop empties.
             new_alts = [a.strip() for a in alt_translations.split(",")]
             new_alts = [a for a in new_alts if a]
         else:
@@ -380,13 +366,10 @@ def merge_entries(
     if remove is None:
         raise ValueError(f"no glossary entry for --remove '{remove_source}'")
     if keep is remove:
-        # Source-vs-variant collision resolving to one entry: refuse.
         raise ValueError(
             f"--keep and --remove must be distinct ('{keep_source}')"
         )
 
-    # Canonical source of the entry being folded away -- the warn line, the
-    # "retired" recording and the return value all key on it.
     remove_key = remove.get("source")
 
     keep_variants = list(keep.get("variants") or [])
@@ -410,9 +393,6 @@ def merge_entries(
         keep["definition"] = remove.get("definition")
         def_filled = True
     elif keep_def and remove_def:
-        # The kept entry's wording wins; say so, or the discarded definition
-        # silently vanishes. Pure console note -- nothing added to the
-        # return value or the glossary.
         print(
             f"[warn] glossary: definition from "
             f"'{remove_key if isinstance(remove_key, str) else remove_source}' "
@@ -431,11 +411,6 @@ def merge_entries(
     retired = [s for s in (g.get("retired") or []) if isinstance(s, str)]
     if isinstance(remove_key, str) and remove_key not in retired:
         retired.append(remove_key)
-    # The CLI idempotency gate compares the user-supplied literal, so a
-    # re-run of `glossary merge --keep K --remove V` (V a variant spelling
-    # of the removed entry) must find V itself in "retired" -- record the
-    # raw spelling alongside the canonical source whenever it is a
-    # different, not-yet-recorded string.
     if (
         isinstance(remove_literal, str) and remove_literal
         and remove_literal != remove_key and remove_literal not in retired
@@ -461,9 +436,6 @@ def upsert(g: dict, entry: dict) -> bool:
     terms = g.setdefault("terms", [])
     existing = find(g, norm["source"])
     if existing is not None:
-        # Callers may pass minimal entries; an absent alt_translations key
-        # must not mean "clear" -- only an explicitly present one (even
-        # empty) overwrites the existing entry's value.
         if "alt_translations" not in norm:
             norm["alt_translations"] = existing.get("alt_translations") or []
         elif norm["alt_translations"] is None:

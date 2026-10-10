@@ -125,11 +125,10 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import fix, glossary, review  # noqa: E402
+from lib import fix, glossary, review
 
 PASSED = 0
 FAILED: list[str] = []
@@ -236,7 +235,7 @@ def case_5_run_commands_integration() -> None:
                       "--translation", "灵力"],
                 line_no=1, finding={}),
             fix.CommandSpec(
-                raw="glossary search 灵根",   # benign, read-only, exit 0
+                raw="glossary search 灵根",
                 argv=["glossary", "search", "灵根"],
                 line_no=2, finding={}),
         ]
@@ -260,7 +259,6 @@ def case_6_mundane_report_parsing() -> None:
         root = Path(td)
         report = root / "review-report.md"
 
-        # legacy mode: zero - Command: lines -> synthesis from finding blocks
         report.write_text(
             "# Glossary Review Report\n"
             "\n"
@@ -280,7 +278,6 @@ def case_6_mundane_report_parsing() -> None:
               and specs[0].line_no == 0,
               f"argv={specs[0].argv if specs else None}")
 
-        # explicit mode: the writer's quoted bullet parses back to argv
         report.write_text(
             "- Command: glossary retire --source '灵根'\n",
             encoding="utf-8",
@@ -376,7 +373,6 @@ def case_8_new_format_report_parsing() -> None:
         command_line = ("- Command: glossary replace --source '灵根' "
                         "--translation 'spiritual root'")
 
-        # explicit mode: the machine section's Command bullet is extracted
         report.write_text(full_text, encoding="utf-8")
         specs, count = fix.parse_report(report)
         check("8a new format: findings counted across BOTH sections",
@@ -389,10 +385,6 @@ def case_8_new_format_report_parsing() -> None:
               == full_text.splitlines().index(command_line) + 1,
               f"specs={[(s.argv, s.line_no) for s in specs]}")
 
-        # legacy-synthesis mode: the same report minus every - Command:
-        # bullet -- the machine finding's command is synthesized from its
-        # block (kind + source from the heading, suggestion from the
-        # bullet), and the manual finding contributes nothing
         report.write_text(
             "\n".join(ln for ln in full_text.splitlines()
                       if not ln.startswith("- Command: ")) + "\n",
@@ -454,16 +446,12 @@ def case_10_project_override_guard() -> None:
         glossary.save(root, {"terms": [
             {"source": "灵根", "variants": [], "translation": "spirit root"},
         ]})
-        # A real second project the smuggled --project points at: had the
-        # command run, THIS glossary would have been rewritten.
         other = root / "elsewhere"
         other.mkdir()
         glossary.save(other, {"terms": [
             {"source": "灵根", "variants": [], "translation": "spirit root"},
         ]})
         other_before = (other / "glossary.json").read_bytes()
-        # as_posix(): an unquoted Windows backslash path would be mangled
-        # by shlex.split(posix=True)'s escape handling.
         other_flag = other.as_posix()
 
         report = root / "review-report.md"
@@ -536,11 +524,6 @@ def case_11_argparse_abbreviation() -> None:
             {"source": "灵根", "variants": [], "translation": "spirit root"},
             {"source": "Excalibur", "variants": [], "translation": "the sword"},
         ]})
-        # A real second project the abbreviated flag points at: had the
-        # command run, THIS glossary would have been rewritten. It carries
-        # the manifest `glossary replace` requires, so pre-allow_abbrev=False
-        # the smuggled command genuinely executes (and fails this pin);
-        # post-fix the child's argparse rejects --proj before anything runs.
         other = root / "elsewhere"
         other.mkdir()
         glossary.save(other, {"terms": [
@@ -549,8 +532,6 @@ def case_11_argparse_abbreviation() -> None:
         (other / "chapters.json").write_text("[]\n", encoding="utf-8")
         other_before = (other / "glossary.json").read_bytes()
         primary_before = (root / "glossary.json").read_bytes()
-        # as_posix(): an unquoted Windows backslash path would be mangled
-        # by shlex.split(posix=True)'s escape handling.
         other_flag = other.as_posix()
 
         report = root / "review-report.md"
@@ -596,17 +577,12 @@ def case_12_conflict_guard() -> None:
     variant that resolves to it -- with its own skipped_conflict counter
     (never merged into skipped_invalid) and an exact console line naming
     the RESOLVED source. Different sources never conflict."""
-    # A: contradicting suggestions, the second naming a variant of the same
-    # entry -- resolves to the same key, so skipped.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         glossary.save(root, {"terms": [
             {"source": "灵根", "variants": ["靈根"],
              "translation": "spirit root"},
         ]})
-        # glossary replace requires the manifest to exist (it refuses a
-        # project without one); an empty manifest keeps the run read-only
-        # apart from glossary.json itself.
         (root / "chapters.json").write_text("[]\n", encoding="utf-8")
         report = root / "review-report.md"
         report.write_text(
@@ -636,9 +612,6 @@ def case_12_conflict_guard() -> None:
               "keeps the first translation)",
               entry.get("translation") == "spiritual root", f"entry={entry}")
 
-    # B: an identical re-run is conflict-skipped too -- idempotent re-runs
-    # never need to run twice (noop stays 0: the guard, not the child's
-    # no-op path, absorbed the duplicate).
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         glossary.save(root, {"terms": [
@@ -662,7 +635,6 @@ def case_12_conflict_guard() -> None:
               and result["noop"] == 0 and result["specs_run"] == 1,
               f"result={result}")
 
-    # C: control -- different sources never conflict; both apply.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         glossary.save(root, {"terms": [
@@ -689,10 +661,6 @@ def case_12_conflict_guard() -> None:
               and terms["Excalibur"]["translation"] == "the true sword",
               f"terms={terms}")
 
-    # D: two merges into ONE keeper are legitimate -- one report emits
-    # `merge --keep M --remove A` and `merge --keep M --remove B` when two
-    # entries are duplicates of the same keeper. Keying on the keeper alone
-    # dropped the second entry, leaving it un-merged and un-retired.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         glossary.save(root, {"terms": [
@@ -715,9 +683,6 @@ def case_12_conflict_guard() -> None:
               and "dupA" not in terms and "dupB" not in terms,
               f"result={result} terms={terms}")
 
-    # E: `replace` edits the translation, so it shares `set --translation`'s
-    # key -- two commands writing ONE field of ONE entry is the double-apply
-    # the guard exists to stop. Different fields of one entry still both run.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         glossary.save(root, {"terms": [
@@ -764,11 +729,6 @@ def case_12_conflict_guard() -> None:
               and entry.get("category") == "skill",
               f"result={result} entry={entry}")
 
-    # F: a multi-field `set` occupies EVERY field key it writes -- keying
-    # only the first present flag let it slip past a queued translation
-    # edit and rewrite the field back (the exact double-apply the guard
-    # exists to stop). The whole command is skipped: the definition a
-    # conflict-doomed command carries is not applied either.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         glossary.save(root, {"terms": [
@@ -798,8 +758,6 @@ def case_12_conflict_guard() -> None:
               and entry.get("definition") == "the root of spirit",
               f"entry={entry}")
 
-    # G: ordering variant -- the multi-field set runs FIRST and claims both
-    # keys, so a later set on ONE of them is conflict-skipped too.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         glossary.save(root, {"terms": [
@@ -824,8 +782,6 @@ def case_12_conflict_guard() -> None:
               and entry.get("definition") == "D",
               f"result={result} entry={entry}")
 
-    # H: control -- one multi-field set alone writes every field it names
-    # (the guard collides commands, never the fields within one command).
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         glossary.save(root, {"terms": [
@@ -848,9 +804,6 @@ def case_12_conflict_guard() -> None:
               and entry.get("definition") == "D",
               f"result={result} entry={entry}")
 
-    # I: conflict_keys() is the public dry-run wrapper -- the full
-    # per-written-field key set, empty when the glossary is unreadable or
-    # the command writes nothing the guard tracks.
     g = make_glossary()
     check("12o conflict_keys: a multi-field set yields one key per written "
           "field, sharing the resolved source",
@@ -905,7 +858,7 @@ def case_13_report_staleness() -> None:
         hand = root / "hand-written.md"
         hand.write_text(
             "---\nreport_type: glossary-review\n---\n\n# report\n",
-            encoding="utf-8-sig",  # BOM'd: the reader must tolerate it
+            encoding="utf-8-sig",
         )
         check("13d stale: BOM'd report without the field is not stale",
               fix.report_is_stale(root, hand) is False, "")
@@ -970,8 +923,6 @@ def case_14_subprocess_timeout() -> None:
             TimeoutExpired=subprocess.TimeoutExpired,
         )
 
-    # A: single spec, default (continue past failures) -- the timeout is a
-    #    failed spec and nothing else.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         before = make_project(root)
@@ -1011,8 +962,6 @@ def case_14_subprocess_timeout() -> None:
         check("14e timeout: glossary byte-unchanged",
               (root / "glossary.json").read_bytes() == before, "")
 
-    # B: exit_on_error stops at the timed-out spec (the second command --
-    #    a different source, so no conflict-skip -- never starts).
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         before = make_project(root)
@@ -1039,8 +988,6 @@ def case_14_subprocess_timeout() -> None:
         check("14h timeout: glossary byte-unchanged under exit_on_error",
               (root / "glossary.json").read_bytes() == before, "")
 
-    # C: without exit_on_error the run continues past the timeout -- both
-    #    children start and both count as failed.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         make_project(root)
@@ -1074,8 +1021,6 @@ def case_15_staleness_cli_refusal() -> None:
             ran_fix=False, batches=0, batch_errors=[],
             cfg={"source_lang": "zh", "target_lang": "en"},
         )
-        # A machine-applicable bullet so a --stale-ok run has work to do
-        # (parse_report scans the whole file; the appended bullet parses).
         with report.open("a", encoding="utf-8") as fh:
             fh.write("- Command: glossary set --source '灵根' "
                      "--definition 'A glossary term.'\n")
@@ -1088,7 +1033,6 @@ def case_15_staleness_cli_refusal() -> None:
                 encoding="utf-8", errors="replace", timeout=300,
             )
 
-        # Mutate glossary.json after generation -> the report is stale.
         glossary.save(root, {"terms": [
             {"source": "灵根", "variants": [], "translation": "new root"},
         ]})
@@ -1142,8 +1086,6 @@ def case_16_category_guard() -> None:
     untouched) while a following valid spec still runs, and the check is
     glossary-independent: it also fires when glossary.json fails to parse,
     where invalid_translation_reason has nothing readable to check."""
-    # A: the category-invalid spec first, a valid spec after it -- the run
-    #    must not abort and nothing may count as failed.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         glossary.save(root, {"terms": [
@@ -1182,9 +1124,6 @@ def case_16_category_guard() -> None:
               and terms["Excalibur"].get("definition") == "the true sword",
               f"terms={terms}")
 
-    # B: the category check is glossary-independent -- glossary.json that
-    #    fails to parse leaves g=None (the translation guard defers to the
-    #    subprocess there) and the invalid command is STILL skipped.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "glossary.json").write_text("[1, 2]\n", encoding="utf-8")
@@ -1254,7 +1193,6 @@ def case_17_dryrun_skip_parity() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

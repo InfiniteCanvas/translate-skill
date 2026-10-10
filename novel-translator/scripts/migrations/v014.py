@@ -56,9 +56,6 @@ DESCRIPTION = ("a provider failure that exhausts its retries is now fatal (exit 
                "instead of degrading quietly, and Z.AI irrecoverable codes skip the "
                "retry ladder; report provider blocks with no usable credential")
 
-# Jobs whose provider blocks must carry a credential. `consensus` is included:
-# with the survivor fallback gone it is no longer optional, since a merge that
-# cannot authenticate takes the whole chapter down.
 _JOBS = ("translator", "glossary", "reviewer", "annotator", "recap",
          "profile", "consensus")
 
@@ -69,8 +66,6 @@ def migrate(project_dir: Path, templates_src: Path,
     cfg_path = Path(project_dir) / "config.json"
     lines: list[str] = []
 
-    # Read the RAW file, as v012/v013 do: load_config would fill the inherited
-    # blocks in, and the question here is what the author actually wrote.
     try:
         raw = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
         if not isinstance(raw, dict):
@@ -91,8 +86,6 @@ def migrate(project_dir: Path, templates_src: Path,
     for job in _JOBS:
         blocks = _blocks(providers.get(job))
         if blocks is None:
-            # An omitted job inherits the translator's array at load time, so
-            # the translator's credential covers it. Stay quiet.
             continue
         for i, block in enumerate(blocks):
             label = f"providers.{job}" + (f"[{i}]" if len(blocks) > 1 else "")

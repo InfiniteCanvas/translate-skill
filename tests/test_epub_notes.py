@@ -1,28 +1,3 @@
-"""Tests for epub.chapter_md_to_xhtml's notes sidecar path.
-
-Covers parity between the legacy baked-in format ([^N] markers + a
-"## Translator's Notes" section parsed back out of the markdown) and the
-notes/<chapter>.json sidecar: identical bodies must render identical
-(title, xhtml, has_notes) triples. Sidecar rendering specifics: epub3
-noteref/footnote markup (epub:type="noteref" href="#tn-N" anchors and
-epub:type="footnote" asides), tn-1/tn-2 numbering across multiple notes;
-anchor re-resolution (a stored line index that no longer matches its
-anchor re-locates the paragraph by anchor, output identical to the correct
-index); dropped notes (out-of-range line + anchor found nowhere -> no
-noteref, has_notes False); defensive stripping of stray legacy markers in
-the markdown when a sidecar is passed (no duplicate noterefs); and
-notes=None on a clean file (no footnote markup at all).
-
-All chapter fixtures are built inside tempfile.TemporaryDirectory()
-sandboxes per case — repo fixtures are never touched. Files are written with
-explicit LF newlines so byte-level comparisons are deterministic.
-
-Self-contained PASS/FAIL script (no pytest). epub.py imports ebooklib, so
-run via uv (deps declared inline below):
-
-    uv run tests/test_epub_notes.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["ebooklib>=0.18", "pyyaml>=6.0"]
@@ -33,11 +8,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import epub  # noqa: E402
+from lib import epub
 
 PASSED = 0
 FAILED: list[str] = []
@@ -76,12 +50,7 @@ def make_chapter(td: str, name: str, body: str) -> Path:
 
 NOTE_TERM = "筑基"
 NOTE_TEXT = "Foundation Establishment is the second realm of cultivation."
-# The legacy definition line and the sidecar note must produce the same
-# definition text: "**term** — note".
 LEGACY_DEFINITION = f"[^1]: **{NOTE_TERM}** — {NOTE_TEXT}"
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_parity() -> None:
@@ -158,7 +127,6 @@ def case_3_anchor_resolution() -> None:
                             "Para one.\n\nPara two.\n\nPara three.\n")
         correct = [{"line": 2, "term": "灵石", "note": "Spirit stones.",
                     "anchor": "Para two."}]
-        # index deliberately off (points at Para one), anchor still valid
         off_by_one = [{"line": 0, "term": "灵石", "note": "Spirit stones.",
                        "anchor": "Para two."}]
 
@@ -199,8 +167,6 @@ def case_5_stray_markers() -> None:
     passed -- exactly one noteref per note, no duplicates."""
     with tempfile.TemporaryDirectory() as td:
         clean = make_chapter(td, "clean.md", "Para one.[^7]\n\nPara two.\n")
-        # same file content, but written again for the independent call:
-        # the marker must vanish while the sidecar owns the numbering
         notes = [{"line": 0, "term": NOTE_TERM, "note": NOTE_TEXT,
                   "anchor": "Para one."}]
         title, xhtml, has_notes = epub.chapter_md_to_xhtml(clean, notes=notes)
@@ -213,7 +179,6 @@ def case_5_stray_markers() -> None:
         check("5c stray: noteref is tn-1, not the stray tn-7",
               'href="#tn-1"' in xhtml and "#tn-7" not in xhtml, "")
 
-        # Equivalence: stray-marker file + sidecar == marker-free file + sidecar
         pristine = make_chapter(td, "pristine.md", "Para one.\n\nPara two.\n")
         pristine_out = epub.chapter_md_to_xhtml(pristine, notes=notes)
         check("5d stray: output identical to the marker-free file",
@@ -237,7 +202,6 @@ def case_6_legacy_path_on_clean_file() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

@@ -63,25 +63,18 @@ DESCRIPTION = ("decouple translate_max_output_tokens from provider "
                "max_tokens (the key is now a ceiling a block can lower, not "
                "an override; report mismatched translator pairs)")
 
-# The same floor the runtime warns about: below this a chapter cannot be
-# packed into a block at all. Mirrors pipeline.MIN_TRANSLATOR_MAX_TOKENS.
 _MIN_USABLE = 8192
 
 
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    # Read the RAW file, for v009's reason: load_config would deep-merge the
-    # new defaults underneath and report the change as "provider blocks
-    # normalized", hiding what the report is actually about.
     cfg_path = Path(project_dir) / "config.json"
     lines: list[str] = []
 
     try:
         raw = _read(cfg_path)
     except (OSError, ValueError) as exc:
-        # A project without a readable config.json is v001's business, not
-        # this step's -- stay quiet rather than raising on someone else's gap.
         lines.append(f"[warn] config: config.json not readable ({exc}) - "
                      "skipped the translator cap check")
         return lines + common.sync_templates(
@@ -95,16 +88,10 @@ def migrate(project_dir: Path, templates_src: Path,
             if isinstance(b, dict) and isinstance(b.get("max_tokens"), int)]
 
     if not isinstance(max_out, int) or not caps:
-        # Nothing to compare. materialize_config folds in the defaults on the
-        # same run, so the pair is well-formed either way.
         return lines + common.sync_templates(
             project_dir, templates_src, dry_run, force, confirm)
 
     tightest = min(caps)
-    # Floor FIRST: an unpackable block is the more serious condition, and
-    # checking the ceiling relation first would shadow it (a 100-token block is
-    # also "below" a 65536 ceiling) and hand the user advice about raising a
-    # ceiling that is not the actual problem.
     if tightest < _MIN_USABLE:
         lines.append(
             f"[warn] config: the tightest providers.translator block "

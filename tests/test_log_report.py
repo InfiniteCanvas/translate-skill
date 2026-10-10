@@ -38,7 +38,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import logger, logreport  # noqa: E402
+from lib import logger, logreport
 
 PASSED = 0
 FAILED: list[str] = []
@@ -150,9 +150,6 @@ def seed(root: Path, stem: str = "CHAPTER_0001",
 def report_of(root: Path, stem: str = "CHAPTER_0001") -> str:
     path = root / "logs" / "chapters" / stem / "report.md"
     return path.read_text(encoding="utf-8") if path.is_file() else ""
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_run_report() -> None:

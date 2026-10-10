@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Windows console safety: force UTF-8 with replacement characters.
 for _stream in (sys.stdout, sys.stderr):
     if _stream is not None:
         try:
@@ -35,18 +34,15 @@ for _stream in (sys.stdout, sys.stderr):
         except (AttributeError, OSError):
             pass
 
-# Make scripts/lib importable no matter where the CLI is invoked from.
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, consensus, cover, epub, fix, glossary, logger, logdashboard, logreport, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs  # noqa: E402
-from lib import profile as profile_mod  # noqa: E402
-from lib import styles as styles_mod  # noqa: E402
+from lib import client, config, consensus, cover, epub, fix, glossary, logger, logdashboard, logreport, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs
+from lib import profile as profile_mod
+from lib import styles as styles_mod
 
-# Sibling package of lib/ (also under SCRIPT_DIR): the per-version project
-# migration scripts walked by cmd_migrate.
-import migrations  # noqa: E402
+import migrations
 
 SKILL_ROOT = SCRIPT_DIR.parent
 ASSETS_DIR = SKILL_ROOT / "assets"
@@ -110,8 +106,6 @@ def _run_end(project_dir: Path, command: str, outcome: str,
         "elapsed_s": stats["elapsed_s"],
     })
     logger.index_line(project_dir, None, "close", outcome=outcome)
-    # After the index close, so the dashboard's own crash-signal scan sees this
-    # run as settled. Never raises.
     logdashboard.refresh(project_dir)
 
 
@@ -138,7 +132,7 @@ def _probe_glossary(project_dir: Path) -> None:
     instead of letting every chapter in a batch crash mid-run."""
     try:
         glossary.load(project_dir)
-    except (OSError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
+    except (OSError, ValueError) as exc:
         raise CliError(f"cannot read {project_dir / 'glossary.json'}: {exc}") from exc
 
 
@@ -168,9 +162,6 @@ def _maybe_autobuild(project_dir: Path, cfg: dict | None, reason: str, changed: 
         return
     try:
         novel_info = json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
-        # epub.build returns ok=None when epubcheck itself could not run
-        # (docker infra failure) -- not a validation failure, so say so
-        # instead of blaming the epub.
         epub_path, ok, _output = epub.build(project_dir, novel_info, cfg, False)
         if ok is None:
             print("[warn] epub auto-build could not run (epubcheck unavailable) - skipping validation")
@@ -178,7 +169,7 @@ def _maybe_autobuild(project_dir: Path, cfg: dict | None, reason: str, changed: 
             print(f"[epub-auto] build ok (after {reason}): {epub_path}")
         else:
             print(f"[warn] epub auto-build failed validation: {epub_path}")
-    except Exception as exc:  # noqa: BLE001 - build problems never fail a replace
+    except Exception as exc:
         print(f"[warn] epub auto-build failed: {type(exc).__name__}: {exc}")
 
 
@@ -192,7 +183,7 @@ def _load_novel_info(project_dir: Path) -> dict:
         raise CliError(f"{paths['novel_info']} not found - run 'init' first")
     try:
         return json.loads(paths["novel_info"].read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
+    except (OSError, ValueError) as exc:
         raise CliError(f"novel_info.json is corrupt: {exc}") from exc
 
 
@@ -209,11 +200,6 @@ def _print_replacement(result: dict, dry_run: bool, old: str) -> None:
     else:
         print(f"{prefix}[ok] replaced {result['occurrences']} occurrence(s) in "
               f"{result['changed']} chapter(s) ({result['scanned']} scanned)")
-
-
-# --------------------------------------------------------------------------
-# subcommands
-# --------------------------------------------------------------------------
 
 
 def _report_ignored_chapters(project_dir: Path) -> None:
@@ -244,9 +230,6 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     src_dir = paths["source"]
     if not src_dir.is_dir():
         raise CliError(f"source directory not found: {src_dir}")
-    # Use the real discovery rule (CHAPTER_RE) so files like
-    # Chapter_0007.zh.md are not counted here but silently dropped from the
-    # manifest later.
     chapters = project.discover(project_dir)
     if not chapters:
         raise CliError(
@@ -256,8 +239,6 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         )
     print(f"[init] found {len(chapters)} source chapter(s)")
 
-    # Resolve the style guide before anything is created so a bad name fails
-    # fast instead of leaving a half-initialized project.
     style_name: str | None = None
     style_body: str | None = None
     if args.style != "auto":
@@ -265,9 +246,8 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         if style_path.is_file():
             style_name = style_path.stem
             try:
-                # utf-8-sig: style.md is user-authored; tolerate a BOM.
                 text = style_path.read_text(encoding="utf-8-sig")
-            except (OSError, ValueError) as exc:  # ValueError covers UnicodeDecodeError
+            except (OSError, ValueError) as exc:
                 raise CliError(f"cannot read style file {style_path}: {exc}") from exc
             _description, parsed_body = styles_mod.parse_style_file(text)
             if not parsed_body.strip():
@@ -295,17 +275,8 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         names = [name for name, _desc in styles_mod.list_styles(project_dir)]
         print(f"[init] available styles: {', '.join(names)} (or --style auto)")
     else:
-        # --style auto: remove any style.md left by a previous preset init -
-        # the pipeline treats style.md as tier 1, so a stale copy would
-        # silently override the regenerated profile.
         (project_dir / "style.md").unlink(missing_ok=True)
 
-    # Derive the job list and per-job sampling knobs from PROVIDER_JOBS /
-    # PROVIDER_DEFAULTS so a job added there can never be missed here (a
-    # fresh project is stamped at the chain head and never migrates). Each
-    # job starts as a one-block model array: config.json's per-job value is
-    # a list of provider blocks, so appending entries opts a job into
-    # consensus fan-out.
     providers = {
         job: [
             {
@@ -318,7 +289,6 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         ]
         for job in config.PROVIDER_JOBS
     }
-    # Hy-MT2 model card: translation sampling is temperature 0.7, top_p 1.0.
     providers["translator"][0]["top_p"] = 1.0
     cfg: dict[str, Any] = {
         "source_lang": args.source_lang,
@@ -326,25 +296,13 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         "providers": providers,
     }
     cfg.update(config.DEFAULTS)
-    # Fresh projects are born current: stamp the migration chain's head
-    # version. The key lives ONLY in the written file -- never in
-    # config.DEFAULTS -- so load_config's deep merge can never fake it for
-    # pre-versioning projects.
     try:
         cfg["version"] = migrations.current_version()
-    except Exception as exc:  # noqa: BLE001 - a broken chain is a setup error
+    except Exception as exc:
         raise CliError(f"invalid migration chain: {exc}") from exc
     config.save_config(project_dir, cfg)
     print(f"[init] wrote {paths['config'].name}")
 
-    # Apply the skill's config.local.json overlay, if the user keeps one, so a
-    # new project starts with their own endpoint/model/auth and nobody has to
-    # retype it per novel. Same deep-merge as `sync-config`, and the same
-    # "absent is a silent no-op" rule: a machine with no overlay file prints
-    # nothing extra. A malformed overlay warns rather than failing init --
-    # the project is otherwise valid, and the user can repair the file and
-    # re-run `sync-config`. Runs before the scaffold commit below so the
-    # merged config lands in the project's very first commit.
     try:
         overlay = config.load_local_config(SKILL_ROOT)
     except ValueError as exc:
@@ -361,10 +319,6 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         else:
             for line in overlay_lines:
                 print(f"[init] {line}")
-            # Re-read so the in-memory cfg used below (seed_min_count for the
-            # catalogue pass, style_sample_* for the profile call) reflects
-            # what actually landed on disk -- the overlay is allowed to set
-            # those keys too.
             cfg = _load_config(project_dir)
 
     novel_info: dict[str, Any] = {
@@ -386,14 +340,6 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     )
     print(f"[init] wrote {paths['novel_info'].name}")
 
-    # The three model-grown state files -- glossary.json (GLOSSARY_EXPAND
-    # terms), tn_history.json (translator's-note history), and
-    # story_state.json (rolling story recaps) -- survive a plain re-init:
-    # a recovery-init for a deleted config.json must not destroy them, so
-    # only --force resets. The reset announce's term count comes from a
-    # best-effort parse (corrupt file -> no count). The per-chapter notes/
-    # sidecars (and their dropped-candidate files) are NOT reset: they
-    # survive with their translated chapters.
     existing_state = (
         paths["glossary"].is_file()
         or paths["tn_history"].is_file()
@@ -428,21 +374,11 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError(f"no *.md templates found in {TEMPLATES_SRC_DIR}")
     print(f"[init] copied {copied} template(s) into templates/")
 
-    # Version-control the scaffold BEFORE any chapter rewrite: the repo's
-    # first commit is the project's birth record and captures the BARE
-    # source chapters, so every later rewrite (backfill below, review
-    # fixes, migrations) diffs against them. --force on an existing repo
-    # keeps its history and labels the rewrite.
     was_repo = vcs.is_repo(project_dir)
     for line in vcs.ensure_repo(project_dir):
         print(line)
     vcs.commit(project_dir, "init: reinitialize project" if was_repo else "init: scaffold project")
 
-    # Backfill missing frontmatter on bare source chapters (novel-level
-    # fields from the CLI args; chapter_title from the first body line) so
-    # the manifest and translated copies carry proper metadata. The shared
-    # helper lives in lib/project.py and is also used by `sync`. Runs before
-    # sync_manifest so it can pick up the titles.
     backfilled = project.backfill_frontmatter(chapters, args.title, args.author, args.source_url)
     if backfilled:
         print(f"[init] backfilled frontmatter on {backfilled} bare chapter(s)")
@@ -458,7 +394,7 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         for cat_path in sorted(CATALOGUES_DIR.glob("*.json")):
             try:
                 catalogue = glossary.load_catalogue(cat_path)
-            except Exception as exc:  # noqa: BLE001 - a bad catalogue must not abort init
+            except Exception as exc:
                 print(f"[warn] catalogue {cat_path.name}: {exc}")
                 continue
             if catalogue.get("language") != args.source_lang:
@@ -475,11 +411,6 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         f"({total_skipped} skipped as duplicates)"
     )
 
-    # Style profile (legacy '--style auto' path): sample random chapters
-    # and have the model describe the narrative voice; stored as
-    # novel_info.json:style_profile and used by later prompts. Preset styles
-    # read project style.md instead and skip this LLM call. Failures only
-    # warn -- init must survive a missing profile.
     if args.style == "auto" and not args.skip_profile:
         try:
             prof = profile_mod.generate_profile(
@@ -490,30 +421,21 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
                             config.DEFAULTS["style_sample_chars"])),
             )
             novel_info["style_profile"] = prof
-            # Rewrite novel_info.json (same pretty format as written earlier in init).
             paths["novel_info"].write_text(
                 json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
             )
             print(f"[init] style profile: {prof.get('style_summary', '')[:100]}")
         except client.LLMFatal:
             raise
-        except Exception as exc:  # noqa: BLE001 - profile problems must not abort init
+        except Exception as exc:
             print(f"[warn] style profile generation failed: {exc}")
 
     try:
         cover_path = cover.ensure_cover(project_dir, novel_info, args.cover_url)
         print(f"[ok] cover ready: {cover_path}")
-    except Exception as exc:  # noqa: BLE001 - cover problems must not abort init
+    except Exception as exc:
         print(f"[warn] cover setup failed: {exc}")
 
-    # The scaffold commit above captured the bare chapters; commit the
-    # backfilled frontmatter, rebuilt manifest and seeded glossary too, so
-    # init never leaves the tree dirty for the next action's commit to sweep
-    # up (silent no-op when nothing changed). The two subjects are four-way
-    # distinct -- scaffold/backfill and seed on a fresh directory,
-    # reinitialize/reseed-after-reinitialize when --force keeps an existing
-    # repo's history -- so identical subjects never make the history
-    # unreadable.
     vcs.commit(project_dir, "init: reseed after reinitialize" if was_repo else "init: backfill and seed")
 
     print("[ok] project initialized")
@@ -532,19 +454,10 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
 def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
     """Re-scan source/ and rebuild the manifest after new chapters land."""
     paths = project.paths(project_dir)
-    # project.load_manifest returns [] when chapters.json is missing, so
-    # _load_manifest's CliError never fires for a bare directory; gate here
-    # or sync would happily "rebuild" an uninitialized project into an
-    # empty manifest.
     if not paths["manifest"].is_file():
         raise CliError(f"manifest not found in {project_dir} - run 'init' first")
     prev = _load_manifest(project_dir)
-    # Novel-level backfill defaults come from novel_info.json; a missing or
-    # corrupt file just means nothing to backfill, never a sync failure.
     info = project.load_novel_info(project_dir)
-    # A scraped batch routinely contains a bad file (broken YAML frontmatter,
-    # non-UTF-8 bytes); surface it as a [FAIL] line with exit 2 instead of a
-    # traceback. read_chapter's message already names the offending file.
     try:
         chapters = project.discover(project_dir)
         backfilled = project.backfill_frontmatter(
@@ -554,7 +467,7 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
             str(info.get("source_url") or ""),
         )
         manifest = project.sync_manifest(project_dir)
-    except ValueError as exc:  # invalid YAML frontmatter / non-UTF-8 chapter
+    except ValueError as exc:
         raise CliError(f"cannot sync - {exc}") from exc
     if backfilled:
         print(f"[sync] backfilled frontmatter on {backfilled} chapter(s)")
@@ -598,8 +511,6 @@ def cmd_sync_config(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError(
             f"{project_dir / 'config.json'} not found - run 'init' first")
 
-    # Warn BEFORE writing: these are credentials about to move from an
-    # ignored file into one the project repo commits.
     for path_key in config.inline_api_keys(overlay):
         print(f"[warn] {path_key} is an inline key - it will be committed in "
               "this project's git history; prefer api_key_env")
@@ -641,12 +552,8 @@ def _ping_one(label: str, pcfg: dict) -> tuple[bool, str | None]:
             base_url, headers=client.auth_headers(pcfg))
         extra = f" (config model: {pcfg['model']})" if pcfg.get("model") else ""
         print(f"[ok] {label} {base_url} -> {resolved}{extra}")
-        # client.chat prefers the block's explicit model over the
-        # /models default, so duplicates are judged on the model
-        # that will actually run (same rule as consensus
-        # ._model_label).
         return True, str(pcfg["model"]) if pcfg.get("model") else resolved
-    except Exception as exc:  # noqa: BLE001 - endpoint errors are reported per block
+    except Exception as exc:
         if not pcfg.get("model"):
             print(f"[FAIL] {label} {base_url} -> {_ping_err(exc)}")
             return False, None
@@ -657,7 +564,7 @@ def _ping_one(label: str, pcfg: dict) -> tuple[bool, str | None]:
                 f"(chat ok; /models failed: {_ping_err(exc)})"
             )
             return True, str(pcfg["model"])
-        except Exception as exc2:  # noqa: BLE001 - report both failures
+        except Exception as exc2:
             print(
                 f"[FAIL] {label} {base_url} -> "
                 f"/models: {_ping_err(exc)}; chat: {_ping_err(exc2)}"
@@ -668,19 +575,13 @@ def _ping_one(label: str, pcfg: dict) -> tuple[bool, str | None]:
 def cmd_ping(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     failed = False
-    # Already-probed blocks, keyed by _ping_key. Deliberately NOT the per-job
-    # `seen` dict below, which is re-created on every job iteration and is
-    # therefore empty at the end of each one.
     probed: set[tuple] = set()
     for job in config.PROVIDER_JOBS:
         blocks = config.provider_list(cfg, job)
         multi = len(blocks) > 1
-        seen: dict[str, int] = {}  # resolved model -> first block index
+        seen: dict[str, int] = {}
         for i, pcfg in enumerate(blocks):
             probed.add(_ping_key(pcfg))
-            # Single-block jobs keep the pre-array line shape (bare padded
-            # job name); blocks of a multi-block array are index-suffixed
-            # (0-based) so operators can tell them apart.
             label = f"{job}[{i}]" if multi else f"{job:<10}"
             ok, model = _ping_one(label, pcfg)
             if not ok:
@@ -691,16 +592,9 @@ def cmd_ping(args: argparse.Namespace, project_dir: Path) -> int:
                       f"({model}) - candidates will be near-identical")
             else:
                 seen.setdefault(model, i)
-    # Per-job arbitrators. `consensus` IS a PROVIDER_JOBS entry, so the loop
-    # above already probed the global one; a `consensus_<job>` block is
-    # deliberately NOT a job, so without this pass the one provider whose
-    # failure kills the run AFTER the candidates were already paid for would be
-    # the only block in the file ping cannot check. A project that authors no
-    # per-job key resolves every arbitrator to the global block, which the loop
-    # above already probed -- so the dedupe leaves its output byte-identical.
     for job in config.PROVIDER_JOBS:
         if job == "consensus" or len(config.provider_list(cfg, job)) < 2:
-            continue  # a single-block job never fans out, so it never merges
+            continue
         cblock = config.consensus_provider(cfg, job)
         key = _ping_key(cblock)
         if key in probed:
@@ -794,15 +688,10 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     An already-current project still gets the interactive template
     maintenance pass (missing copies, differing prompts); the version
     stamp never moves."""
-    _load_config(project_dir)  # missing/corrupt config.json -> CliError (exit 2)
+    _load_config(project_dir)
     if not TEMPLATES_SRC_DIR.is_dir():
         raise CliError(f"skill templates not found: {TEMPLATES_SRC_DIR}")
 
-    # Interactivity is decided exactly once, here: a TTY gets the module's
-    # prompt function, pipes/CI get None (sync_templates then auto-keeps
-    # differing templates). _confirm_template_refresh is resolved as a
-    # MODULE global on each call, so tests monkeypatch
-    # translate._confirm_template_refresh instead of touching stdin.
     confirm = _confirm_template_refresh if sys.stdin.isatty() else None
 
     try:
@@ -816,7 +705,7 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     try:
         steps = migrations.chain()
         cur = migrations.current_version()
-    except Exception as exc:  # noqa: BLE001 - a broken chain is a setup error, not a mid-run traceback
+    except Exception as exc:
         raise CliError(f"invalid migration chain: {exc}") from exc
 
     if src_version > cur:
@@ -828,21 +717,11 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     pending = [step for step in steps if step.VERSION > src_version]
     if not pending:
         print(f"[ok] project already at version {cur}")
-        # Best-effort repo backfill: a v003 whose `git init` failed once
-        # still stamped version 3, so this is the only remaining retry.
-        # Quiet by construction: [] on an existing repo, and gated on
-        # available() so git-less machines stay completely silent.
         created = False
         if not args.dry_run and vcs.available() and not vcs.is_repo(project_dir):
             for line in vcs.ensure_repo(project_dir):
                 print(line)
             created = True
-        # Interactive maintenance pass, not a chain step: template drift
-        # stays repairable on an already-current project -- the version
-        # gate used to return here before --force could ever act. Clean
-        # projects stay completely quiet (sync returns []); the version
-        # never moves and config is deliberately NOT re-materialized.
-        # migrations.common is bound by chain() above, which imported v001.
         maintenance = migrations.common.sync_templates(
                 project_dir, TEMPLATES_SRC_DIR, args.dry_run, args.force, confirm)
         for line in maintenance:
@@ -862,15 +741,9 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
                                  args.dry_run, args.force, confirm):
             print(("[dry-run] " + line) if args.dry_run else line)
         if not args.dry_run:
-            # Stamp immediately after each step, as a read-modify-write of
-            # the RAW file so the step's own config edits survive: a crash
-            # mid-chain resumes at the failed step instead of re-running
-            # completed ones.
             stamped = json.loads((project_dir / "config.json").read_text(encoding="utf-8-sig"))
             stamped["version"] = step.VERSION
             config.save_config(project_dir, stamped)
-            # One commit per applied step, after the stamp, so the commit
-            # captures the step's changes AND the new version together.
             vcs.commit(project_dir, f"migrate: v{step.VERSION:03d} {step.DESCRIPTION}")
 
     verb = "would migrate" if args.dry_run else "migrated"
@@ -881,7 +754,7 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
 
 def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
-    paths = project.paths(project_dir)  # write-back target after generation
+    paths = project.paths(project_dir)
     novel_info = _load_novel_info(project_dir)
 
     sample_chapters = (
@@ -897,7 +770,7 @@ def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
         _run_start(project_dir, cfg, None, "profile",
                    chapters=sample_chapters, chars=sample_chars)
         prof = profile_mod.generate_profile(project_dir, cfg, sample_chapters, sample_chars)
-    except Exception as exc:  # noqa: BLE001 - any generation failure is exit 1
+    except Exception as exc:
         _fail(f"style profile generation failed: {type(exc).__name__}: {exc}")
         _run_end(project_dir, "profile", "failed")
         return 1
@@ -931,8 +804,6 @@ def cmd_styles(args: argparse.Namespace, project_dir: Path) -> int:
 def cmd_status(args: argparse.Namespace, project_dir: Path) -> int:
     manifest = _load_manifest(project_dir)
     paths = project.paths(project_dir)
-    # Read-only drift check: source/ vs manifest divergence means a stale
-    # manifest; `sync` rebuilds it while status stays visible here.
     discovered = {c.file for c in project.discover(project_dir)}
     manifest_files = {e.get("file") for e in manifest if e.get("file")}
     untracked = sorted(discovered - manifest_files)
@@ -979,8 +850,6 @@ def cmd_status(args: argparse.Namespace, project_dir: Path) -> int:
 
     if paths["novel_info"].is_file():
         novel_info = project.load_novel_info(project_dir)
-        # Mirror the pipeline's style resolution: style.md (tier 1, only when
-        # it has a non-empty body) -> style_profile.style_summary -> default.
         _style_summary, style_tier = styles_mod.resolve_style(project_dir, novel_info)
         if style_tier == "style_md":
             name = novel_info["style"] if isinstance(novel_info.get("style"), str) else "custom"
@@ -1024,8 +893,6 @@ def cmd_translate(args: argparse.Namespace, project_dir: Path) -> int:
         if args.next < 1:
             raise CliError("--next must be a positive integer")
         ordered = sorted(manifest, key=lambda e: int(e.get("order", 0)))
-        # Without --force, needs-review chapters are excluded: they wait for
-        # a human/agent decision, then `retry` or `mark`.
         if force:
             pool = [e["file"] for e in ordered]
         else:
@@ -1077,9 +944,6 @@ def cmd_retry(args: argparse.Namespace, project_dir: Path) -> int:
             (paths["draft"] / artifact).unlink(missing_ok=True)
         (paths["translated"] / file).unlink(missing_ok=True)
         (tn.notes_path(project_dir, file)).unlink(missing_ok=True)
-        # Same staleness class as the sidecar: the retranslation writes a
-        # fresh dropped artifact at TN_DEDUP, so an orphan from the previous
-        # run must not survive a failed/interrupted retry.
         (tn.dropped_path(project_dir, file)).unlink(missing_ok=True)
         project.set_status(manifest, file, "pending")
         print(f"[init] {file}: cleared artifacts, status pending")
@@ -1131,8 +995,6 @@ def cmd_tn(args: argparse.Namespace, project_dir: Path) -> int:
         project_dir, manifest, files, cfg, dry_run=bool(args.dry_run)
     )
     logger.log_event(project_dir, {"event": "tn_recheck", **result})
-    # One aggregate event for N chapters, no `chapter` field -- it summarizes
-    # the command, while each chapter's annotator exchange is tier 2.
     _run_end(project_dir, "tn", "completed")
     prefix = "[dry-run] " if args.dry_run else ""
     print(
@@ -1177,10 +1039,6 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     if not report_path.is_file():
         raise CliError(f"report not found: {report_path}")
 
-    # A writer-generated report carries the glossary digest it was produced
-    # against; replaying its suggestions over a since-changed glossary would
-    # apply stale decisions. Refused before anything runs (dry-run included)
-    # unless --stale-ok; digest-less (old, hand-written) reports never gate.
     if not getattr(args, "stale_ok", False) and fix.report_is_stale(project_dir, report_path):
         print("[review fix] report is stale (glossary changed since generation) - regenerate with review glossary")
         return 1
@@ -1190,16 +1048,6 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     except fix.FixError as exc:
         raise CliError(str(exc)) from exc
 
-    # Dry-run: list every spec + summary, apply nothing. Specs whose command
-    # run_commands would refuse before executing get a SKIP annotation via
-    # the same guards, in the same order: the --project smuggle guard,
-    # static_skip_reason (invalid translation -- e.g. a suggestion still in
-    # source-language CJK -- or an unknown --category, the latter
-    # glossary-independent) and conflict_keys (any field key already claimed
-    # by an earlier spec queued in THIS report -- the first command wins, the
-    # conflicting duplicate never runs and its keys are never queued). An
-    # unreadable glossary (None) only mutes the translation-language check
-    # and empties the conflict keys -- the --category check still fires.
     if args.dry_run:
         try:
             g = glossary.load(project_dir)
@@ -1222,9 +1070,6 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
             reason = fix.static_skip_reason(spec.argv, g)
             keys = fix.conflict_keys(spec.argv, g)
             if reason is None and keys and not keys.isdisjoint(seen):
-                # CONFLICT skip: run_commands skips it BEFORE queueing, so its
-                # keys stay out of `seen`. All keys of one spec share the
-                # resolved source; sorted() picks one deterministically.
                 n_skip += 1
                 source = sorted(keys & seen)[0][1]
                 print(f"[review fix] [{i}] SKIP (conflicting command for '{source}' (already queued)): {line}")
@@ -1234,8 +1079,6 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
             else:
                 seen |= keys
                 print(f"[review fix] [{i}] {tag} {src}: {line}")
-        # Skipped specs never execute, so (like the real run's specs_run)
-        # they still count as findings awaiting a decision.
         needs_decision = max(findings_count - (len(specs) - n_skip), 0)
         print(
             f"[review fix] dry-run: {len(specs)} command(s)"
@@ -1244,8 +1087,6 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
         )
         return 0
 
-    # Real run: execute each spec as a subprocess, then one final epub build
-    # when chapters changed.
     result = fix.run_commands(
         project_dir, SCRIPT_DIR / "translate.py", specs,
         exit_on_error=bool(args.exit_on_error),
@@ -1309,23 +1150,7 @@ def cmd_review_notes(args: argparse.Namespace, project_dir: Path) -> int:
 
 
 def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
-    # The "fix" subject reuses the same dispatcher so `--fix` (apply_fixes),
-    # `--batch-size`, and the model pipeline stay attached to "glossary".
-    # BOTH early branches -- "fix" and "notes" -- MUST come before the
-    # shared batch-size validation below: fix's parse_report path needs no
-    # batch size at all, and notes runs its own validation in
-    # cmd_review_notes (only an explicit --batch-size is checked there;
-    # the glossary config default never applies).
 
-    # Flag/subject compatibility, checked BEFORE the dispatch: the parser
-    # shares every flag across the three subjects, but each subject reads
-    # only its own subset, so a flag meant for another subject would be
-    # silently ignored. Typed dests (argparse default None) count as given
-    # iff not None (--batch-size 0 included); store_true dests iff truthy.
-    # --fix is EXCLUDED -- its pinned guards in cmd_review_fix and
-    # cmd_review_notes keep their own message -- and --project (shared
-    # parent) applies to every subject. Direct calls to the cmd_review_*
-    # helpers bypass this guard by design.
     rejected = {
         "glossary": ("chapters", "glossary", "dry_run", "exit_on_error", "stale_ok"),
         "notes": ("glossary", "dry_run", "exit_on_error", "stale_ok"),
@@ -1362,8 +1187,6 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
         _run_end(project_dir, "review", "completed")
         return 0
 
-    # Header and per-batch progress print BEFORE/DURING the model calls --
-    # a large glossary means minutes of silent LLM batches otherwise.
     terms = g.get("terms", [])
     n_batches = -(-len(terms) // batch_size)
     print(
@@ -1395,9 +1218,6 @@ def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
         for s in skipped:
             print(f"[glossary] warn fix skipped for '{s['source']}' ({s['field']}): {s['reason']}")
 
-    # A fix resolves every finding on the same entry FIELD (see
-    # review.outstanding_filter) -- shared with write_report so the console
-    # tallies and the report's outstanding indices never drift.
     outstanding = review.outstanding_filter(applied)
 
     warns = sum(1 for f in findings if f["severity"] == "warn" and outstanding(f))
@@ -1554,9 +1374,6 @@ def _cmd_glossary_set(args: argparse.Namespace, project_dir: Path) -> int:
     for field, old_v, new_v in changes:
         print(f"[glossary] set '{args.source}': {field} "
               f"{old_v!r} -> {new_v!r}")
-    # Same advisory as the pipeline's model proposals: a 'unit' entry is a
-    # rendering guide only -- balance.check skips the category entirely, so
-    # a stored translation would never be counted or enforced.
     if entry.get("category") == "unit":
         warn = glossary.unit_translation_warning(args.source, entry.get("translation"))
         if warn is not None:
@@ -1623,10 +1440,6 @@ def _cmd_glossary_search(args: argparse.Namespace, project_dir: Path) -> int:
     elif cfg is None or "fuzzy_max_distance" not in cfg:
         max_distance = int(config.DEFAULTS["fuzzy_max_distance"])
     else:
-        # .get(key, default) returns None when the key EXISTS with a JSON
-        # null, so the default never rescues and int(None) is a raw
-        # TypeError: get_number raises the contractual ValueError that
-        # main() maps to [FAIL] exit 2 instead.
         max_distance = int(config.get_number(cfg, "fuzzy_max_distance"))
     if max_distance < 0:
         raise CliError("--max-distance must be >= 0")
@@ -1678,9 +1491,6 @@ def _cmd_glossary_count(args: argparse.Namespace, project_dir: Path) -> int:
     elif cfg is None or "min_term_occurrences" not in cfg:
         threshold = int(config.DEFAULTS["min_term_occurrences"])
     else:
-        # A key present with a JSON null must not reach int(None) (raw
-        # TypeError): get_number raises the contractual ValueError that
-        # main() maps to [FAIL] exit 2 instead.
         threshold = int(config.get_number(cfg, "min_term_occurrences"))
     if threshold < 0:
         raise CliError("--min must be >= 0")
@@ -1692,24 +1502,17 @@ def _cmd_glossary_count(args: argparse.Namespace, project_dir: Path) -> int:
     discovered = project.discover(project_dir)
     chapters = None
     if args.chapters:
-        # parse_range works on manifest-shaped dicts; build them from the
-        # freshly discovered chapters so --chapters resolves numbers, ranges
-        # and file names exactly like 'translate --chapters', then map the
-        # picked file names back to Chapter objects (discover order).
         entries = [{"file": c.file, "number": c.number}
                    for c in discovered]
         picked = set(pipeline.parse_range(args.chapters, entries))
         chapters = [c for c in discovered if c.file in picked]
     scanned = len(chapters or discovered)
 
-    # A scraped batch routinely contains a bad file (broken YAML frontmatter,
-    # non-UTF-8 bytes); surface it as a [FAIL] line with exit 2 instead of a
-    # traceback that exit code 1 would misread as "below threshold".
     try:
         total, hits = glossary.count_term_in_chapters(
             project_dir, term, variants, chapters=chapters
         )
-    except ValueError as exc:  # invalid YAML frontmatter / non-UTF-8 chapter
+    except ValueError as exc:
         raise CliError(f"cannot count - {exc}") from exc
     note = f" (+{len(variants)} variant(s))" if variants else ""
     print(f"[glossary] count '{term}'{note} across {scanned} chapter(s)")
@@ -1729,7 +1532,7 @@ def cmd_build_epub(args: argparse.Namespace, project_dir: Path) -> int:
 
     try:
         epub_path, ok, output = epub.build(project_dir, novel_info, cfg, bool(args.skip_check))
-    except Exception as exc:  # noqa: BLE001 - report builder crashes as setup errors
+    except Exception as exc:
         _fail(f"epub build failed: {type(exc).__name__}: {exc}")
         return 2
 
@@ -1746,25 +1549,12 @@ def cmd_build_epub(args: argparse.Namespace, project_dir: Path) -> int:
     return 1
 
 
-# --------------------------------------------------------------------------
-# argument parsing
-# --------------------------------------------------------------------------
-
-
 def _build_parser() -> argparse.ArgumentParser:
-    # allow_abbrev=False on EVERY parser layer (top, shared parents, each
-    # subparser): with abbreviation on, a hand-edited review-report command
-    # could smuggle `--proj=X` past fix.run_commands' exact --project guard
-    # (exact spellings only) and retarget the verb at another project.
     parser = argparse.ArgumentParser(
         prog="translate.py",
         description="Staged, resumable novel translation pipeline (CJK -> target language).",
         allow_abbrev=False,
     )
-    # Accept --project both before and after the subcommand (separate dests so
-    # the subparser default can't clobber a value given before it); nested
-    # glossary actions carry a third dest (see glossary block). Resolution
-    # order in main(): closest to the action wins.
     parser.add_argument("--project", dest="project_global", default=None,
                         help="project directory (default: current directory)")
     sub = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -1932,13 +1722,6 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="glossary upkeep (replace | set | merge | retire | search | count)")
     gloss_sub = p.add_subparsers(dest="action", required=True, metavar="action")
 
-    # Nested action parsers also accept --project (documented examples put it
-    # AFTER the action verb: 'glossary search --project . TERM'), but under a
-    # SEPARATE dest: since 3.7 argparse runs each subparser in a fresh
-    # namespace and copies the result over unconditionally, so a shared dest
-    # would let the nested default None clobber a --project already consumed
-    # by the outer glossary parser (observed: 'glossary --project DIR search
-    # T' lost DIR). main() resolves nested > action-level > global.
     nested = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     nested.add_argument("--project", dest="project_action", default=None,
                         help="project directory (default: current directory)")
@@ -2025,9 +1808,9 @@ def resolve_project_dir(args: argparse.Namespace) -> Path:
     level > subcommand level > before the subcommand > "." (closest to the
     action wins; the three separate dests are documented in _build_parser)."""
     return Path(
-        getattr(args, "project_action", None)  # nested glossary action level
-        or getattr(args, "project", None)      # subcommand level
-        or args.project_global                 # before the subcommand
+        getattr(args, "project_action", None)
+        or getattr(args, "project", None)
+        or args.project_global
         or "."
     ).resolve()
 
@@ -2073,10 +1856,6 @@ def _known_run_ids(project_dir: Path) -> list[dict]:
         entry["chapters"] = max(entry["chapters"], chapters or 0)
 
     for path in sorted((project_dir / "logs").glob("run-*.jsonl")):
-        # Legacy llm-*.jsonl files are neither listed nor matched. The root
-        # bucket has no index, so its command comes from the run_start line
-        # the same file opens with -- never from parsing the filename, whose
-        # <tag> may itself contain dashes.
         run_id = path.name[len("run-"):-len(".jsonl")]
         rows = _log_jsonl(path)
         command = next((str(r.get("command")) for r in rows
@@ -2094,8 +1873,6 @@ def _known_run_ids(project_dir: Path) -> list[dict]:
 
     chapters_dir = project_dir / "logs" / "chapters"
     if chapters_dir.is_dir():
-        # Accumulate ACROSS chapters: one run that translated N chapters
-        # opens N index lines, so per-file counting would report 1.
         opens: dict[str, int] = {}
         starts: dict[str, str] = {}
         commands: dict[str, str] = {}
@@ -2146,8 +1923,6 @@ def _chapter_run_ids(project_dir: Path, stems: list[str]) -> list[str]:
             if isinstance(run_id, str):
                 found.setdefault(run_id, str(row.get("ts") or ""))
     ordered = sorted(found.items(), key=lambda kv: kv[1], reverse=True)
-    # Skip stale entries: an index line whose run file retention has since
-    # removed has nothing left to print.
     return [run_id for run_id, _ in ordered
             if any((logger.bucket_dir(project_dir, stem) / f"run-{run_id}.jsonl").is_file()
                    for stem in stems)]
@@ -2170,7 +1945,6 @@ def cmd_logs(args: argparse.Namespace, project_dir: Path) -> int:
     if args.html:
         path = logdashboard.write_dashboard(project_dir)
         if args.json:
-            # --json emits JSON objects and nothing else (see below).
             return 0 if path is not None else 1
         if path is not None:
             print(f"[ok] html: {path}")
@@ -2231,9 +2005,6 @@ def cmd_logs(args: argparse.Namespace, project_dir: Path) -> int:
         for event in events:
             print(json.dumps(_printable(event, include_io), ensure_ascii=False))
     elif stems:
-        # A SPEC reads that chapter's OWN bucket: its model IO, across the
-        # runs its index names. The orchestration timeline (tier 1) is the
-        # bare-view's subject, and lives in the root bucket.
         for stem in stems:
             print(f"# {stem}")
             for event in events:
@@ -2241,16 +2012,12 @@ def cmd_logs(args: argparse.Namespace, project_dir: Path) -> int:
                     continue
                 print(_describe(event, include_io))
     else:
-        # No SPEC: the run's orchestration timeline, in order, no grouping.
         for event in events:
             print(_describe(event, include_io))
     for path in written:
         if path is not None and not args.json:
             print(f"[ok] report: {path}")
     if args.json:
-        # --json emits JSON objects and nothing else: the summary line would
-        # make the stream unparseable. House markers live here, not on
-        # stdout-as-data.
         return 0
     print(f"[ok] {len(run_ids)} run(s), {len(events)} event(s)")
     return 0
@@ -2315,14 +2082,6 @@ def main(argv: list[str] | None = None) -> int:
         _fail(str(exc))
         return 2
     except client.LLMFatal as exc:
-        # An irrecoverable provider code: a dead key, no balance, a malformed
-        # request, content filtered. Retrying cannot help and degrading would
-        # produce output the project did not ask for, so the run stops here.
-        #
-        # MUST come before the PipelineError arm below: LLMFatal inherits
-        # PipelineError (that is what routes it through the stage guards), so
-        # placing it later lets `except pipeline.PipelineError` claim it and
-        # report the run as a usage/setup error.
         _fail(f"provider refused the request and retrying cannot help: {exc}")
         return 3
     except pipeline.PipelineError as exc:
@@ -2332,24 +2091,10 @@ def main(argv: list[str] | None = None) -> int:
         _fail(str(exc))
         return 2
     except client.LLMError as exc:
-        # Every retry was spent. One [FAIL] line, exit 3, no traceback --
-        # previously this escaped `main()` entirely and printed a raw stack.
-        #
-        # No hard-exit here, unlike KeyboardInterrupt below: by the time an
-        # LLMError reaches main(), consensus.chat has already joined every
-        # worker (it collects all candidate failures before raising), so there
-        # is nothing left to wait for -- and os._exit would skip atexit,
-        # orphaning an in-flight build-epub child and losing buffered stdout.
         _fail(str(exc))
         return 3
     except KeyboardInterrupt:
         _fail("interrupted (chapter state is saved; re-run to resume)")
-        # With a multi-model fan-out in flight, worker threads sit in
-        # uninterruptible HTTP retries and the interpreter's atexit join
-        # would wait out their whole retry ladder. Chapter/chunk state is
-        # persisted at stage boundaries, so hard-exit instead of unwinding.
-        # (In-process callers -- the test suite -- never have a fan-out
-        # live and keep the ordinary return-130 path.)
         if consensus._ACTIVE_FANS:
             sys.stdout.flush()
             sys.stderr.flush()

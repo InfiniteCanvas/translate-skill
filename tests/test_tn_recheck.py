@@ -62,12 +62,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import project, tn, vcs  # noqa: E402
-from lib import tn_recheck  # noqa: E402
+from lib import project, tn, vcs
+from lib import tn_recheck
 
 PASSED = 0
 FAILED: list[str] = []
@@ -89,8 +88,6 @@ def write_lf(path: Path, text: str) -> None:
         fh.write(text)
 
 
-# ------------------------------------------------------------------ fixtures
-
 SOURCE_MD = (
     "---\n"
     "chapter_title: 第一章 灵根\n"
@@ -110,8 +107,6 @@ TRANSLATED_MD = (
     "Line one body.\n"
 )
 
-# Hand-written frontmatter (comment included) so byte-verbatim survival of
-# the migration rewrite is observable: yaml parsing would drop the comment.
 LEGACY_HEAD = (
     "---\n"
     "# a hand-written comment that yaml parsers drop\n"
@@ -178,9 +173,6 @@ def git_log_subjects(proj: Path) -> tuple[int, list[str]]:
         encoding="utf-8", errors="replace", check=False,
     )
     return proc.returncode, proc.stdout.splitlines()
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_happy_path() -> None:
@@ -260,10 +252,8 @@ def case_3_eligibility() -> None:
     """Not-translated and missing-file chapters skip; zero eligible scans 0."""
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
-            # pending: files exist but status is not translated
             {"file": "CHAPTER_0001.md", "order": 0, "status": "pending",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
-            # translated but the translated file is missing
             {"file": "CHAPTER_0002.md", "order": 1, "status": "translated",
              "source_md": SOURCE_MD},
         ])
@@ -287,8 +277,6 @@ def case_4_gap_rule() -> None:
     payload = {"notes": [{"line": 1, "term": "清明",
                           "note": "Tomb-sweeping festival."}]}
 
-    # A: annotated at an earlier order within tn_gap_chapters (default 10)
-    #    -> suppressed, history untouched
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0006.md", "order": 5, "status": "translated",
@@ -310,7 +298,6 @@ def case_4_gap_rule() -> None:
               and history.get("清明", {}).get("times") == 1,
               f"history={history}")
 
-    # B: a history entry from THIS chapter (same order) must NOT suppress
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0006.md", "order": 5, "status": "translated",
@@ -435,7 +422,6 @@ def case_8_manifest_order() -> None:
         chat = fake_chat_factory(
             {"notes": [{"line": 1, "term": "清明",
                         "note": "Tomb-sweeping festival."}]}, sink=prompts)
-        # deliberately out of manifest order
         result = run(root, manifest, ["CHAPTER_0002.md", "CHAPTER_0001.md"], chat)
 
         check("8a order: both chapters processed (2 LLM calls)",
@@ -583,9 +569,6 @@ def case_12_history_only_drift_commits() -> None:
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
-        # Pre-existing sidecar + history whose content matches the stub
-        # chat's payload exactly; last_order == the chapter's own order so
-        # the gap rule never suppresses the re-annotated note.
         note = {"line": 1, "term": "清明", "note": "Tomb-sweeping festival."}
         tn.save_notes(root, "CHAPTER_0001.md",
                       ["Line zero body.", "Line one body."], [note])
@@ -629,8 +612,6 @@ def case_13_recap_parity() -> None:
     label = "Story so far (auto-generated recap of the preceding chapters):"
     payload = {"notes": []}
 
-    # A: distinct recaps stored for both stems -> 0002's prompt frames the
-    #    PREDECESSOR's recap, never the chapter's own
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
@@ -664,8 +645,6 @@ def case_13_recap_parity() -> None:
         check("13f recap: story_state.json byte-unchanged (read-only)",
               (root / "story_state.json").read_bytes() == state_bytes, "")
 
-    # B: no story_state.json -> no recap label, and no frame at all (the
-    #    sandbox project has no novel background either)
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
@@ -683,7 +662,6 @@ def case_13_recap_parity() -> None:
         check("13h no-state: no [Background Information] frame (no background)",
               "[Background Information]" not in prompts[0], "")
 
-    # C: first chapter -> no recap part even with a state present
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
@@ -720,8 +698,6 @@ def case_14_empty_annotation_guard() -> None:
     re-annotation still works."""
     payload = {"notes": []}
 
-    # A: clean chapter with a pre-existing sidecar -> guard fires, nothing
-    #    written anywhere
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
@@ -761,9 +737,6 @@ def case_14_empty_annotation_guard() -> None:
                      "sidecar\n",
               f"out={out!r}")
 
-    # B: LEGACY chapter with baked notes -> the rewrite must not strip the
-    #    only on-disk copy either (the migration branch sits behind the
-    #    same guard)
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
@@ -792,8 +765,6 @@ def case_14_empty_annotation_guard() -> None:
                      "sidecar\n",
               f"out={out!r}")
 
-    # C: dry-run reports the same failure shape (with the [dry-run]
-    #    prefix) and mutates nothing
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
@@ -820,7 +791,6 @@ def case_14_empty_annotation_guard() -> None:
                      "existing sidecar\n",
               f"out={out!r}")
 
-    # D: zero baseline + zero kept is a benign no-op (no warn, not failed)
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
@@ -841,8 +811,6 @@ def case_14_empty_annotation_guard() -> None:
         check("14n benign: no sidecar created",
               not tn.notes_path(root, "CHAPTER_0001.md").exists(), "")
 
-    # E: a healthy re-annotation still works (regression): the fresh notes
-    #    replace the baseline, counted changed, history updated
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
@@ -869,8 +837,6 @@ def case_14_empty_annotation_guard() -> None:
               and history.get("清明", {}).get("times") == 1,
               f"history={history}")
 
-    # F: the CLI contract -- cmd_tn maps the failed chapter to exit 1
-    #    (pipeline._chat stubbed: cmd_tn builds its own default annotator)
     import argparse
 
     import translate
@@ -912,7 +878,6 @@ def case_14_empty_annotation_guard() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

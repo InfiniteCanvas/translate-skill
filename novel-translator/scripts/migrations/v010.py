@@ -54,10 +54,6 @@ DESCRIPTION = ("rename source chapters to the fixed 4-digit, all-caps canonical 
                "form (Chapter_001.md -> CHAPTER_0001.md), carrying "
                "chapters.json, story_state.json and the per-chapter artifacts")
 
-# The form that was accepted before v10. It still matches the letter suffix on
-# purpose: that is how the step RECOGNIZES an extra chapter in order to defer
-# it. A name matching this but not already canonical is otherwise a rename
-# candidate; anything else in source/ is not ours to move.
 LEGACY_RE = re.compile(r"^Chapter_([0-9]{1,4})([a-z]?)\.md$", re.IGNORECASE)
 
 
@@ -109,13 +105,9 @@ def migrate(project_dir: Path, templates_src: Path,
             lines.append(f"[ok] chapters: carried {moved} draft/translated/"
                          "notes artifact(s) across the rename")
 
-    # Templates are untouched by this step; delegating keeps the shared report
-    # shape and stays silent when nothing drifted.
     return lines + common.sync_templates(
         project_dir, templates_src, dry_run, force, confirm)
 
-
-# ----------------------------------------------------------------- planning
 
 def _canonical(number: str) -> str:
     """The one spelling v10 accepts for this chapter. Takes no suffix: a
@@ -149,7 +141,7 @@ def _rename(src: Path, dst: Path) -> None:
         return
     tmp = src.with_name(src.name + ".v010tmp")
     if tmp.exists():
-        tmp.unlink()          # leftover from a run that died mid-rename
+        tmp.unlink()
     src.rename(tmp)
     tmp.rename(dst)
 
@@ -168,7 +160,7 @@ def _plan(source: Path) -> tuple[dict[str, str], list[str]]:
             continue
         match = LEGACY_RE.match(entry.name)
         if not match:
-            continue                      # never matched; not ours to move
+            continue
         number, suffix = match.group(1), match.group(2)
         if suffix:
             deferred.append(entry.name)
@@ -178,8 +170,6 @@ def _plan(source: Path) -> tuple[dict[str, str], list[str]]:
             renames[entry.name] = canonical
     return renames, deferred
 
-
-# ------------------------------------------------------------------ applying
 
 def _apply(paths: dict, renames: dict[str, str]) -> None:
     """Move the source file and every artifact keyed on its name.
@@ -202,7 +192,7 @@ def _apply(paths: dict, renames: dict[str, str]) -> None:
                 tail = artifact.name[len(old_stem):]
                 target = folder / f"{new_stem}{tail}"
                 if _taken(artifact, target):
-                    continue          # never clobber a different artifact
+                    continue
                 _rename(artifact, target)
 
 
@@ -218,8 +208,6 @@ def _count_artifacts(paths: dict, renames: dict[str, str]) -> int:
                 count += len(list(folder.glob(f"{new_stem}.*")))
     return count
 
-
-# ---------------------------------------------------------------- rewriting
 
 def _rewrite_manifest(paths: dict, renames: dict[str, str]) -> list[str]:
     """Point every manifest entry at its renamed file."""

@@ -41,7 +41,6 @@ VERSION = 11
 DESCRIPTION = ("two-tier log layout (new log_orchestration, log_prompt_bodies, "
                 "log_chapter_keep_runs; log_llm_keep_runs 5->10)")
 
-# The retention count as it stood at v10, and its replacement.
 OLD_KEEP_RUNS = 5
 NEW_KEEP_RUNS = 10
 
@@ -49,10 +48,6 @@ NEW_KEEP_RUNS = 10
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    # Rewrite the raw file, not load_config's merged form, and do it BEFORE
-    # materialize_config: load_config deep-merges the NEW default underneath
-    # the file's own contents, so a still-on-disk 5 would win over the new 10
-    # and the bump would silently vanish.
     cfg_path = Path(project_dir) / "config.json"
     raw = _read(cfg_path)
     lines: list[str] = []
@@ -66,11 +61,8 @@ def migrate(project_dir: Path, templates_src: Path,
         if not dry_run:
             _save(cfg_path, raw)
     elif raw.get("log_llm_keep_runs") == NEW_KEEP_RUNS:
-        pass  # already migrated
+        pass
 
-    # Adds the three new keys and normalizes provider blocks. In --dry-run
-    # this reads the untouched on-disk file, so it reports exactly the three
-    # new keys -- the bump above is reported separately.
     lines += common.materialize_config(project_dir, dry_run)
     return lines + common.sync_templates(
         project_dir, templates_src, dry_run, force, confirm)

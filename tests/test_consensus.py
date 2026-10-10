@@ -1,54 +1,3 @@
-"""Tests for lib/consensus.py: the multi-model fan-out and consensus merge
-sitting between the pipeline and client.chat.
-
-Covered, per the failure policy in the module docstring: (a) a
-single-block job makes exactly ONE client.chat call with that block,
-returns its text, prints no [consensus] line, and its trace hook writes
-a JSONL line tagged {"job": ...} under <project>/logs/; (b) a two-block
-job fans the TASK prompt out to both blocks (task json_schema and
-max_tokens passed through verbatim) and makes one consensus call over
-the shipped consensus.md template -- prompt carries "consensus
-arbitrator", "### Candidate N (model: ...)" sections, and the task
-prompt verbatim; json_schema passes through and max_tokens is
-max(task, consensus block); the "[consensus] ... N model(s)" console
-line prints exactly ONCE per process even across repeated chat()
-invocations (the _ANNOUNCED dedup), with no [warn]; (b2) the consensus
-max_tokens floor: a consensus block BELOW the task cap never lowers it;
-(c) meta keys: invoking every captured meta_hook writes fan-out lines
-tagged "candidate" (1-based) / "candidates" and a consensus line tagged
-"job": "consensus" + "consensus_for"; (d) a failed candidate 2 degrades
-to the single survivor with the exact [warn] lines and NO consensus
-call; (e) the mirror case (candidate 1 fails, survivor 2 wins); (f) all
-candidates failed re-raises client.LLMError; (g) a failed consensus
-call returns the first survivor verbatim with the exact degrade [warn];
-(h) an explicitly authored 2-block consensus array fails load_config
-with the exact contractual ValueError; (i) a block whose model is
-unresolvable labels its candidate "(unresolved model)"; (local) a
-project-local templates/consensus.md wins over the skill-assets copy,
-which the remaining cases exercise as the fallback.
-
-Mechanics: client.chat is faked by ATTRIBUTE SWAP on the lib.client
-module singleton (orig/restore in try/finally -- no unittest.mock);
-consensus.py resolves client.chat at call time and its worker threads
-submit the same module object's attribute, so the fake intercepts fan-
-out calls too. The fake records every call as a dict appended to a
-plain list (GIL-atomic) and calls are CLASSIFIED BY PROMPT CONTENT,
-never by call order (fan-out carries the task prompt VERBATIM; anything
-else is the consensus call, whose prompt wraps the task -- so a
-project-local consensus.md template classifies the same way). Failures
-are scripted per provider-block model as raised client.LLMError. Between cases the
-module globals reset: consensus._ANNOUNCED.clear() (announce dedup) and
-logger._run_path = None (each sandbox's logs/ owns its run's trace --
-the test_cleanup_flow._TOKEN_CAP_WARNED precedent). cfg dicts are hand-
-built (never load_config'd) with array-shaped providers. The consensus
-fan-out's Ctrl-C safety is NOT covered: intercepting a ThreadPoolExecutor
-shutdown needs thread-timing games no deterministic fake can play.
-
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
-
-    uv run tests/test_consensus.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
@@ -62,12 +11,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# scripts/ (and therefore lib/) lives at novel-translator/scripts
-# relative to this file (CWD-independent).
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import client, config, consensus, logger  # noqa: E402
+from lib import client, config, consensus, logger
 
 PASSED = 0
 FAILED: list[str] = []
@@ -172,8 +119,6 @@ class FakeChat:
                            "enforce_ceiling": enforce_ceiling,
                            "meta_hook": meta_hook})
         if prompt != TASK_PROMPT:
-            # The consensus arbitration prompt (whatever template built it
-            # -- shipped or project-local, it always embeds the task).
             if self.fail_consensus:
                 raise client.LLMError("consensus endpoint down")
             return "merged-final"
@@ -300,9 +245,6 @@ def case_b_two_blocks() -> None:
               out.count(ANNOUNCE) == 1 and "[warn] consensus:" not in out,
               f"count={out.count(ANNOUNCE)} out={out!r}")
 
-    # The cap floor: a consensus block BELOW the task's explicit
-    # max_tokens must never lower it (the synthesis must fit what the
-    # task's own contract allows).
     reset_globals()
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj")
@@ -315,11 +257,6 @@ def case_b_two_blocks() -> None:
         check("b7 two blocks: consensus max_tokens never drops below the task cap",
               len(con) == 1 and con[0]["max_tokens"] == 4096,
               f"max_tokens={con[0]['max_tokens'] if con else None!r}")
-        # The synthesis is the ONE call site allowed to exceed its block's own
-        # max_tokens. Without the opt-out, client.chat's ceiling clamp would
-        # cap this merge at 512 -- a third of what the candidates need -- and
-        # the fake here could not catch it, because it replaces client.chat
-        # outright. Assert the flag, not just the arithmetic.
         check("b8 two blocks: synthesis opts out of the client ceiling clamp",
               len(con) == 1 and con[0]["enforce_ceiling"] is False,
               f"enforce_ceiling={con[0]['enforce_ceiling'] if con else None!r}")
@@ -341,8 +278,6 @@ def case_c_meta_keys() -> None:
         with patched_chat(fake):
             consensus.chat(proj, cfg, "translator", TASK_PROMPT,
                            json_schema=None, max_tokens=1000)
-        # Invoke every captured hook with a sample meta -- the real
-        # client.chat would do this before/after each request.
         for i, call in enumerate(fake.calls):
             call["meta_hook"]({"event": "llm_request",
                                "model": call["block"].get("model"),
@@ -381,7 +316,7 @@ def case_d_second_candidate_fails() -> None:
         with patched_chat(fake), contextlib.redirect_stdout(buf):
             try:
                 consensus.chat(proj, cfg, "translator", TASK_PROMPT)
-            except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+            except Exception as caught:
                 exc = caught
         out = buf.getvalue()
         check("d1 candidate 2 failed: the call raises instead of returning",
@@ -408,7 +343,7 @@ def case_e_first_candidate_fails() -> None:
         with patched_chat(fake), contextlib.redirect_stdout(buf):
             try:
                 consensus.chat(proj, cfg, "translator", TASK_PROMPT)
-            except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+            except Exception as caught:
                 exc = caught
         check("e1 candidate 1 failed: raises, no survivor is substituted",
               exc is not None and isinstance(exc, client.LLMError)
@@ -433,7 +368,7 @@ def case_f_all_candidates_fail() -> None:
         with patched_chat(fake), contextlib.redirect_stdout(buf):
             try:
                 consensus.chat(proj, cfg, "translator", TASK_PROMPT)
-            except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+            except Exception as caught:
                 exc = caught
         check("f1 all failed: raises client.LLMError",
               isinstance(exc, client.LLMError), f"exc={exc!r}")
@@ -463,7 +398,7 @@ def case_g_consensus_call_fails() -> None:
         with patched_chat(fake), contextlib.redirect_stdout(buf):
             try:
                 consensus.chat(proj, cfg, "translator", TASK_PROMPT)
-            except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+            except Exception as caught:
                 exc = caught
         check("g1 consensus call failed: raises instead of degrading",
               exc is not None and isinstance(exc, client.LLMError),
@@ -491,7 +426,7 @@ def case_h_explicit_consensus_array() -> None:
         exc: Exception | None = None
         try:
             config.load_config(proj)
-        except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+        except Exception as caught:
             exc = caught
         check("h1 explicit 2-block consensus: load_config raises the exact ValueError",
               isinstance(exc, ValueError)
@@ -569,8 +504,6 @@ def case_j_per_job_arbitrator() -> None:
                    "translator": [block("m1"), block("m2")],
                    "annotator": [block("m1"), block("m2")],
                    "consensus": [global_arb],
-                   # Deliberately PARTIAL: it must inherit the global's endpoint
-                   # and override only the model, the way a user would write it.
                    "consensus_translator": [{"model": "translator-arb"}],
                },
                "log_llm": True}
@@ -578,9 +511,6 @@ def case_j_per_job_arbitrator() -> None:
         with patched_chat(fake), contextlib.redirect_stdout(io.StringIO()):
             r_t = consensus.chat(proj, cfg, "translator", TASK_PROMPT,
                                  max_tokens=1000)
-            # Separate the two merges: both fan out to the SAME candidate models
-            # and both produce exactly one synthesis, so the only thing that
-            # tells them apart is which arbitrator each selected.
             t_con = list(fake.consensus())
             fake.calls.clear()
             r_a = consensus.chat(proj, cfg, "annotator", TASK_PROMPT,
@@ -599,8 +529,6 @@ def case_j_per_job_arbitrator() -> None:
               "base_url instead of falling back to the hard-coded default",
               t_con[0]["block"].get("base_url") == global_arb.get("base_url"),
               f"block={t_con[0]['block']!r}")
-        # The max_tokens floor still tracks whichever block is in force: the
-        # translator's own task cap of 1000 against its arbitrator's 4096.
         check("j4 cap: the synthesis floor follows the per-job block "
               "(max(task cap, that block's max_tokens))",
               t_con[0]["max_tokens"] == 4096,
@@ -610,7 +538,6 @@ def case_j_per_job_arbitrator() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

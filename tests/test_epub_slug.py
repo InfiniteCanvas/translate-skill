@@ -1,17 +1,3 @@
-"""Tests for epub._slugify: ASCII-word slugs, Unicode-preserving fallback.
-
-Motivating incident: a pure-CJK novel title slugged to the empty string and
-every export collapsed to novel.epub. The fallback must preserve the
-original-language title instead, while ASCII titles keep the hyphenated
-lowercase slug (and title_translated — an English title — wins in build(),
-which is not retested here).
-
-Self-contained PASS/FAIL script (no pytest). epub.py imports ebooklib, so
-run via uv (deps declared inline below):
-
-    uv run tests/test_epub_slug.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["ebooklib>=0.18", "pyyaml>=6.0"]
@@ -21,11 +7,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import epub  # noqa: E402
+from lib import epub
 
 PASSED = 0
 FAILED: list[str] = []
@@ -42,7 +27,6 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

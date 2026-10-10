@@ -26,7 +26,6 @@ PASS/FAIL script (no pytest). Run from anywhere:
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6.0", "requests>=2.31", "pillow>=10.0",
-#                 "ebooklib>=0.18"]
 # ///
 from __future__ import annotations
 
@@ -40,8 +39,8 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import translate as cli  # noqa: E402
-from lib import logger  # noqa: E402
+import translate as cli
+from lib import logger
 
 PASSED = 0
 FAILED: list[str] = []
@@ -174,9 +173,6 @@ def run_logs(root: Path, *args: str) -> tuple[int, str, str]:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = cli.main(["logs", *args, "--project", str(root)])
     return code, out.getvalue(), err.getvalue()
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_bare_and_spec() -> None:

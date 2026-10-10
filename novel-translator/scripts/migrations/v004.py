@@ -17,11 +17,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-# Relative import: the module is only ever reached through the package
-# (chain() imports it as migrations.v004, and translate.py / the tests both
-# import `migrations` with scripts/ on sys.path), so binding the sibling
-# through the package works regardless of which sys.path root made the
-# package importable.
 from . import common
 
 VERSION = 4
@@ -32,8 +27,4 @@ DESCRIPTION = ("add min_term_occurrences "
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    # confirm passes straight through to standard_step (which hands it to
-    # sync_templates): interactivity was decided once, upstream in
-    # cmd_migrate (TTY -> prompt, else None), and this step never touches
-    # stdin itself.
     return common.standard_step(project_dir, templates_src, dry_run, force, confirm)

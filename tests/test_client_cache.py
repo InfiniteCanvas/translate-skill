@@ -1,42 +1,3 @@
-"""Tests for client.resolve_model's auth-keyed model cache and client.chat's
-400 handling.
-
-resolve_model() GETs {base}/v1/models and caches the first data[].id in
-client._MODEL_CACHE keyed on (normalized base URL, resolved Authorization
-header value): two jobs may share a base URL with different API keys and
-see different model lists, so one job's resolution must not pin the
-other's -- and anonymous (no auth) resolutions cache separately again.
-Failures are never cached: a fetch error or a bad payload raises LLMError
-and leaves the key absent, so a later successful resolve refetches.
-
-chat()'s 400 branch is narrow: only an error text blaming the guided-JSON
-mechanism (response_format / json_schema / "guided json" / x-guided,
-case-insensitively) disarms response_format and retries once immediately;
-an unrelated 400 keeps response_format (no silent resend), consumes the
-retry budget with backoff like 429/5xx, and raises LLMError when the
-budget is gone. Two consecutive guided-400s raise on the second -- the pop
-disarms the fallback, so there is no loop.
-
-chat()'s empty-completion branch has to tell two shapes apart. A reasoning
-model that exhausts its budget (MiniMax-M3.1-Flash-Preview with an
-unbounded reasoning_effort) returns finish_reason "length" with `content`
-ABSENT rather than empty -- reasoning_content is the only populated field.
-That is a budget problem, not a malformed payload, so it must reach the
-empty-content diagnostic naming the knob to turn down. Only a payload
-missing `choices` entirely is genuinely malformed.
-
-Hermetic: client.requests is swapped for a fake module object whose get()/
-post() count calls and answer from a scripted queue, and client.time for a
-stand-in whose sleep() is recorded instead of waited (the file's
-attribute-swap convention, restore in finally). Real requests is imported
-only for its RequestException type.
-
-Self-contained PASS/FAIL script (no pytest). Run from anywhere (needs
-requests, declared inline below for standalone uv runs):
-
-    uv run tests/test_client_cache.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31"]
@@ -50,11 +11,10 @@ from types import SimpleNamespace
 
 import requests
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import client  # noqa: E402
+from lib import client
 
 PASSED = 0
 FAILED: list[str] = []
@@ -128,9 +88,6 @@ class PostLog:
         self.bodies: list[dict] = []
 
     def post(self, url, json=None, headers=None, timeout=None):
-        # Snapshot copy: chat() pops response_format from the body dict in
-        # place on the guided-JSON fallback, so a reference would rewrite
-        # every earlier call's recorded body.
         self.bodies.append(dict(json))
         step = self.script.pop(0)
         if isinstance(step, tuple):
@@ -183,16 +140,11 @@ def models(n: int) -> dict:
     return {"data": [{"id": f"model-{n}"}]}
 
 
-# chat() fixtures: an explicit model skips resolve_model entirely, and a
-# json_schema arms response_format in the request body.
 PROVIDER = {"base_url": BASE, "model": "model-1"}
 SCHEMA = {"type": "object", "properties": {"x": {"type": "string"}}}
 OK_PAYLOAD = {"choices": [{"message": {"content": "  hi  "},
                            "finish_reason": "stop"}],
               "usage": {"total_tokens": 3}}
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_same_auth_one_fetch() -> None:
@@ -215,7 +167,6 @@ def case_1_same_auth_one_fetch() -> None:
               client._MODEL_CACHE.get(
                   ("http://llm.local:8888/v1", "Bearer key-one")) == "model-1",
               f"cache={dict(client._MODEL_CACHE)!r}")
-        # A trailing slash on the base normalizes onto the same entry
         again = client.resolve_model(BASE + "/", headers=KEY1)
         check("1e same auth: trailing-slash base shares the cache entry",
               again == "model-1" and log.n == 1, f"n={log.n}")
@@ -270,9 +221,9 @@ def case_3_failures_not_cached() -> None:
     key uncached, so the next resolve refetches and can succeed."""
     client._MODEL_CACHE.clear()
     log, orig = install([
-        requests.RequestException,   # 1st resolve: connection failure
-        {"data": "not-a-list"},      # 2nd resolve: unexpected payload
-        models(9),                   # 3rd resolve: success
+        requests.RequestException,
+        {"data": "not-a-list"},
+        models(9),
     ])
     try:
         exc1 = exc2 = None
@@ -332,7 +283,6 @@ def case_4_guided_400_fallback() -> None:
         client.requests = orig
         client.time = orig_time
 
-    # Every mechanism token triggers the fallback, case-insensitively.
     for i, text in enumerate([
         "response_format rejected",
         "json_schema validation failed",
@@ -414,7 +364,7 @@ def case_6_guided_400_no_loop() -> None:
     try:
         exc = None
         try:
-            client.chat(PROVIDER, "hello")  # no json_schema: never armed
+            client.chat(PROVIDER, "hello")
         except client.LLMError as caught:
             exc = caught
         check("6d plain-400: generic LLMError on the first response",
@@ -431,7 +381,6 @@ def case_7_absent_content_vs_malformed() -> None:
     must reach the empty-content diagnostic naming the budget knob, NOT the
     malformed-payload message. A payload with no choices at all is still
     malformed and still says so."""
-    # content key absent entirely, reasoning_content present
     absent = {"choices": [{"message": {"role": "assistant",
                                        "reasoning_content": "still planning..."},
                            "finish_reason": "length"}],
@@ -455,7 +404,6 @@ def case_7_absent_content_vs_malformed() -> None:
     finally:
         client.requests = orig
 
-    # no "choices" key at all -> genuinely malformed, still the old message
     log, orig = install_post([{"id": "x", "object": "chat.completion"}])
     try:
         exc = None
@@ -469,7 +417,6 @@ def case_7_absent_content_vs_malformed() -> None:
     finally:
         client.requests = orig
 
-    # content present but empty string -> same diagnostic, not a crash
     log, orig = install_post([{"choices": [{"message": {"content": "",
                                                       "reasoning_content": "thinking"},
                                             "finish_reason": "stop"}]}])
@@ -487,7 +434,6 @@ def case_7_absent_content_vs_malformed() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

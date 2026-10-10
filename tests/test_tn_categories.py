@@ -1,37 +1,3 @@
-"""Tests for the TN annotator upgrade: note categories, the code-enforced
-max_notes cap, and the dropped-candidates artifact.
-
-Covers tn.NOTE_CATEGORIES handling in tn.process (a missing, unknown, or
-non-string category silently defaults to "other"; a valid one passes
-through onto kept entries); the cap (12 valid notes at max_notes=10 -> 10
-kept in order + 2 dropped with reason "overflow" carrying
-category/threshold; max_notes omitted -> no cap, direct callers keep the
-old behavior); the cap's interaction with the gap rule (a gap-suppressed
-note never consumes a cap slot: 2 fresh + 4 gap-suppressed + a
-within-chapter duplicate at max_notes=2 -> both fresh kept, nothing
-dropped, duplicates and gap drops NOT recorded in `dropped`); the
-low-threshold gate recording reason "low_threshold" (and keeping the notes
--- unrecorded -- when keep_low=True); invalid entries recorded with reason
-"invalid" while keeping their warnings; tn.save_dropped's lifecycle
-(writes notes/<stem>.dropped.json when non-empty with document shape
-{chapter, updated_at, dropped} + trailing newline, DELETES it when empty);
-save_notes emitting the normalized "category" field in sidecar entries;
-and pipeline.NOTES_SCHEMA carrying "category" as an OPTIONAL property with
-the NOTE_CATEGORIES enum (not required -- models may omit it); and the
-cap's history rollback (a truncated term's key is absent from the
-returned history when it had no pre-call entry and restored to its
-pre-call value when it did -- a same-chapter retranslation entry is
-restored, not deleted -- so a later chapter inside the gap window can
-still annotate the term, and the input history dict is never mutated).
-
-All chapter fixtures are built inside tempfile.TemporaryDirectory()
-sandboxes per case — repo fixtures are never touched.
-
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
-
-    uv run tests/test_tn_categories.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31", "pyyaml>=6.0"]
@@ -41,11 +7,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import pipeline, tn  # noqa: E402
+from lib import pipeline, tn
 
 PASSED = 0
 FAILED: list[str] = []
@@ -71,17 +36,14 @@ def note(term: str, category=None, threshold=None, line=0) -> dict:
     return entry
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_category_defaulting() -> None:
     """process(): missing/unknown/non-string category -> "other" on kept
     entries; a valid category passes through."""
     notes = [
-        note("甲"),                     # no category key
-        note("乙", category="mystery"),  # not in NOTE_CATEGORIES
-        note("丙", category=5),          # not a string at all
-        note("丁", category="wordplay"),  # valid
+        note("甲"),
+        note("乙", category="mystery"),
+        note("丙", category=5),
+        note("丁", category="wordplay"),
     ]
     kept, _history, warnings, dropped = tn.process(notes, 3, 0, {}, 10)
     check("1a category: all four kept, no warnings/drops",
@@ -125,13 +87,12 @@ def case_2_cap_overflow() -> None:
 def case_3_gap_rule_and_cap() -> None:
     """A gap-suppressed note must not waste a cap slot; duplicates and gap
     drops are never recorded in `dropped`."""
-    # 4 terms already annotated one chapter ago (inside the default gap)
     history = {
         f"旧{i}": {"note": "old", "last_order": 4, "times": 1} for i in range(4)
     }
-    notes = [note(f"旧{i}") for i in range(4)]          # gap-suppressed
-    notes += [note("新甲"), note("新乙")]                # fresh
-    notes.append(note("新甲"))                          # within-chapter duplicate
+    notes = [note(f"旧{i}") for i in range(4)]
+    notes += [note("新甲"), note("新乙")]
+    notes.append(note("新甲"))
     kept, updated, warnings, dropped = tn.process(
         notes, 3, 5, history, 10, max_notes=2,
     )
@@ -154,7 +115,7 @@ def case_4_low_threshold() -> None:
     notes = [
         note("低一", threshold="low", category="cultural"),
         note("高二", threshold="high"),
-        note("无三"),  # no threshold key
+        note("无三"),
     ]
     kept, _history, warnings, dropped = tn.process(notes, 3, 0, {}, 10)
     check("4a low: default gate keeps only the non-low notes",
@@ -227,7 +188,7 @@ def case_6_save_dropped_lifecycle() -> None:
         tn.save_dropped(root, "CHAPTER_0001.md", [])
         check("6e save_dropped: empty list DELETES the file",
               not path.exists(), f"path={path}")
-        tn.save_dropped(root, "CHAPTER_0001.md", [])  # absent stays absent
+        tn.save_dropped(root, "CHAPTER_0001.md", [])
         check("6f save_dropped: deleting an absent file is a no-op",
               not path.exists(), "")
 
@@ -270,7 +231,6 @@ def case_8_notes_schema() -> None:
 def case_9_overflow_history_rollback() -> None:
     """The cap rolls truncated terms' history entries back: the reader never
     saw the note, so it must not consume the gap window."""
-    # No pre-call entry: the truncated key must not survive this call.
     notes = [note("甲"), note("乙"), note("丙")]
     kept, updated, _warnings, dropped = tn.process(notes, 3, 5, {}, 10,
                                                    max_notes=2)
@@ -280,8 +240,6 @@ def case_9_overflow_history_rollback() -> None:
           and set(updated) == {"甲", "乙"},
           f"updated={updated}")
 
-    # Pre-call entry from beyond the gap: the truncated third note (旧词)
-    # would set last_order=5/times=2; it must roll back to the input entry.
     history = {"旧词": {"note": "original", "last_order": 0, "times": 1}}
     snapshot = {"旧词": dict(history["旧词"])}
     notes = [note("新甲"), note("新乙"), note("旧词")]
@@ -295,17 +253,11 @@ def case_9_overflow_history_rollback() -> None:
           f"updated={updated}")
     check("9c rollback: input history never mutated",
           history == snapshot, f"history={history}")
-    # With the rollback, chapter 6 is 6 chapters past the restored
-    # last_order=0 (> gap 2), so the term can still be annotated; without
-    # it (last_order=5) the gap rule would suppress the note.
     later_kept, _h, _w, _d = tn.process([note("旧词")], 3, 6, updated, 2)
     check("9d rollback: a later chapter inside the old window can annotate",
           [e["term"] for e in later_kept] == ["旧词"],
           f"kept={[e.get('term') for e in later_kept]}")
 
-    # Same-chapter retranslation edge: the input entry's last_order equals
-    # this chapter's order; the truncated note restores THAT entry rather
-    # than deleting the key (or leaving its would-be update behind).
     history = {"重译": {"note": "first attempt", "last_order": 5, "times": 2}}
     notes = [note("前甲"), note("重译")]
     kept, updated, _warnings, dropped = tn.process(notes, 2, 5, history, 10,
@@ -326,10 +278,8 @@ def case_10_reading_order() -> None:
     Also pins the two properties that make the sort safe: it happens AFTER the
     cap (so severity still decides which notes SURVIVE), and ties on one line
     keep the annotator's relative order (the sort is stable)."""
-    # Deliberately reverse severity-vs-position: the first note the model
-    # returns sits last in the chapter.
     notes = [
-        note("首注", line=4),    # ranked first by the annotator, line 4
+        note("首注", line=4),
         note("次注", line=1),
         note("末注", line=9),
     ]
@@ -340,10 +290,7 @@ def case_10_reading_order() -> None:
     check("10b order: reordering is silent and drops nothing",
           warnings == [] and dropped == [], f"warnings={warnings}, dropped={dropped}")
 
-    # Cap first, THEN the sort: severity still decides who survives, so the
-    # two cut entries are the annotator's last two, and only the line sort
-    # reorders the ten that made it.
-    many = [note(f"词{i}", line=11 - i) for i in range(12)]  # line 11 down to 0
+    many = [note(f"词{i}", line=11 - i) for i in range(12)]
     capped, _h, _w, over = tn.process(many, 12, 0, {}, 10, max_notes=10)
     check("10c order: cap keeps the annotator's first 10 (severity), not the earliest lines",
           [d["term"] for d in over] == ["词10", "词11"], f"dropped={[d.get('term') for d in over]}")
@@ -352,7 +299,6 @@ def case_10_reading_order() -> None:
                                           "词4", "词3", "词2", "词1", "词0"],
           f"kept={[e.get('term') for e in capped]}")
 
-    # Ties: stable sort keeps the annotator's order within one line.
     tied = [note("甲", line=2), note("乙", line=2), note("丙", line=0)]
     tied_kept, _h2, _w2, _d2 = tn.process(tied, 5, 0, {}, 10)
     check("10e order: notes sharing a line keep the annotator's relative order",
@@ -393,7 +339,6 @@ def case_11_load_sorts_reading_order() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

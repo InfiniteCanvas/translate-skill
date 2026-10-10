@@ -1,41 +1,3 @@
-"""Tests for lib/story.py: the rolling story-so-far recap.
-
-Covers predecessor() (first chapter -> None, manifest ORDER decides rather
-than list position, unknown file -> None); load_state leniency (missing ->
-empty, malformed JSON / non-object document / non-object "chapters" ->
-{"chapters": {}} plus exactly one '[warn] story_state.json unreadable
-(<reason>) - recaps start fresh' line, BOM-prefixed file parses silently);
-save/load round-trip (entries preserved, trailing newline, CJK readable in
-the raw bytes); story_part() (empty -> "", non-empty -> the exact labeled
-prefix line + text); load_state stale-stem pruning (manifest-absent stems
-dropped silently and not resurrected by a save; missing/empty/corrupt
-manifest skips pruning; the backfill anchor stays on valid stems and a
-stale stem is neither anchor nor saved back); ensure_recap (existing entry
-returned with ZERO LLM
-calls, first chapter -> "" with zero calls, missing predecessor backfilled
-with exactly ONE call whose {{previous_recap}} is the nearest EARLIER
-existing entry, the no-chain rule -- a book whose only entry sits on a
-LATER chapter backfills with the empty anchor, never the later recap and
-never a recursive chain -- and the failure paths: predecessor's translated
-file missing, LLM error -> "" + the warn line); record_recap (overwrites
-the chapter's own entry unconditionally while neighbors stay intact,
-prompt carries prev_recap_text / title / body, failure warns and leaves
-the prior state byte-unchanged); and RECAP_SCHEMA shape sanity (flat,
-single required "recap" string key, additionalProperties false).
-
-Every case builds a sandbox project (translated/ chapters, chapters.json,
-optional story_state.json) inside tempfile.TemporaryDirectory() -- repo
-fixtures are never touched. The recap LLM is a stub returning a canned
-{"recap": ...} JSON string (story runs client.extract_json over it), with
-a sink counting calls so "exactly ONE call" is observable; the template is
-the real shipped assets/templates/recap.md (the project-fallback path).
-stdout around warn/print-ing calls is captured with contextlib.redirect_stdout.
-
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
-
-    python tests/test_story_recap.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
@@ -47,12 +9,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import project  # noqa: E402
-from lib import story  # noqa: E402
+from lib import project
+from lib import story
 
 PASSED = 0
 FAILED: list[str] = []
@@ -81,8 +42,6 @@ def capture(fn, *args, **kwargs):
         result = fn(*args, **kwargs)
     return result, buf.getvalue()
 
-
-# ------------------------------------------------------------------ fixtures
 
 CFG = {"source_lang": "zh", "target_lang": "en"}
 
@@ -137,13 +96,10 @@ def entry(recap: str) -> dict:
     return {"recap": recap, "updated_at": "2026-09-30T00:00:00+00:00"}
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_predecessor() -> None:
     """Manifest ORDER (the `order` field) decides, not list position."""
     manifest = make_manifest(["CHAPTER_0001.md", "CHAPTER_0002.md", "CHAPTER_0003.md"])
-    shuffled = [manifest[2], manifest[0], manifest[1]]  # deliberately out of order
+    shuffled = [manifest[2], manifest[0], manifest[1]]
     check("1a predecessor: first chapter -> None",
           story.predecessor(shuffled, "CHAPTER_0001.md") is None, "")
     check("1b predecessor: second chapter's predecessor is chapter 1",
@@ -185,7 +141,6 @@ def case_2_load_state() -> None:
               and out == "[warn] story_state.json unreadable (invalid chapters)"
                          " - recaps start fresh\n", f"out={out!r}")
 
-        # BOM-prefixed hand edit: utf-8-sig read keeps the entries, silent.
         seeded = {"chapters": {"CHAPTER_0001": entry("Plot so far.")}}
         (root / "story_state.json").write_bytes(
             b"\xef\xbb\xbf" + json.dumps(seeded, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
@@ -304,9 +259,8 @@ def case_8_ensure_recap_failure() -> None:
     return "" with one warn line, never raise."""
     files = ["CHAPTER_0001.md", "CHAPTER_0002.md"]
 
-    # predecessor listed as translated but its file is missing
     with tempfile.TemporaryDirectory() as td:
-        root, manifest = make_project(td, files)  # no translated/ files
+        root, manifest = make_project(td, files)
         recap, out = capture(story.ensure_recap, root, CFG, manifest,
                              "CHAPTER_0002.md", "[CHAPTER_0002]", chat=broken_chat)
         check("8a fail: missing predecessor file -> \"\"",
@@ -317,7 +271,6 @@ def case_8_ensure_recap_failure() -> None:
               and "translated chapter missing" in out and out.count("\n") == 1,
               f"out={out!r}")
 
-    # the LLM call itself dies
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, files, translated=["CHAPTER_0001.md"])
         recap, out = capture(story.ensure_recap, root, CFG, manifest,
@@ -362,7 +315,6 @@ def case_9_record_recap() -> None:
         check("9f record: console prints the init line",
               out == "[CHAPTER_0002] [init] recap\n", f"out={out!r}")
 
-    # failure: prior state byte-unchanged
     with tempfile.TemporaryDirectory() as td:
         root, _manifest = make_project(td, files)
         seeded = {"chapters": {"CHAPTER_0001": entry("R1."),
@@ -432,7 +384,6 @@ def case_12_prune_guard_and_anchor() -> None:
     seeded = {"chapters": {"CHAPTER_0001": entry("Real earlier plot."),
                            "CHAPTER_0000": entry("Stale plot.")}}
 
-    # missing manifest -> untouched
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         write_lf(root / "story_state.json", json.dumps(seeded, ensure_ascii=False) + "\n")
@@ -440,7 +391,6 @@ def case_12_prune_guard_and_anchor() -> None:
         check("12a guard: missing manifest -> entries untouched",
               loaded == seeded, f"loaded={loaded}")
 
-    # empty manifest -> untouched
     with tempfile.TemporaryDirectory() as td:
         root, _manifest = make_project(td, [])
         write_lf(root / "story_state.json", json.dumps(seeded, ensure_ascii=False) + "\n")
@@ -448,7 +398,6 @@ def case_12_prune_guard_and_anchor() -> None:
         check("12b guard: empty manifest -> entries untouched",
               loaded == seeded, f"loaded={loaded}")
 
-    # corrupt manifest -> untouched
     with tempfile.TemporaryDirectory() as td:
         root, _manifest = make_project(td, files)
         write_lf(root / "chapters.json", "{oops")
@@ -457,7 +406,6 @@ def case_12_prune_guard_and_anchor() -> None:
         check("12c guard: corrupt manifest -> entries untouched",
               loaded == seeded, f"loaded={loaded}")
 
-    # anchoring for valid stems unchanged; the stale stem is never the anchor
     with tempfile.TemporaryDirectory() as td:
         root, manifest = make_project(td, files, translated=["CHAPTER_0002.md"])
         write_lf(root / "story_state.json", json.dumps(seeded, ensure_ascii=False) + "\n")
@@ -482,7 +430,6 @@ def case_12_prune_guard_and_anchor() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

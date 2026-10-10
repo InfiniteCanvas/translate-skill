@@ -31,13 +31,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ and translate.py live at novel-translator/scripts relative to this
-# file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import project  # noqa: E402
-from translate import CliError, cmd_sync  # noqa: E402
+from lib import project
+from translate import CliError, cmd_sync
 
 PASSED = 0
 FAILED: list[str] = []
@@ -62,9 +60,6 @@ def write_source(root: Path, name: str, text: str) -> None:
     source.mkdir(parents=True, exist_ok=True)
     with open(source / name, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_ordering() -> None:
@@ -159,23 +154,19 @@ def case_4_backfill() -> None:
     changed-chapter count."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        # Bare chapter: heading marker stripped from the derived title.
         write_source(root, "CHAPTER_0001.md", "# 第一章 灵根\n正文第一行\n")
-        # Per-chapter source_url must survive the novel-level default.
         write_source(root, "CHAPTER_0002.md",
                      "---\n"
                      "source_url: https://example.com/per-chapter\n"
                      "---\n"
                      "\n"
                      "第二章 筑基\nbody\n")
-        # Existing chapter_title must not be touched.
         write_source(root, "CHAPTER_0003.md",
                      "---\n"
                      "chapter_title: Existing Title\n"
                      "---\n"
                      "\n"
                      "第三章\nbody\n")
-        # Fully populated chapter: nothing to change.
         write_source(root, "CHAPTER_0004.md",
                      "---\n"
                      f"novel_title: {NOVEL_TITLE}\n"
@@ -260,7 +251,6 @@ def case_6_malformed_chapter_is_cli_error() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

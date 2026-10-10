@@ -1,8 +1,11 @@
 """Run every tests/test_*.py as a subprocess and print a PASS/FAIL summary.
 
-Each test script is a self-contained PASS/FAIL program (module docstring up
-top, exit 0 = all its checks passed, 1 = any failed); this runner executes
-each in a fresh interpreter via sys.executable, in sorted name order. The
+Each test script is a self-contained PASS/FAIL program (exit 0 = all its
+checks passed, 1 = any failed); this runner executes each in a fresh
+interpreter via sys.executable, in sorted name order. The runner reads no
+docstring, but an integration suite carries one -- stating what the suite
+covers and which system behaviour it enforces -- while a unit suite carries
+none (see AGENTS.md, "Comments: the code documents itself"). The
 test scripts are CWD-independent (they locate lib/ relative to __file__),
 so the working directory only affects where a "." --project would resolve
 -- running from tests/ keeps that deterministic. Output is captured and
@@ -40,7 +43,6 @@ from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
 
-# The house summary line every test script prints at the end of main().
 SUMMARY_RE = re.compile(r"^\s*(\d+)\s+passed,\s+(\d+)\s+failed", re.MULTILINE)
 
 
@@ -59,21 +61,15 @@ def _checks(output: str) -> int | None:
 
 
 def main() -> int:
-    # A failing check may print CJK -- chapter fixtures are Chinese, and the
-    # near-miss names include full-width digits. Without this, printing a
-    # failure detail on a cp1252 console raises UnicodeEncodeError and kills
-    # the whole run, turning "one test failed" into "no results at all" with
-    # every later script unreported. errors="replace" keeps the report
-    # readable instead of fatal.
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):  # already-utf8 wrapper, or closed
+        except (AttributeError, ValueError):
             pass
 
     scripts = sorted(
         p for p in TESTS_DIR.glob("test_*.py")
-        if p.name != Path(__file__).name  # never run itself
+        if p.name != Path(__file__).name
     )
     if not scripts:
         print(f"no test scripts found in {TESTS_DIR}")
@@ -89,8 +85,6 @@ def main() -> int:
         )
         output = (proc.stdout or "") + (proc.stderr or "")
         checks = _checks(output)
-        # Exit 0 with no reported checks means main() never ran: PASSing on
-        # the exit code alone would let a gutted script report green.
         code = proc.returncode if checks else 1
         results.append((script.name, code, checks or 0))
         print(f"{'PASS' if code == 0 else 'FAIL'}  {script.name}")

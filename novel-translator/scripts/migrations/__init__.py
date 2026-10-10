@@ -39,7 +39,7 @@ def chain() -> list[ModuleType]:
     for path in _PACKAGE_DIR.glob("v*.py"):
         match = _SCRIPT_RE.match(path.name)
         if match is None or not path.is_file():
-            continue  # not a version script (common.py, stray directories)
+            continue
         entries.append((int(match.group(1)), path))
     entries.sort()
 

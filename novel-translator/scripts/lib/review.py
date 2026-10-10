@@ -23,8 +23,6 @@ KINDS = ("mistranslation", "wrong_language", "definition", "category",
 SEVERITIES = ("warn", "info")
 DEFAULT_BATCH_SIZE = config.DEFAULTS["review_batch_size"]
 
-# NO additionalProperties inside items -- strict nested schemas truncated
-# sglang guided decoding historically (same constraint as CLEANUP_SCHEMA).
 REVIEW_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -47,15 +45,8 @@ REVIEW_SCHEMA: dict[str, Any] = {
     "required": ["findings"],
 }
 
-# CJK detection uses balance.CJK_RE -- the widest CJK class in the skill
-# (adds CJK compat ideographs and halfwidth katakana), shared with glossary.py
-# so all "is this string CJK?" answers agree.
 _CJK_RE = balance.CJK_RE
 
-# Model kinds apply_fixes may act on; every other kind (duplicate/
-# collision/variant/mundane/other) is report-only for --fix. Mundane is
-# still machine-fixable via its `glossary retire` Command bullet
-# (command_for_finding) -- only the in-review --fix path skips it.
 _FIELD_BY_KIND = {
     "mistranslation": "translation",
     "wrong_language": "translation",
@@ -79,7 +70,7 @@ def _finding(
         "kind": kind,
         "severity": severity,
         "reason": reason,
-        "suggestion": "",  # heuristic tier never proposes fixes
+        "suggestion": "",
         "action": "",
         "origin": "heuristic",
     }
@@ -92,7 +83,6 @@ def _heuristic_findings(g: dict) -> list[dict]:
     entries = g.get("terms", [])
     findings: list[dict] = []
 
-    # duplicate: one string owned by 2+ entries (as source or variant).
     owners: dict[str, list[dict]] = {}
     for entry in entries:
         for s in [entry.get("source")] + list(entry.get("variants") or []):
@@ -107,18 +97,12 @@ def _heuristic_findings(g: dict) -> list[dict]:
         first_source = owner_list[0].get("source", "")
         for entry in owner_list[1:]:
             role = "source" if entry.get("source") == s else "variant"
-            # `merge_with` carries the structured merge target. The reason
-            # text alone is not enough for a parser to recover the target
-            # reliably; finding it at creation time means the writer (and
-            # Step 3's lib/fix.py synthesiser) can emit a Command line
-            # without ever parsing model prose.
             findings.append(_finding(
                 entry, "duplicate", "warn",
                 f"{role} '{s}' also belongs to entry '{first_source}'",
                 merge_with=first_source,
             ))
 
-    # collision: distinct entries sharing one translation (case-insensitive).
     first_by_translation: dict[str, dict] = {}
     for entry in entries:
         translation = entry.get("translation")
@@ -154,8 +138,6 @@ def _heuristic_findings(g: dict) -> list[dict]:
                 ))
         category = entry.get("category")
         if category is None:
-            # Legal for minimal hand-added entries (source + translation);
-            # only the invalid-string case is a real quality problem.
             findings.append(_finding(
                 entry, "category", "info",
                 "category is missing (other stages treat it as 'other')",
@@ -168,9 +150,6 @@ def _heuristic_findings(g: dict) -> list[dict]:
         if cjk_source:
             for variant in entry.get("variants") or []:
                 if isinstance(variant, str) and not _CJK_RE.search(variant):
-                    # `variant_to_remove` carries the flagged string so the
-                    # writer can emit `glossary set --remove-variant V`
-                    # without inspecting reason text.
                     findings.append(_finding(
                         entry, "variant", "info",
                         f"variant '{variant}' contains no CJK characters",
@@ -189,7 +168,7 @@ def _model_findings(
     batches = [entries[i:i + batch_size] for i in range(0, len(entries), batch_size)]
     n = len(batches)
     for i, batch in enumerate(batches, 1):
-        print(f"[glossary] reviewing batch {i}/{n}")  # LLM calls are slow; show life
+        print(f"[glossary] reviewing batch {i}/{n}")
         try:
             lines = "\n".join(
                 json.dumps(
@@ -249,7 +228,7 @@ def _model_findings(
                 })
         except client.LLMFatal:
             raise
-        except Exception as exc:  # one bad batch must not kill the whole review
+        except Exception as exc:
             errors.append(f"batch {i}/{n}: {exc}")
             print(f"[glossary] warn batch {i}/{n} review failed - {exc}")
     return findings, n, errors
@@ -283,8 +262,6 @@ def review_glossary(
             findings.append(mf)
             continue
         if not h.get("suggestion") and mf.get("suggestion"):
-            # Heuristic won the reporting slot, but the fix is model-sourced:
-            # mark it so --fix may still apply it (apply_fixes gates on that).
             h["suggestion"] = mf["suggestion"]
             h["fixable"] = True
         if not h.get("action") and mf.get("action"):
@@ -393,10 +370,6 @@ def command_for_finding(finding: dict) -> dict | None:
     suggestion = str(finding.get("suggestion") or "").strip()
     source = str(finding.get("source") or "")
 
-    # Field-kind findings with a suggestion map to set/replace the field.
-    # `collision` is gated the same way -- when no suggestion exists the
-    # Action text says "give this entry a distinct translation" but the
-    # *distinct* rendering lives only in prose, which we refuse to parse.
     if suggestion and source:
         if kind in ("mistranslation", "wrong_language", "collision"):
             return {
@@ -409,13 +382,6 @@ def command_for_finding(finding: dict) -> dict | None:
                 "args": {"source": source, "definition": suggestion},
             }
         if kind == "category":
-            # apply_fixes() skips invalid categories ("invalid category")
-            # and the CLI's `glossary set` exits 2 on one -- which, under
-            # review fix --exit-on-error, would abort every later command.
-            # A suggestion outside glossary.CATEGORIES therefore gets no
-            # machine command: returning None routes the finding to the
-            # manual-review section (write_report) or to "needs a decision"
-            # (lib/fix.py legacy synthesis).
             if suggestion not in glossary.CATEGORIES:
                 return None
             return {
@@ -423,8 +389,6 @@ def command_for_finding(finding: dict) -> dict | None:
                 "args": {"source": source, "category": suggestion},
             }
 
-    # Heuristic structured fields -- available on the finding dict because
-    # _heuristic_findings() attaches them at creation time.
     variant = finding.get("variant_to_remove")
     if kind == "variant" and isinstance(variant, str) and variant and source:
         return {
@@ -439,8 +403,6 @@ def command_for_finding(finding: dict) -> dict | None:
             "args": {"keep": merge_with, "remove": source},
         }
 
-    # A mundane-term finding needs no suggestion: the retirement is fully
-    # determined by the source alone.
     if kind == "mundane" and source:
         return {
             "name": "glossary retire",
@@ -525,18 +487,12 @@ def write_report(
         if isinstance(src, str) and src not in by_source:
             by_source[src] = entry
 
-    # Same fix-resolution rule as the CLI's warn/info tally (see
-    # outstanding_filter) -- one implementation so the report's indices and
-    # the console totals always agree.
     outstanding = outstanding_filter(applied)
 
     open_findings = [f for f in findings if outstanding(f)]
     n_warn = sum(1 for f in open_findings if f["severity"] == "warn")
     n_info = len(open_findings) - n_warn
 
-    # Split by machine-applicability, not severity: warns before infos,
-    # source-ascending within each severity, in both sections (the sort is
-    # explicit so it never depends on input order).
     ordered = sorted(
         open_findings,
         key=lambda f: (0 if f["severity"] == "warn" else 1, str(f["source"])),
@@ -549,21 +505,12 @@ def write_report(
         else:
             machine.append(f)
 
-    # [N] indices are assigned machine-first, so the manual findings own the
-    # trailing run of the numbering -- exactly what the frontmatter's
-    # manual_review_indices records for agents skimming the file.
     n_machine = len(machine)
     n_manual = len(manual)
     manual_indices = list(range(n_machine + 1, n_machine + n_manual + 1))
     generated = datetime.now(timezone.utc).isoformat(timespec='seconds')
     generated_by = "review glossary --fix" if ran_fix else "review glossary"
 
-    # Staleness anchor for `review fix`: digest of the glossary as it stood
-    # at write time. fix.report_is_stale recomputes it over the current
-    # file's bytes, so a report is never replayed over glossary data that
-    # changed after generation (hand edits, a later --fix). null when
-    # glossary.json is missing -- the checker hashes b"" in that case, so
-    # any real digest disagrees with a deleted file deliberately.
     glossary_path = Path(project_dir) / "glossary.json"
     if glossary_path.is_file():
         glossary_digest = hashlib.sha256(
@@ -631,16 +578,8 @@ def write_report(
                         json.dumps(entry, ensure_ascii=False, indent=2),
                         "```",
                     ]
-                # Model-written instruction preferred; the per-kind template
-                # guarantees a baseline when the model sent none.
                 action = str(f.get("action") or "").strip() or _action_text(f, source_name, target_name)
                 lines += [f"- Action: {action}", ""]
-                # `- Command:` is the contract with `review fix`: only
-                # emitted when the fix is fully determined by the finding's
-                # structured fields (always true for the machine section,
-                # never for the manual one). Every argv element is
-                # shlex.quoted so CJK and space-containing terms survive
-                # round-trip.
                 spec = command_for_finding(f)
                 if spec is not None:
                     argv = _command_argv(spec)
@@ -670,8 +609,6 @@ def write_report(
     ]
 
     path = Path(project_dir) / report_name
-    # review_report_path may name a subdirectory; the read side (review fix)
-    # tolerates one, so the write side creates it on demand.
     path.parent.mkdir(parents=True, exist_ok=True)
     project.atomic_write_text(path, "\n".join(lines), newline="\n")
     return path
@@ -692,7 +629,7 @@ def apply_fixes(project_dir: Path, findings: list[dict]) -> dict:
     "[warn] glossary: ..." line the other assignment paths print at the
     point of the write (the fix itself still applies)."""
     g = glossary.load(project_dir)
-    eligible: list[tuple[str, str, str, str]] = []  # (source, field, kind, suggestion)
+    eligible: list[tuple[str, str, str, str]] = []
     for f in findings:
         if f.get("severity") != "warn":
             continue
@@ -711,8 +648,6 @@ def apply_fixes(project_dir: Path, findings: list[dict]) -> dict:
             continue
         eligible.append((source, field, f["kind"], suggestion))
 
-    # Resolve targets up front so conflicts on the same (entry source, field)
-    # are caught before any individual validation.
     resolved: list[tuple[tuple[str, str], str, str, str, str, dict | None]] = []
     for source, field, kind, suggestion in eligible:
         entry = glossary.find(g, source)
@@ -751,16 +686,14 @@ def apply_fixes(project_dir: Path, findings: list[dict]) -> dict:
             continue
         old = entry.get(field)
         if value == old:
-            skip("already set")  # re-run: suggested value is already live
+            skip("already set")
             continue
         if field == "category" and value == "unit":
-            # key[0] is the resolved entry source; the advisory matches the
-            # new-term/merge paths' line for the same assignment.
             text = glossary.unit_translation_warning(
                 key[0], entry.get("translation"))
             if text:
                 print(f"[warn] {text}")
-        entry[field] = value  # mutate in place; keep every other field
+        entry[field] = value
         applied.append({"source": source, "field": field, "kind": kind,
                         "old": old, "new": value})
     if applied:

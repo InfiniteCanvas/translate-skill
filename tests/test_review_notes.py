@@ -42,12 +42,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import review_notes, tn  # noqa: E402
-import translate  # noqa: E402
+from lib import review_notes, tn
+import translate
 
 PASSED = 0
 FAILED: list[str] = []
@@ -69,8 +68,6 @@ def write_lf(path: Path, text: str) -> None:
         fh.write(text)
 
 
-# ------------------------------------------------------------------ fixtures
-
 SOURCE_MD = (
     "---\n"
     "chapter_title: 第一章 灵根\n"
@@ -81,7 +78,6 @@ SOURCE_MD = (
     "源文三行。\n"
 )
 
-# 3-line translated body; note indexes/anchors are given per case.
 TRANSLATED_MD = (
     "---\n"
     "chapter_title: 第一章 灵根\n"
@@ -204,13 +200,9 @@ NOTE_B = {"line": 1, "term": "筑基", "note": "Foundation Establishment is the 
           "category": "cultural", "anchor": "Beta line."}
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_anchor_resolution() -> None:
     """Stored index wins; drift recovers by anchor; unresolvable ->
     deterministic misanchored without a model call."""
-    # A: matching index + anchor -> resolves at the stored line
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0,
@@ -229,8 +221,6 @@ def case_1_anchor_resolution() -> None:
               and unit_b.get("line") == 1,
               f"a={unit_a} b={unit_b}")
 
-    # B: hand-edit inserted a first line -> stored index no longer matches,
-    #    the anchor re-locates the note one line lower
     with tempfile.TemporaryDirectory() as td:
         drifted = TRANSLATED_MD.replace(
             "Alpha line with 灵根.", "New zeroth line.\nAlpha line with 灵根.")
@@ -247,8 +237,6 @@ def case_1_anchor_resolution() -> None:
               and unit.get("translated_line") == "Alpha line with 灵根.",
               f"unit={unit}")
 
-    # C: the owning line was rewritten past recognition -> no line starts
-    #    with the anchor -> deterministic misanchored, NO model call
     with tempfile.TemporaryDirectory() as td:
         rewritten = TRANSLATED_MD.replace(
             "Alpha line with 灵根.", "Completely different prose now.")
@@ -287,7 +275,6 @@ def case_2_source_pairing_and_context() -> None:
         "One.\nTwo.\nThree.\nFour.\nFive.\n"
     )
 
-    # aligned source (4 lines after the leading-title drop) + note mid-body
     with tempfile.TemporaryDirectory() as td:
         aligned_source = (
             "---\n"
@@ -328,7 +315,6 @@ def case_2_source_pairing_and_context() -> None:
               and unit["context_after"] == "Four.\nFive.",
               f"unit={unit}")
 
-    # source SHORTER than the translation: the missing line pairs as ""
     with tempfile.TemporaryDirectory() as td:
         short_source = (
             "---\n"
@@ -443,8 +429,6 @@ def case_4_batching() -> None:
                   ("CHAPTER_0002.md", "词二5")},
               f"findings={result['findings']}")
 
-        # batch failure resilience (mirrors review.py): one failed batch is
-        # reported, the others' findings survive
         rows_by_call = [
             {"findings": [{"idx": 0, "kind": "restates", "severity": "warn",
                            "reason": "b1", "suggestion": ""}]},
@@ -470,7 +454,6 @@ def case_5_chapter_selection() -> None:
             {"file": "CHAPTER_0002.md", "order": 1,
              "source_md": SOURCE_MD,
              "translated_md": TRANSLATED_MD.replace("灵根", "灵根B")},
-            # chapter 3 has files but NO sidecar
             {"file": "CHAPTER_0003.md", "order": 2,
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
@@ -480,7 +463,6 @@ def case_5_chapter_selection() -> None:
              "anchor": "Alpha line with 灵根B."},
         ])
 
-        # explicit spec: only chapter 2 (spec syntax same as `tn`)
         result, prompts = run_with_fake_chat(root, [{"findings": []}],
                                              chapters="2")
         check("5a selection: --chapters 2 audits chapter 2 only",
@@ -489,8 +471,6 @@ def case_5_chapter_selection() -> None:
               and '"term": "灵根"' not in prompts[0],
               f"chapters={result['chapters']}")
 
-        # spec spanning a sidecar-less chapter: skipped silently (both
-        # chapters' 2 notes fit one default-size batch -> 1 call)
         result, prompts = run_with_fake_chat(root, [{"findings": []}],
                                              chapters="1-3")
         check("5b selection: chapters without sidecars skipped silently",
@@ -498,13 +478,11 @@ def case_5_chapter_selection() -> None:
               and result["skipped"] == [] and len(prompts) == 1,
               f"chapters={result['chapters']} skipped={result['skipped']}")
 
-        # default: every chapter with a sidecar
         result, prompts = run_with_fake_chat(root, [{"findings": []}, {"findings": []}])
         check("5c selection: default = every chapter with a sidecar",
               result["chapters"] == ["CHAPTER_0001.md", "CHAPTER_0002.md"],
               f"chapters={result['chapters']}")
 
-    # a sidecar whose translated file is missing: warn and skip
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0, "source_md": SOURCE_MD},
@@ -550,7 +528,6 @@ def case_6_report() -> None:
              "note": "Foundation Establishment is the second realm.",
              "category": "cultural", "anchor": "Beta line."},
         ])
-        # a stale GLOSSARY report from an earlier run
         write_lf(root / "review-report.md",
                  "---\nreport_type: glossary-review\n---\n\n"
                  "# Glossary Review Report\n")
@@ -604,14 +581,12 @@ def case_6_report() -> None:
               and "notes/<stem>.json" in text,
               "footer missing")
 
-        # custom review_report_path, including a subdirectory
         cfg = review_cfg(review_report_path="reports/notes-audit.md")
         run_full_with_fake_chat(root, [], cfg=cfg)
         custom = root / "reports" / "notes-audit.md"
         check("6h report: custom review_report_path honored (subdir created)",
               custom.is_file() and not custom.with_suffix(".tmp").exists(), "")
 
-        # a genuinely clean run (all notes resolve, model returns nothing)
         with tempfile.TemporaryDirectory() as td2:
             clean_root = make_project(td2, [
                 {"file": "CHAPTER_0001.md", "order": 0,
@@ -629,7 +604,6 @@ def case_6_report() -> None:
                       in clean_text(clean_root),
                   "clean report wrong")
 
-        # no sidecars anywhere -> nothing written, mirroring the empty glossary
         with tempfile.TemporaryDirectory() as td2:
             bare = make_project(td2, [
                 {"file": "CHAPTER_0001.md", "order": 0,
@@ -675,7 +649,6 @@ def case_7_cli_smoke() -> None:
               "notes-review" in text and "- Reason: note restates the line" in text,
               "report wrong")
 
-        # --fix is rejected for the notes tier (it is glossary-only)
         ns = argparse.Namespace(subject="notes", fix=True, chapters=None,
                                 batch_size=None, glossary=None, dry_run=False,
                                 exit_on_error=False)
@@ -687,7 +660,6 @@ def case_7_cli_smoke() -> None:
                   "--fix applies to 'review glossary' only" in str(exc),
                   f"exc={exc}")
 
-        # --batch-size 0 is a usage error (mirrors review glossary)
         ns = argparse.Namespace(subject="notes", fix=False, chapters=None,
                                 batch_size=0, glossary=None, dry_run=False,
                                 exit_on_error=False)
@@ -699,7 +671,6 @@ def case_7_cli_smoke() -> None:
                   "--batch-size must be a positive integer" in str(exc),
                   f"exc={exc}")
 
-        # parser level: the subject choices include "notes" and accept the flags
         parser = translate._build_parser()
         ns = parser.parse_args(["review", "notes", "--project", str(root),
                                 "--chapters", "1", "--batch-size", "5"])
@@ -717,7 +688,6 @@ def case_8_all_skipped_console() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td, [
-            # sidecar present, translated file missing -> warn + skip
             {"file": "CHAPTER_0001.md", "order": 0, "source_md": SOURCE_MD},
         ])
         write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A)])
@@ -739,7 +709,7 @@ def case_8_all_skipped_console() -> None:
         root = make_project(td, [
             {"file": "CHAPTER_0001.md", "order": 0,
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
-        ])  # no sidecar anywhere
+        ])
         out = io.StringIO()
         with redirect_stdout(out):
             code = review_notes.review_notes(root, review_cfg())
@@ -752,7 +722,6 @@ def case_8_all_skipped_console() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

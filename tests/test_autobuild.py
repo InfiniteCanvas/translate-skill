@@ -62,11 +62,10 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import autobuild  # noqa: E402
+from lib import autobuild
 
 PASSED = 0
 FAILED: list[str] = []
@@ -91,7 +90,7 @@ def capture(fn, *args, **kwargs):
     try:
         with contextlib.redirect_stdout(buf):
             result = fn(*args, **kwargs)
-    except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+    except Exception as caught:
         exc = caught
     return result, buf.getvalue(), exc
 
@@ -124,9 +123,6 @@ def kill_quietly(proc: subprocess.Popen) -> None:
     if proc.poll() is None:
         proc.kill()
     proc.wait()
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_timeout_constant() -> None:
@@ -163,7 +159,6 @@ def case_2_stall_killed() -> None:
         check("2d stall: scheduler idle again (_proc cleared)",
               sched._proc is None and sched._reason == "",
               f"proc={sched._proc!r} reason={sched._reason!r}")
-        # A reap of the cleared scheduler must stay a silent no-op.
         _r, out2, exc2 = capture(sched._reap, wait=True)
         check("2e stall: reaping an idle scheduler is a silent no-op",
               exc2 is None and out2 == "", f"exc={exc2!r} out={out2!r}")
@@ -295,14 +290,14 @@ def case_5_finalize_stall_kill() -> None:
     prints, and the scheduler ends idle."""
     with tempfile.TemporaryDirectory() as td:
         sched = make_scheduler(td)
-        fake = FakeProc(timeouts=10 ** 9)  # never exits on its own
+        fake = FakeProc(timeouts=10 ** 9)
         sched._proc = fake
         sched._reason = "translate CHAPTER_0003.md"
         killed: list[object] = []
 
         def fake_tree_kill(proc):
             killed.append(proc)
-            proc.killed = True  # the tree kill "worked": the child reports dead
+            proc.killed = True
 
         orig_kill = autobuild._kill_tree
         autobuild._kill_tree = fake_tree_kill
@@ -399,7 +394,7 @@ def case_7_survivor_abort() -> None:
     invoked) and the fake child never dies."""
     with tempfile.TemporaryDirectory() as td:
         sched = make_scheduler(td)
-        fake = FakeProc(timeouts=10 ** 9)  # never exits, even after a kill
+        fake = FakeProc(timeouts=10 ** 9)
         sched._proc = fake
         sched._reason = "translate CHAPTER_0005.md"
         killed: list[object] = []
@@ -448,7 +443,7 @@ def case_8_stall_tmp_sweep() -> None:
 
         def fake_tree_kill(proc):
             killed.append(proc)
-            proc.killed = True  # the tree kill "worked": the child reports dead
+            proc.killed = True
 
         orig_kill = autobuild._kill_tree
         autobuild._kill_tree = fake_tree_kill
@@ -486,7 +481,7 @@ def case_9_survivor_keeps_tmp() -> None:
     minus the kill recorder marking the child dead."""
     with tempfile.TemporaryDirectory() as td:
         sched = make_scheduler(td)
-        fake = FakeProc(timeouts=10 ** 9)  # never exits, even after a kill
+        fake = FakeProc(timeouts=10 ** 9)
         sched._proc = fake
         sched._reason = "translate CHAPTER_0007.md"
         export = Path(td) / "export"
@@ -568,7 +563,7 @@ def case_10_kill_tool_kwargs() -> None:
 
         orig_os = autobuild.os
         autobuild.os = SimpleNamespace(
-            getpgid=lambda pid: pid + 1000,  # the child leads its own group
+            getpgid=lambda pid: pid + 1000,
             killpg=record_killpg,
         )
         try:
@@ -582,7 +577,6 @@ def case_10_kill_tool_kwargs() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

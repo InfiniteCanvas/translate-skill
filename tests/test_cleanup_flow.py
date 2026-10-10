@@ -76,12 +76,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file
-# (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config, glossary, logger, pipeline, project, tn  # noqa: E402
+from lib import config, glossary, logger, pipeline, project, tn
 
 PASSED = 0
 FAILED: list[str] = []
@@ -106,7 +104,7 @@ def capture(fn, *args, **kwargs):
     try:
         with contextlib.redirect_stdout(buf):
             result = fn(*args, **kwargs)
-    except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+    except Exception as caught:
         exc = caught
     return result, buf.getvalue(), exc
 
@@ -125,24 +123,19 @@ def fake_chat(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None,
     rendering is what makes the target-side count zero and trips the drift
     signal. The recap answer is non-blank because story.py rejects blank."""
 
-    # FAITH (faithfulness.md asks for a "verdict")
     if "verdict" in prompt:
         return json.dumps({"verdict": "SUCCESS", "reasons": []},
                           ensure_ascii=False)
-    # TN_GENERATE (tn_generate.md's schema) -- QUOTED forms only
     if '"notes"' in prompt or '"note"' in prompt:
         return json.dumps({"notes": []})
-    # glossary cleanup judgment (glossary_cleanup.md's [Flagged Terms])
     if "Flagged Terms" in prompt:
         found = re.findall(r"- (\S+) translates to", prompt)
         return json.dumps(
             {"decisions": [{"source": t, "keep": False,
                             "reason": "mundane mock term"} for t in found]},
             ensure_ascii=False)
-    # GLOSSARY_EXPAND (glossary_expand.md's schema)
     if '"terms"' in prompt:
         return json.dumps({"terms": []})
-    # TRANSLATE: mirror the numbered [{"i", "t"}] source array
     if "### Source Data" in prompt:
         arr = json.loads(prompt.rsplit("### Source Data", 1)[1].strip())
         return json.dumps(
@@ -151,7 +144,6 @@ def fake_chat(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None,
                         "t": "Translated line %d." % x["i"] if x["t"].strip() else ""}
                        for x in arr]},
             ensure_ascii=False)
-    # recap generation (recap.md's schema key; no Source Data section)
     if '"recap"' in prompt:
         return json.dumps({"recap": "Mock recap of the story so far."})
     raise AssertionError(f"unroutable prompt (job={job}): {prompt[:120]!r}")
@@ -171,8 +163,6 @@ def make_project(root: Path, name: str) -> Path:
     proj.mkdir()
     for d in ("source", "translated", "draft", "notes"):
         (proj / d).mkdir()
-    # No frontmatter, no trailing newline: read_chapter returns the text
-    # verbatim, so the body is exactly the three lines.
     (proj / "source" / "CHAPTER_0001.md").write_text(
         "他捡起一块灵石。\n灵石发光了。\n第三行。", encoding="utf-8", newline="\n")
     (proj / "chapters.json").write_text(
@@ -193,8 +183,6 @@ RETIRED_LINE = (
     "[CHAPTER_0001] [glossary] retired mundane term '灵石' (mundane mock term)\n"
 )
 
-# The run's full console output is deterministic: eight lines, the retired
-# line landing between the FAITH and GLOSSARY_EXPAND init lines.
 EXPECTED_OUTPUT = (
     "[CHAPTER_0001] [init] TRANSLATE (attempt 1)\n"
     "[CHAPTER_0001] [init] FAITH\n"
@@ -214,8 +202,6 @@ def case_cleanup_flow() -> None:
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj")
         cfg = config.load_config(proj)
-        # _run_path is process-global and pins the FIRST project that logs;
-        # reset it so this sandbox's logs/ owns the run's trace.
         logger._run_path = None
         orig = pipeline._chat
         pipeline._chat = fake_chat
@@ -225,7 +211,6 @@ def case_cleanup_flow() -> None:
         finally:
             pipeline._chat = orig
 
-        # ---- the run itself
         check("1a run: completes without error, outcome 'translated'",
               exc is None and outcome == "translated",
               f"outcome={outcome} exc={exc!r}")
@@ -237,7 +222,6 @@ def case_cleanup_flow() -> None:
               "line after FAITH init, before GLOSSARY_EXPAND init)",
               out == EXPECTED_OUTPUT, f"out={out!r}")
 
-        # ---- glossary state after the run
         after = glossary.load(proj)
         check("2a glossary: whole file is exactly empty terms + retired 灵石",
               after == {"terms": [], "retired": ["灵石"]}, f"after={after!r}")
@@ -247,9 +231,6 @@ def case_cleanup_flow() -> None:
               glossary.retired_sources(after) == {"灵石"},
               f"retired_sources={glossary.retired_sources(after)!r}")
 
-        # ---- trace (filter by event type; never by line index)
-        # glossary_cleanup / attempt / balance_advisory are tier-1
-        # orchestration events, so they live in the tier-1 root bucket.
         events = []
         for log_path in sorted((proj / "logs").glob("run-*.jsonl")):
             for line in log_path.read_text(encoding="utf-8").splitlines():
@@ -272,7 +253,6 @@ def case_cleanup_flow() -> None:
               and cleanups[0].get("kept") == [],
               f"event={cleanups[0] if cleanups else None!r}")
 
-        # ---- run outcome effects
         manifest = project.load_manifest(proj)
         entry = project.find_entry(manifest, "CHAPTER_0001.md") or {}
         check("4a outcome: manifest marks the chapter translated",
@@ -291,8 +271,6 @@ def make_cap_project(root: Path, name: str) -> Path:
     for d in ("source", "translated", "draft", "notes"):
         (proj / d).mkdir()
     for i in (1, 2):
-        # No trailing newline: read_chapter returns the text verbatim, so
-        # the body is exactly one line (make_project's convention).
         (proj / "source" / f"CHAPTER_000{i}.md").write_text(
             f"第{i}行正文。", encoding="utf-8", newline="\n")
     (proj / "chapters.json").write_text(
@@ -326,8 +304,6 @@ def case_truncated_retry_cap() -> None:
         cfg = config.load_config(proj)
         cfg["translate_max_output_tokens"] = 256000
         cfg["providers"]["translator"][0]["max_tokens"] = 128000
-        # _run_path is process-global and pins the FIRST project that logs;
-        # reset it so this sandbox's logs/ owns the run's trace.
         logger._run_path = None
         pipeline._TOKEN_CAP_WARNED = False
         calls: list[int | None] = []
@@ -338,7 +314,7 @@ def case_truncated_retry_cap() -> None:
             if job == "translator":
                 calls.append(max_tokens)
                 if len(calls) == 1:
-                    return '{"title": "Mock Tit'  # cut mid-JSON -> truncated
+                    return '{"title": "Mock Tit'
                 return json.dumps(
                     {"title": "Mock Chapter Title",
                      "lines": [{"i": 1, "t": "Translated line 1."}]},
@@ -371,10 +347,6 @@ def case_truncated_retry_cap() -> None:
               exc1 is None and outcome1 == "translated"
               and exc2 is None and outcome2 == "translated",
               f"outcomes={outcome1}/{outcome2} exc={exc1!r}/{exc2!r}")
-        # The sent cap is the CEILING, not the tightest block. If the pipeline
-        # clamped the shared scalar down to 128000 here, every block would lose
-        # its own headroom -- the uniform clamp, which costs a reasoning model
-        # the budget it needs to converge. client.chat lowers it per block.
         check("5b cap: sent cap is the ceiling, not the tightest provider cap",
               calls == [256000, 256000, 256000], f"calls={calls}")
         check("5c cap: truncated retry never re-sends BELOW the first attempt",
@@ -382,9 +354,6 @@ def case_truncated_retry_cap() -> None:
               f"first={calls[0] if calls else None} second={calls[1] if len(calls) > 1 else None}")
         check("5d cap: config note prints once across the two-chapter run",
               out1.count(note) == 1 and note not in out2, f"out1={out1!r}")
-        # _escalated_cap(pack_cap, provider_max, wire_cap). The FIRST case is
-        # the regression this whole change guards: guard keyed on pack_cap
-        # gives 128000 here, i.e. a retry at HALF the first attempt.
         check("5e cap: helper never de-escalates below the sent cap",
               pipeline._escalated_cap(128000, 128000, 256000) == 256000
               and pipeline._escalated_cap(500, 65536, 500) == 750
@@ -394,8 +363,6 @@ def case_truncated_retry_cap() -> None:
               f"{pipeline._escalated_cap(500, 65536, 500)},"
               f"{pipeline._escalated_cap(1000, 1200, 1000)},"
               f"{pipeline._escalated_cap(1000, 500, 1000)}")
-        # The shipped default pair must not regress: no ceiling binding, so the
-        # ~1.5x escalation still fires exactly as it did before v012.
         dflt = config.DEFAULTS["translate_max_output_tokens"]
         check("5f cap: shipped defaults keep their 1.5x escalation",
               pipeline._escalated_cap(dflt, config.DEFAULT_MAX_TOKENS, dflt)
@@ -544,8 +511,6 @@ def case_notes_report_line() -> None:
                   "-> notes/CHAPTER_0009.dropped.json",
           f"line={line!r}")
 
-    # All three reasons render in the fixed DROP_REASONS order, and a kept
-    # category outside NOTE_CATEGORIES counts under "other".
     dropped3 = dropped + [
         {"line": 6, "term": "坏项", "note": None, "category": None,
          "threshold": None, "reason": "invalid"},
@@ -561,7 +526,6 @@ def case_notes_report_line() -> None:
                    "-> notes/CHAPTER_0009.dropped.json",
           f"line3={line3!r}")
 
-    # The pointer's target is the artifact save_dropped really writes.
     with tempfile.TemporaryDirectory() as td:
         proj = Path(td)
         tn.save_dropped(proj, "CHAPTER_0009.md", dropped)
@@ -576,7 +540,6 @@ def case_notes_report_line() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

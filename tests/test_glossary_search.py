@@ -1,23 +1,3 @@
-"""Tests for glossary.search(): substring + fuzzy Levenshtein lookup.
-
-search() must find entries across source / variants / translation /
-alt_translations with case-insensitive substring matching (distance 0,
-always active) plus whole-value and per-token levenshtein fuzzy matching
-(only when max_distance > 0 and len(query) > max_distance). Edit distance
-is uniform on casefolded strings, so separator variants ('grand elder' vs
-'grand-elder' / 'grand_elder' / 'grandxelder') are all distance 1 apart.
-Retired sources are matched the same way but returned separately and
-never counted as matches.
-
-All exact distances asserted here were verified against
-balance.levenshtein() (the same implementation search() uses); the
-load-bearing ones are re-pinned as preconditions inside the cases.
-
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
-
-    uv run tests/test_glossary_search.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6.0"]
@@ -26,11 +6,10 @@ import copy
 import sys
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import balance, glossary  # noqa: E402
+from lib import balance, glossary
 
 PASSED = 0
 FAILED: list[str] = []
@@ -103,7 +82,6 @@ def case_2_case_insensitive() -> None:
 
 def case_3_user_examples() -> None:
     """'grand elder' finds Grand-Elder / Grand_Elder / Grandxelder, each 1."""
-    # Preconditions: the exact distances this case pins (verified by hand).
     for value in ("grand-elder", "grand_elder", "grandxelder"):
         assert balance.levenshtein("grand elder", value) == 1
     g = make_glossary(
@@ -215,19 +193,17 @@ def case_10_ranking() -> None:
     """Substring entries sort before fuzzy ones; fuzzy sorts by distance;
     equal ranks keep glossary file order."""
     g = make_glossary(
-        {"source": "甲", "translation": "Grand-Elder"},  # fuzzy 1, first in file
-        {"source": "乙", "translation": "Grand Elder"},   # substring 0
+        {"source": "甲", "translation": "Grand-Elder"},
+        {"source": "乙", "translation": "Grand Elder"},
     )
     r = glossary.search(g, "grand elder")
     check("10a ranking: substring entry sorts before fuzzy entry",
           sources(r) == ["乙", "甲"], f"sources={sources(r)}")
-    # 'grand elder' would be a substring of 'Grand Elderly', so this case
-    # uses a query that can only fuzzy-match either value.
     assert balance.levenshtein("grand elderly", "grand eldery") == 1
     assert balance.levenshtein("grand elderly", "grand elder") == 2
     g2 = make_glossary(
-        {"source": "B1", "translation": "Grand Elder"},   # distance 2, first in file
-        {"source": "B2", "translation": "Grand Eldery"},   # distance 1
+        {"source": "B1", "translation": "Grand Elder"},
+        {"source": "B2", "translation": "Grand Eldery"},
     )
     r2 = glossary.search(g2, "grand elderly")
     check("10b ranking: smaller fuzzy distance first",
@@ -295,7 +271,6 @@ def case_13_cjk() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

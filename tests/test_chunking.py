@@ -71,24 +71,17 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file
-# (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config, pipeline, project  # noqa: E402
+from lib import config, pipeline, project
 
 PASSED = 0
 FAILED: list[str] = []
 
-# Packing math for every multi-chunk fixture here: pack_cap 500 ->
-# budget 400, room 144, escalated max(500, min(round(750), 65536)) = 750.
-# The provider blocks here are unspecified, so they resolve to
-# config.DEFAULT_MAX_TOKENS (65536) -- far above the cap, which is why
-# pack_cap == wire_cap == 500 and the ceiling never binds.
 MAX_OUT = 500
 ESCALATED = 750
-LINE = "中" * 20  # per-line cost 30 (20 CJK + 10 wrapper)
+LINE = "中" * 20
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -110,7 +103,7 @@ def capture(fn, *args, **kwargs):
     try:
         with contextlib.redirect_stdout(buf):
             result = fn(*args, **kwargs)
-    except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+    except Exception as caught:
         exc = caught
     return result, buf.getvalue(), exc
 
@@ -231,18 +224,12 @@ def translate_calls(calls: list[dict]) -> list[dict]:
     return [c for c in calls if sniff(c["prompt"]) == "translate"]
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_packing() -> None:
     """Determinism and shape: a multi-chapter source packs into non-empty
     chunks whose estimated cost fits the budget, identically across two
     computations; a small source is exactly one chunk; the per-line cost
     itself is pinned (LINE -> 30, the 10-line chapter -> 300)."""
-    big = [LINE] * 10  # cost 30/line, room 144 -> 4 lines per chunk
-    # pack_cap == wire_cap == MAX_OUT here: this fixture's provider blocks
-    # resolve to DEFAULT_MAX_TOKENS, well above the cap, so the ceiling never
-    # binds and the two are the same number.
+    big = [LINE] * 10
     plan = pipeline._pack_chunks(big, MAX_OUT, ESCALATED, MAX_OUT)
     again = pipeline._pack_chunks(big, MAX_OUT, ESCALATED, MAX_OUT)
     check("1a packing: bounds identical across two computations",
@@ -281,7 +268,6 @@ def case_2_oversized_fail_fast() -> None:
     """A source line whose estimated output exceeds even the escalated cap
     fails the TRANSLATE stage with feedback naming the line -- and zero LLM
     calls are burned (the raise happens in packing, before any request)."""
-    # cost 495 (485 CJK + 10); 495 + 256 > escalated 750
     lines = ["中" * 485, LINE]
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", lines)
@@ -320,7 +306,7 @@ def case_3_singleton_escalated() -> None:
     """A line whose cost exceeds the packing budget but fits the escalated
     cap is isolated as a singleton chunk whose FIRST call already uses the
     escalated max_tokens (no guaranteed-truncation warm-up call)."""
-    lines = ["中" * 420] + [LINE] * 3  # cost 430 > budget 400; then 3x30
+    lines = ["中" * 420] + [LINE] * 3
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", lines)
         calls: list[dict] = []
@@ -358,18 +344,17 @@ def case_4_escalating_retry() -> None:
     """Truncation signature escalates: a response missing tail line indices
     gets its corrective retry at the escalated cap, while a duplicate-index
     response retries at the same cap. Both recover on the retry."""
-    lines = [LINE] * 8  # two chunks: lines 1-4, 5-8
-    # (a) missing tail index 8 on chunk 2's first call
+    lines = [LINE] * 8
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", lines)
         calls: list[dict] = []
         scripts = [
-            echo_response,  # chunk 1
-            lambda entries: json.dumps(  # chunk 2, attempt 1: line 8 gone
+            echo_response,
+            lambda entries: json.dumps(
                 {"title": "Mock Title", "lines":
                  [{"i": e["i"], "t": f"Translated line {e['i']}."}
                   for e in entries[:-1]]}, ensure_ascii=False),
-            echo_response,  # chunk 2, corrective retry
+            echo_response,
         ]
         orig = pipeline._chat
         pipeline._chat = make_fake_chat(calls, translate_scripts=scripts)
@@ -395,19 +380,18 @@ def case_4_escalating_retry() -> None:
                   "missing line(s) 8" in tcalls[2]["prompt"],
                   "prompt lacks the missing-index problem")
 
-    # (b) duplicate index on chunk 2's first call -> same-cap retry
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", lines)
         calls: list[dict] = []
         scripts = [
-            echo_response,  # chunk 1
-            lambda entries: json.dumps(  # chunk 2, attempt 1: index 5 twice
+            echo_response,
+            lambda entries: json.dumps(
                 {"title": "Mock Title", "lines":
                  ([{"i": entries[0]["i"],
                     "t": "Translated line 5."}]
                   + [{"i": e["i"], "t": f"Translated line {e['i']}."}
                      for e in entries])}, ensure_ascii=False),
-            echo_response,  # chunk 2, corrective retry
+            echo_response,
         ]
         orig = pipeline._chat
         pipeline._chat = make_fake_chat(calls, translate_scripts=scripts)
@@ -438,7 +422,7 @@ def case_5_persistence_resume() -> None:
     translations + the stashed title resumes at part k+1 (only the
     remaining chunks are called), the resume console line prints, and the
     final lines list is complete with the title preserved."""
-    lines = [LINE] * 10  # chunks: 1-4, 5-8, 9-10
+    lines = [LINE] * 10
     seeds = [[f"Seed line {i}." for i in range(1, 5)],
              [f"Seed line {i}." for i in range(5, 9)]]
     with tempfile.TemporaryDirectory() as td:
@@ -485,8 +469,6 @@ def case_5_persistence_resume() -> None:
         check("5g resume: state file cleaned up on success",
               not (proj / "draft" / "CHAPTER_0001.state.json").exists())
 
-    # All chunks completed (crash between the last chunk and the stage
-    # advance): the chunk loop is skipped entirely -- zero translate calls.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", lines)
         seed_state(proj,
@@ -516,12 +498,9 @@ def case_5_persistence_resume() -> None:
               lines_json["lines"] == [f"Seed line {i}." for i in range(1, 11)],
               f"lines={lines_json.get('lines')}")
 
-    # Packing drift (config/source changed between runs): the seeds no
-    # longer line up with the recomputed bounds and are discarded with a
-    # warning; the chapter retranslates from scratch.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", lines)
-        seed_state(proj, [["Seed line 1.", "Seed line 2."]],  # wrong sizes
+        seed_state(proj, [["Seed line 1.", "Seed line 2."]],
                    title="Seeded Title")
         calls: list[dict] = []
         orig = pipeline._chat
@@ -547,10 +526,8 @@ def case_5_persistence_resume() -> None:
 def case_6_gate_failure_clears_chunks() -> None:
     """A gate failure (VALIDATE) clears state["chunks"]: the retry
     retranslates the whole chapter instead of resuming from stale chunks."""
-    # Line 2 is empty in the source; the fake fills it, so TRANSLATE's
-    # coverage check passes but VALIDATE rejects the mismatch.
     lines = ["你好。", "", "再见。"]
-    filler = lambda entries: json.dumps(  # noqa: E731 - test-local lambda
+    filler = lambda entries: json.dumps(
         {"title": "Mock Title",
          "lines": [{"i": e["i"],
                     "t": "Filled." if e["t"] == ""
@@ -593,7 +570,7 @@ def case_7_pinned_feedback_slicing() -> None:
     EXACTLY the rejected lines within that chunk's current packing bounds
     [lo, hi) -- not the whole chapter -- and the chunk bounds themselves
     are identical between the rejected attempt and the retry."""
-    lines = [LINE] * 8  # two chunks: lines 1-4 (lo=0, hi=4), 5-8 (lo=4, hi=8)
+    lines = [LINE] * 8
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", lines)
         calls: list[dict] = []
@@ -615,8 +592,6 @@ def case_7_pinned_feedback_slicing() -> None:
         if len(tcalls) != 4:
             return
         a1c1, a1c2, a2c1, a2c2 = (c["prompt"] for c in tcalls)
-        # Deterministic bounds: the retry's chunk payloads equal the
-        # rejected attempt's (same source, same config).
         check("7c pinned: chunk 1 bounds identical across attempts",
               source_entries(a1c1) == source_entries(a2c1)
               and [e["i"] for e in source_entries(a2c1)] == [1, 2, 3, 4],
@@ -625,8 +600,6 @@ def case_7_pinned_feedback_slicing() -> None:
               source_entries(a1c2) == source_entries(a2c2)
               and [e["i"] for e in source_entries(a2c2)] == [5, 6, 7, 8],
               "attempt-2 chunk 2 payload differs")
-        # The rejected snapshot is sliced per chunk: chunk 1's retry prompt
-        # shows rejected lines 1-4 ONLY, chunk 2's shows 5-8 ONLY.
         check("7e pinned: chunk 1 retry carries the rejected section",
               '"i": 1, "t": "Translated line 1."' in rejected_section(a2c1)
               and '"i": 4, "t": "Translated line 4."' in rejected_section(a2c1),
@@ -649,7 +622,6 @@ def case_7_pinned_feedback_slicing() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

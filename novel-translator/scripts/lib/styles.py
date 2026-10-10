@@ -28,7 +28,6 @@ def parse_style_file(text: str) -> tuple[str, str]:
     return "", text.strip()
 
 
-# Fallback for projects without a generated style profile.
 DEFAULT_STYLE_SUMMARY = "a faithful literary translation that preserves the original's tone and register"
 
 
@@ -53,7 +52,7 @@ def resolve_style(project_dir: Path, novel_info: dict) -> tuple[str, str]:
             _, style_summary = parse_style_file(
                 style_path.read_text(encoding="utf-8-sig")
             )
-        except (OSError, ValueError):  # ValueError covers UnicodeDecodeError
+        except (OSError, ValueError):
             style_summary = ""
     style_summary = style_summary.strip()
     if style_summary:
@@ -81,9 +80,6 @@ def list_styles(project_dir: Path) -> list[tuple[str, str]]:
             continue
         for path in sorted(directory.glob("*.md")):
             try:
-                # utf-8-sig: project styles/ are user-editable overrides, so
-                # tolerate a BOM; it would hide line 1's 'description:'
-                # header from parse_style_file.
                 text = path.read_text(encoding="utf-8-sig")
             except OSError:
                 continue
@@ -103,9 +99,6 @@ def load_style(project_dir: Path, name: str) -> str:
         if not path.is_file():
             continue
         try:
-            # utf-8-sig: project styles/ are user-editable overrides, so
-            # tolerate a BOM; it would leak the 'description:' header into
-            # the returned body.
             text = path.read_text(encoding="utf-8-sig")
         except OSError as exc:
             raise StyleError(f"cannot read style file {path}: {exc}") from exc

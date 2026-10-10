@@ -57,17 +57,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-# scripts/ lives at novel-translator/scripts relative to this file
-# (CWD-independent); the child (translate.py) extends sys.path itself.
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 TRANSLATE = SCRIPTS / "translate.py"
 
-# The in-process cases import translate directly (test_git.py's pattern).
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-import translate  # noqa: E402
-from lib import client, pipeline  # noqa: E402
+import translate
+from lib import client, pipeline
 
 PASSED = 0
 FAILED: list[str] = []
@@ -115,9 +112,6 @@ def run_main_inproc(argv: list[str]) -> tuple[str, str, int]:
     with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
         code = translate.main(argv)
     return out_buf.getvalue(), err_buf.getvalue(), code
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_bad_frontmatter_is_fail_exit_2() -> None:
@@ -179,7 +173,6 @@ def case_3_null_numeric_config_is_fail_exit_2() -> None:
     fuzzy_max_distance, `glossary count` reads min_term_occurrences. The
     key-absent controls exit normally, so the exit-2 assertions cannot
     pass through an unrelated setup failure."""
-    # `glossary search` with fuzzy_max_distance: null
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "config.json").write_text(
@@ -196,7 +189,6 @@ def case_3_null_numeric_config_is_fail_exit_2() -> None:
         check("3d search null key: the error names the config key",
               "fuzzy_max_distance" in combined, f"combined={combined!r}")
 
-    # `glossary count` with min_term_occurrences: null
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "config.json").write_text(
@@ -219,7 +211,6 @@ def case_3_null_numeric_config_is_fail_exit_2() -> None:
         check("3h count null key: the error names the config key",
               "min_term_occurrences" in combined, f"combined={combined!r}")
 
-    # Controls: the keys absent -> both commands exit normally.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "config.json").write_text(

@@ -45,13 +45,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# scripts/ (and therefore lib/) lives at novel-translator/scripts relative to
-# this file (CWD-independent).
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import translate  # noqa: E402
-from lib import client  # noqa: E402
+import translate
+from lib import client
 
 PASSED = 0
 FAILED: list[str] = []
@@ -148,9 +146,6 @@ def case_back_compat() -> None:
     check("a2 back-compat: NO consensus(...) line is printed (every arbitrator "
           "resolves to the global block, already probed as job 'consensus')",
           "consensus(" not in out, f"out={out!r}")
-    # The global consensus block is on MINE, which translator[0] also uses, so
-    # /models was asked about MINE exactly once per distinct endpoint and the
-    # second arbiter line still appears as its own job.
     check("a3 back-compat: the global consensus job is still probed as a job",
           "[ok] consensus  " in out, f"out={out!r}")
 

@@ -36,7 +36,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config, logger, pipeline, project  # noqa: E402
+from lib import config, logger, pipeline, project
 
 PASSED = 0
 FAILED: list[str] = []
@@ -158,9 +158,6 @@ def tier2(root: Path, stem: str, event: str) -> list[dict]:
                 if row.get("event") == event:
                     out.append(row)
     return out
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_lifecycle() -> None:
@@ -341,7 +338,6 @@ def case_4_crash() -> None:
         check("4e crash: the close line records the crash outcome",
               rows and rows[-1].get("outcome") == "crashed", f"{rows[-1:]}")
 
-        # And no run-scoped crash left the chapter's index half-written.
         opens = [r for r in rows if r["phase"] == "open"]
         closes = [r for r in rows if r["phase"] == "close"]
         check("4f crash: opens and closes balance", len(opens) == len(closes),
@@ -364,10 +360,6 @@ def case_5_resume() -> None:
                                      config.load_config(root))
         finally:
             pipeline._chat = _REAL_CHAT
-        # Re-stage the chapter to VALIDATE and re-run without force.
-        # Re-stage the chapter at VALIDATE and re-run without force. The draft state
-# is written explicitly: a completed chapter's state file is gone, and
-# resume needs `lines` to be the translation the first run produced.
         translated = (root / "translated" / "CHAPTER_0001.md").read_text(
             encoding="utf-8")
         lines = [ln for ln in translated.split("\n") if ln.strip()]
@@ -391,11 +383,6 @@ def case_5_resume() -> None:
         check("5a resume: the second chapter_start reports the resume stage",
               len(starts) == 2 and starts[1].get("resume_stage") == "VALIDATE",
               f"{starts[1] if len(starts) > 1 else None}")
-        # The first stage each run ENTERS, recovered by walking the timeline and
-        # pairing each chapter_start with the next stage begin. run_id cannot
-        # separate the runs here (it is second-granular, and two stubbed runs
-        # land inside one second), and counts would be muddied by the retry
-        # the resumed run then takes.
         firsts: list[str] = []
         pending = False
         for e in timeline(root):

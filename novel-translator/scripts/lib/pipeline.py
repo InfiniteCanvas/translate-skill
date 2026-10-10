@@ -43,22 +43,12 @@ STAGES = (
     "ASSEMBLE",
 )
 
-# State-file format version. v1 (unmarked) predates the FAITH/GLOSSARY_EXPAND
-# reorder; its "GLOSSARY_EXPAND"/"FAITH" stages both mean FAITH had not
-# finished, so they remap to FAITH on load (see run_chapter).
 STATE_VERSION = 2
 
 TRANSLATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "title": {"type": "string"},
-        # Numbered line protocol: each translated line echoes the 1-based
-        # index of its source line. Explicit indices make dropped/merged
-        # lines structurally detectable instead of off-by-one guesswork.
-        # Deliberately NO nested "additionalProperties": false -- the strict
-        # grammar intermittently truncates sglang's guided decoding on
-        # longer generations (verified empirically); the pipeline validates
-        # shape and index coverage itself.
         "lines": {
             "type": "array",
             "items": {
@@ -115,13 +105,7 @@ NOTES_SCHEMA: dict[str, Any] = {
                     "line": {"type": "integer"},
                     "term": {"type": "string"},
                     "note": {"type": "string"},
-                    # What kind of context the note carries (glossary-aware
-                    # TN annotation); OPTIONAL -- models may omit it and
-                    # tn.process silently defaults to "other".
                     "category": {"type": "string", "enum": list(tn.NOTE_CATEGORIES)},
-                    # Optional self-assessed comprehension threshold
-                    # (Hy-MT2's cultural-adaptation pattern); tn.process
-                    # discards "low" entries. Missing = keep.
                     "threshold": {"type": "string", "enum": ["high", "low"]},
                 },
                 "required": ["line", "term", "note"],
@@ -145,9 +129,6 @@ MERGE_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-# Glossary-cleanup verdicts on balance drift signals. NO
-# additionalProperties inside items -- strict nested schemas truncated
-# sglang guided decoding historically.
 CLEANUP_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -171,9 +152,6 @@ _STAGE_IDX = {name: i for i, name in enumerate(STAGES)}
 _KEY_RE = re.compile(r"\{\{([^{}]+)\}\}")
 _RANGE_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
 
-# Language codes -> full names. Hy-MT2's model card: prompts must use full
-# language names ("Chinese"/"English"), never raw codes ("zh"/"en"). Codes
-# outside the table pass through unchanged.
 LANG_NAMES: dict[str, str] = {
     "zh": "Chinese", "en": "English", "yue": "Cantonese", "ja": "Japanese",
     "ko": "Korean", "es": "Spanish", "fr": "French", "de": "German",
@@ -192,18 +170,7 @@ def _lang_name(code: object) -> str:
     return LANG_NAMES.get(str(code).strip().lower(), str(code))
 
 
-# The class itself lives in `lib.errors` so `client.LLMFatal` can inherit it
-# without an import cycle (`pipeline` imports `client`, never the reverse).
-# ALIASED, not subclassed: `client.LLMFatal(LLMError, PipelineError)` must be a
-# subtype of what every `except PipelineError: raise` guard below matches on,
-# and a subclass here would invert that relationship and route fatal provider
-# failures straight into the broad handlers.
 PipelineError = _PipelineError
-
-
-# --------------------------------------------------------------------------
-# template filling
-# --------------------------------------------------------------------------
 
 
 def fill(template_text: str, mapping: dict, template_name: str = "template") -> str:
@@ -235,11 +202,6 @@ def fill(template_text: str, mapping: dict, template_name: str = "template") -> 
         return str(mapping[key.strip()])
 
     return _KEY_RE.sub(_replace, template_text)
-
-
-# --------------------------------------------------------------------------
-# chapter spec parsing
-# --------------------------------------------------------------------------
 
 
 def _entry_number(entry: dict) -> int:
@@ -322,11 +284,6 @@ def parse_range(spec: str, manifest: list[dict]) -> list[str]:
     return [entries[i]["file"] for i in sorted(picked)]
 
 
-# --------------------------------------------------------------------------
-# per-chapter state (draft/<stem>.state.json)
-# --------------------------------------------------------------------------
-
-
 def _state_path(draft_dir: Path, file: str) -> Path:
     return draft_dir / f"{Path(file).stem}.state.json"
 
@@ -355,11 +312,6 @@ def save_state(draft_dir: Path, file: str, state: dict) -> None:
         json.dumps(state, ensure_ascii=False, indent=2) + "\n",
         newline="\n",
     )
-
-
-# --------------------------------------------------------------------------
-# internal helpers
-# --------------------------------------------------------------------------
 
 
 def _cfg_value(cfg: dict, key: str) -> Any:
@@ -434,8 +386,6 @@ def background_section(*parts: str) -> str:
     return "[Background Information]\n" + "\n".join(kept) + "\n"
 
 
-# Fallback template source: the skill's shipped assets. Projects initialized
-# before a template was introduced lack a copy in their templates/ dir.
 _SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
 
 
@@ -446,18 +396,9 @@ def _load_template(templates_dir: Path, name: str, *,
         path = _SKILL_TEMPLATES / name
     if not path.is_file():
         raise error(f"missing template: {name} (looked in {templates_dir} and {_SKILL_TEMPLATES})")
-    # utf-8-sig: the project's templates dir is a user-editable copy, so
-    # tolerate a BOM on the template read.
     return path.read_text(encoding="utf-8-sig")
 
 
-# Joined source-chapter bodies per project dir, built once per process for
-# the GLOSSARY_EXPAND significance gate (glossary.count_in_text counts each
-# candidate against this text). The cache is EXACT, not approximate: source
-# files don't change during a run, and term counts are pure lookups against
-# static text. Only successful reads are cached -- an unreadable corpus
-# stays uncached, so every chapter retries it and fails open exactly as it
-# would without the cache.
 _GATE_CORPUS: dict[Path, str] = {}
 
 
@@ -522,37 +463,21 @@ def _apply_glossary_proposal(
 
     existing = glossary.find(g, src)
     if existing is None:
-        # Significance gate FIRST, for every source that is not an existing
-        # entry: a below-threshold proposal is dropped before the nickname
-        # loop, so a one-occurrence string can never become a permanently
-        # matchable variant.
         if min_occurrences > 0:
             seen = glossary.count_in_text({"source": src, "variants": variants}, corpus)
             if seen < min_occurrences:
                 print(f"{tag} [glossary] skip '{src}' - {seen} occurrence(s) across the novel (min {min_occurrences})")
                 return
-        # A proposal whose source is contained in (or contains) a known term's
-        # source, with the same translation, is a nickname/short form: absorb
-        # it as a variant instead of creating a double-counting entry. Only
-        # gate-passing proposals get here, so an absorbed variant is
-        # novel-wide significant too.
         for term in g.get("terms", []):
             esrc = str(term.get("source", ""))
             etr = str(term.get("translation", "")).strip().lower()
             if etr == tr.strip().lower() and esrc and (src in esrc or esrc in src):
                 union_variants(term, [src] + variants)
                 return
-        # Category coercion, proposal-side only (upsert stores verbatim):
-        # a model-sourced category outside glossary.CATEGORIES lands as
-        # "other" with a warn -- only when the term actually lands, i.e.
-        # after the significance/nickname returns above.
         if cat not in glossary.CATEGORIES:
             print(f"{tag} [glossary] warn unknown category '{cat}' for '{src}' - coerced to 'other'")
             cat = "other"
         if cat == "unit" and tr.strip():
-            # A 'unit' entry is a rendering guide only: balance.check skips
-            # the category entirely, so a stored translation would never be
-            # counted or enforced -- say so instead of storing it silently.
             print(f"{tag} [warn] {glossary.unit_translation_warning(src, tr)}")
         glossary.upsert(
             g,
@@ -569,11 +494,6 @@ def _apply_glossary_proposal(
         print(f"{tag} [ok] glossary + '{src}' -> '{tr}'")
         return
 
-    # Newly proposed variants belong on the existing entry regardless of
-    # whether the translation matches -- but a NEW variant (not already on
-    # the entry, not the source itself) is gated exactly like a brand-new
-    # term, so a one-occurrence string can never become a permanently
-    # matchable variant through the back door.
     addable = variants
     if min_occurrences > 0:
         current = [v for v in (existing.get("variants") or [])
@@ -582,10 +502,6 @@ def _apply_glossary_proposal(
         addable = []
         for v in variants:
             if v in current or v == source_str:
-                # Already-present variants are never re-gated (a re-proposal
-                # restating one stays a silent no-op, mirroring
-                # union_variants' dedupe) and a variant equal to the entry's
-                # source is dropped by union_variants anyway.
                 addable.append(v)
                 continue
             seen = glossary.count_in_text({"source": v, "variants": []}, corpus)
@@ -596,7 +512,7 @@ def _apply_glossary_proposal(
     union_variants(existing, addable)
 
     if str(existing.get("translation", "")).strip().lower() == tr.strip().lower():
-        return  # already known under the same translation
+        return
 
     prompt = fill(
         merge_template,
@@ -606,7 +522,6 @@ def _apply_glossary_proposal(
                 ensure_ascii=False,
             ),
             "proposed_json": json.dumps(proposal, ensure_ascii=False),
-            # convenience keys in case the template references them directly:
             "source": src,
             "translation": tr,
             "definition": df,
@@ -628,22 +543,11 @@ def _apply_glossary_proposal(
         new_value = merged.get(key)
         if isinstance(new_value, str) and new_value.strip():
             if key == "category" and new_value not in glossary.CATEGORIES:
-                # Same coercion as the new-term path, applied ONLY when the
-                # model echoes a category: a merge that omits the field (or
-                # returns garbage) falls through to the keep-existing branch
-                # below and never warns, and a hand-edited illegal category
-                # already on the entry is left untouched. Warns name the
-                # PROPOSAL's source (the [ok] line below prints the same),
-                # not the existing entry's (find() matches variants).
                 print(f"{tag} [glossary] warn unknown category '{new_value}' for '{src}' - coerced to 'other'")
                 updated["category"] = "other"
             else:
                 updated[key] = new_value
-        # absent (or garbage) values keep the existing entry's value
 
-    # Same guide-only advisory as the new-term path, applied ONLY when the
-    # merge actually lands: a 'unit' entry with a surviving translation
-    # would never be counted or enforced by balance.check.
     if updated.get("category") == "unit":
         text = glossary.unit_translation_warning(src, updated.get("translation"))
         if text:
@@ -655,7 +559,7 @@ def _apply_glossary_proposal(
             terms[idx] = updated
             print(f"{tag} [ok] glossary ~ '{src}' -> '{updated.get('translation', '')}'")
             return
-    glossary.upsert(g, updated)  # defensive: existing entry was not found in the list
+    glossary.upsert(g, updated)
 
 
 def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
@@ -710,7 +614,7 @@ def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
             if not (isinstance(src, str) and src in signal_sources):
                 continue
             if any(r["source"] == src for r in retirements):
-                continue  # duplicate decision for one source
+                continue
             reason = decision.get("reason")
             retirements.append({
                 "source": src,
@@ -725,12 +629,8 @@ def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
             "kept_sources": [s["source"] for s in signals],
         }
     except client.LLMFatal:
-        # Irrecoverable provider code: no amount of keeping every signal makes
-        # a run that cannot reach its provider succeed. The remaining `except`
-        # keeps the fail-safe for shape errors and exhausted-but-retryable
-        # calls, which are genuinely recoverable and still emit `degraded`.
         raise
-    except Exception as exc:  # noqa: BLE001 - fail-safe: keep every signal
+    except Exception as exc:
         logger.log_event(project_dir, {
             "event": "degraded", "chapter": chapter, "where": "glossary_cleanup",
             "reason": f"{type(exc).__name__}: {exc} - keeping all signals, "
@@ -776,14 +676,8 @@ def _line_output_cost(line: str) -> int:
     return int(cjk * 1.0 + (len(line) - cjk) / 4) + 10
 
 
-# One-shot config-note state for _note_token_cap: a multi-chapter run shares
-# one config, so the ceiling note prints once per process.
 _TOKEN_CAP_WARNED = False
 
-# A translator block whose own max_tokens is below this cannot be packed
-# into: room = floor(0.8 * cap) - 256 turns negative under 320, which closes a
-# chunk on every line, and past (256 + per-line cost) _pack_chunks rejects the
-# line outright and the chapter cannot translate at all.
 MIN_TRANSLATOR_MAX_TOKENS = 8192
 
 
@@ -859,10 +753,6 @@ def _check_translator_caps(blocks: list, wire_cap: int) -> None:
             low.append(f"{label} @ {cap}")
         effort = (b.get("extra_body") or {}).get("reasoning_effort")
         effective = min(wire_cap, cap)
-        # Compared against `declared`, NOT `cap`: with max_tokens_limit in play
-        # cap IS the limit, so comparing to it would make the check self-
-        # defeating and leave the worst case (a reasoning model pinned below
-        # the budget it was measured to need) undiagnosed.
         if effort in ("high", "xhigh", "max") and effective < declared:
             squeezed.append(f"{label} ({effort}) @ {effective} of {declared}")
     if low:
@@ -908,7 +798,7 @@ def _pack_chunks(source_lines: list[str], pack_cap: int, escalated: int,
     estimated output cannot fit even the escalated cap (the caller turns it
     into normal TRANSLATE attempt feedback -- no LLM call is burned).
     """
-    budget = pack_cap * 4 // 5  # floor(0.8 * pack_cap) headroom
+    budget = pack_cap * 4 // 5
     room = budget - 256
     plan: list[tuple[int, int, int]] = []
     lo = 0
@@ -999,11 +889,6 @@ def _notes_report_line(tag: str, stem: str, kept: list[dict],
     return line
 
 
-# --------------------------------------------------------------------------
-# pipeline runner
-# --------------------------------------------------------------------------
-
-
 def _log_chapter_start(project_dir: Path, file: str, entry: dict,
                        force: bool, state: dict, lines: int) -> None:
     """Open the chapter's orchestration timeline, once the resume state and
@@ -1044,9 +929,7 @@ def _log_chapter_end(project_dir: Path, file: str, entry: dict, outcome: str,
                       attempts=attempts,
                       stages=len(stages_run), calls=stats["calls"],
                       tokens=stats["tokens"], elapsed_s=stats["elapsed_s"])
-    # Metadata-only report, bounded to this run. Bodies only on demand, via
-    # `translate logs --report --io`.
-    from lib import logreport  # local: logreport imports logger, not pipeline
+    from lib import logreport
     logreport.write_run_report(project_dir, file,
                                int(entry.get("number", 0)),
                                logger.current_run_id(project_dir) or "")
@@ -1073,17 +956,13 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
         print(f"{tag} [ok] already translated - skipped")
         return "skipped"
 
-    # The index open goes in BEFORE the worker runs: index.jsonl is the
-    # crash signal, so it must exist even when the worker dies before it can
-    # report a line count. The tier-1 chapter_start follows inside the worker,
-    # where the resume state and line count are known.
     logger.index_line(project_dir, file, "open", command="translate",
                       file=file, number=int(entry.get("number", 0)))
     logger.note_chapter_start(project_dir, file)
     try:
         outcome, state, stages_run, attempts_run = _run_chapter(
             project_dir, file, cfg, force, paths, manifest, entry, tag)
-    except Exception as exc:  # noqa: BLE001 - recorded, then re-raised unchanged
+    except Exception as exc:
         _log_chapter_end(project_dir, file, entry, "crashed", {}, [], 0, exc)
         raise
     _log_chapter_end(project_dir, file, entry, outcome, state, stages_run,
@@ -1097,13 +976,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
     """The staged pipeline proper. Returns (outcome, state, stages_run) so
     the lifecycle wrapper can report them; run_chapter owns the logging."""
     stem = Path(file).stem
-    # Stages this invocation actually entered, in order. A resumed chapter
-    # enters fewer than the full set, and the log says so.
     stages_run: list[str] = []
-    # Attempts this invocation actually ran, counted at the top of the loop.
-    # Derived from state["attempt"] instead it would be wrong: that counter
-    # increments only on FAILURE, so it reads 0 after a clean first pass and
-    # 3 after three failures -- neither is the number of attempts run.
     attempts_run = 0
 
     if force:
@@ -1122,9 +995,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
             "feedback": [],
             "title": None,
             "lines": None,
-            # Per-chunk TRANSLATE persistence: completed chunk translations
-            # (list of line lists) while TRANSLATE is in flight; popped once
-            # the full lines list lands (see the TRANSLATE stage).
             "chunks": None,
             "notes": None,
             "rejected": None,
@@ -1143,25 +1013,17 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
     if state["stage"] not in STAGES:
         state["stage"] = "TRANSLATE"
     if state.get("pipeline") != STATE_VERSION:
-        # v1 state written before the FAITH/GLOSSARY_EXPAND reorder: a
-        # persisted GLOSSARY_EXPAND or FAITH stage means the faithfulness
-        # gate had not completed. Remap to FAITH so the resumed draft is
-        # always faith-checked (expand re-running afterwards is harmless).
         if state["stage"] in ("GLOSSARY_EXPAND", "FAITH"):
             state["stage"] = "FAITH"
         state["pipeline"] = STATE_VERSION
     if _STAGE_IDX[state["stage"]] > _STAGE_IDX["TRANSLATE"] and (
         state["lines"] is None or state["title"] is None
     ):
-        # A stage past TRANSLATE needs the previous translation; without one
-        # there is nothing to resume - start over from TRANSLATE.
         state["stage"] = "TRANSLATE"
     if _STAGE_IDX[state["stage"]] > _STAGE_IDX["TRANSLATE"]:
         print(f"{tag} [init] resuming at stage {state['stage']} (attempt {state['attempt']})")
     else:
         state["lines"] = None
-        # Keep the title stashed alongside resumable chunks (a crash resume
-        # mid-TRANSLATE reuses it); without chunks the attempt starts clean.
         if not (isinstance(state.get("chunks"), list) and state["chunks"]):
             state["title"] = None
 
@@ -1173,16 +1035,9 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
         raise PipelineError(f"source chapter missing: {source_path}")
     fm, body = project.read_chapter(source_path)
     source_lines = body.split("\n")
-    # When the body opens by repeating the frontmatter chapter_title, models
-    # see the title twice (title instruction + body line 1) and emit an empty
-    # or dropped first line. Drop the redundant body copy; the translated
-    # title lives in the frontmatter "title" field.
     source_lines, dropped_title = project.drop_leading_chapter_title(source_lines, fm)
     if dropped_title:
         print(f"{tag} [init] leading chapter-title line handled via the title field")
-    # A content-free source would flow through chunking (no chunks), skip
-    # every LLM call, and assemble a structurally valid but empty
-    # translation: mark it needs-review instead of translating nothing.
     if not any(line.strip() for line in source_lines):
         print(f"{tag} [warn] {file}: source chapter has no content - marked needs-review")
         project.set_status(manifest, file, "needs-review")
@@ -1203,10 +1058,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
     max_attempts = int(_cfg_value(cfg, "max_attempts"))
     g = glossary.load(project_dir)
 
-    # Novel-level context: the project's style.md (copied from a preset at
-    # init, hand-editable) wins; the legacy style_profile from --style auto
-    # follows; generic default last. Background likewise prefers the
-    # top-level novel_info field over the legacy profile field.
     novel_info = project.load_novel_info(project_dir)
     style_summary, _style_tier = styles.resolve_style(project_dir, novel_info)
     style_profile = novel_info.get("style_profile")
@@ -1215,10 +1066,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
         novel_info.get("background") or style_profile.get("background") or ""
     ).strip()
 
-    # Rolling story recap (advisory cross-chapter plot context): resolve the
-    # recap to inject BEFORE the attempt loop -- a state hit costs no LLM
-    # call, and the one-call backfill self-heals a predecessor translated
-    # before the feature existed. Any failure degrades to "" (no recap).
     prev_recap = story.ensure_recap(project_dir, cfg, manifest, file, tag)
     recap_section = story.story_part(prev_recap)
 
@@ -1319,51 +1166,19 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
 
     while True:
         attempts_run += 1
-        # Recomputed every attempt so retries benefit from the expanded glossary.
         pairs = glossary.contextual(g, body_for_counts, int(_cfg_value(cfg, "contextual_glossary_cap")))
         glossary_str = glossary.render_contextual(pairs)
         failed_stage: str | None = None
-        # Resume point for this attempt: skip stages a previous run already
-        # completed before the persisted stage (crash resume). After a failed
-        # gate the failure handler resets the stage to TRANSLATE, so in-process
-        # retries always restart at TRANSLATE with the accumulated feedback.
         start_idx = _STAGE_IDX.get(state["stage"], _STAGE_IDX["TRANSLATE"])
 
-        # ---------------- TRANSLATE ----------------
         if start_idx <= _STAGE_IDX["TRANSLATE"]:
             _t0 = stage_enter("TRANSLATE")
             try:
                 print(f"{tag} [init] TRANSLATE (attempt {state['attempt'] + 1})")
                 logger.log_event(project_dir, {"event": "attempt", "chapter": file,
                                     "attempt": state["attempt"] + 1})
-                # Whole-chapter translation by default: the model sees the
-                # novel's full context, which beats fragmenting it. Only the
-                # OUTPUT is constrained: when the expected translated output
-                # exceeds the packing budget, the chapter splits into
-                # token-budget-packed parts (each still carrying style
-                # background and the previous part's tail; the numbered-line
-                # protocol and the corrective retry keep the line contract
-                # either way).
-                #
-                # Two caps, not one. `translate_max_output_tokens` is a
-                # CEILING the pipeline asks for; a provider block's own
-                # max_tokens is a CEILING the provider accepts, and it wins
-                # where it is lower (client.chat clamps per block). So:
-                #   pack_cap  = what EVERY block can return -> sizing
-                #   wire_cap  = the shared ceiling -> sent, then lowered per block
                 max_out = int(_cfg_value(cfg, "translate_max_output_tokens"))
                 translator_blocks = config.provider_list(cfg, "translator")
-                # Model arrays: the first block no longer speaks for the
-                # whole job -- a block's own cap is a hard limit the
-                # pipeline must not raise, so pack against the SMALLEST across
-                # blocks. A block that omits max_tokens contributes
-                # DEFAULT_MAX_TOKENS, which is deliberate: an omission is
-                # "unset", not "unlimited", and silently treating it as
-                # unlimited would let one forgotten key size the whole job.
-                # block_cap() folds in any max_tokens_limit, so a block whose
-                # provider refuses above N packs to N even when the block
-                # asked for more -- otherwise parts would be sized for a
-                # response the provider will truncate.
                 provider_max = min(
                     config.block_cap(b) for b in translator_blocks
                 )
@@ -1375,12 +1190,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                                     max_out)
                 n_chunks = len(plan)
                 src_total = len(source_lines)
-                # Per-chunk persistence (crash resume): validated chunk
-                # translations were appended to state["chunks"] as they
-                # completed. Packing is deterministic, so the recomputed
-                # bounds line up with the saved ones -- unless the source or
-                # config changed between runs, in which case the saved
-                # chunks are unusable and the chapter restarts from scratch.
                 completed = [c for c in (state.get("chunks") or [])
                              if isinstance(c, list)]
                 if (len(completed) > n_chunks
@@ -1393,7 +1202,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 tlines: list[str] = [ln for c in completed for ln in c]
                 title: str | None = None
                 if completed:
-                    # The title stashed by earlier chunks survives the resume.
                     prev_title = state.get("title")
                     if isinstance(prev_title, str) and prev_title:
                         title = prev_title
@@ -1439,7 +1247,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                     )
                     prompt = fill(tpl_translation, chunk_ctx, "translation.md")
                     clines: list[str] | None = None
-                    for chunk_attempt in (1, 2):  # one corrective retry per chunk
+                    for chunk_attempt in (1, 2):
                         resp = _chat(
                             project_dir, cfg, "translator", prompt,
                             json_schema=TRANSLATION_SCHEMA,
@@ -1455,8 +1263,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                         got = data.get("lines") if isinstance(data, dict) else None
                         ctitle = data.get("title") if isinstance(data, dict) else None
                         problem = ""
-                        # Truncation signature (drives the escalating retry):
-                        # missing line indices, or a response cut mid-JSON.
                         truncated = data is None and _response_cut(resp)
                         if not isinstance(ctitle, str) or not isinstance(got, list):
                             problem = (
@@ -1487,7 +1293,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                                 problem = "; ".join(bits)
                         elif all(isinstance(x, str) for x in got):
                             if len(got) == len(chunk):
-                                clines = list(got)  # plain-string response, aligned
+                                clines = list(got)
                             else:
                                 problem = (
                                     f"expected {len(chunk)} lines, the response had {len(got)}"
@@ -1509,8 +1315,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                         )
                         if chunk_attempt == 1:
                             if truncated:
-                                # The response looks cut off: retry once at
-                                # the escalated cap (>= the first attempt's).
                                 call_max_tokens = escalated
                             retry_ctx = dict(chunk_ctx)
                             retry_ctx["feedback_section"] = (
@@ -1526,15 +1330,12 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                     log_chunk(k, n_chunks, lo, hi, call_max_tokens,
                               chunk_attempt, "ok")
                     tlines.extend(clines)
-                    # Persist the validated chunk immediately: a crash or
-                    # Ctrl-C loses at most the in-flight chunk. The title
-                    # rides along so a resume never re-burns a call for it.
                     completed.append(clines)
                     state["chunks"] = completed
                     if title is not None:
                         state["title"] = title
                     save_state(paths["draft"], file, state)
-                state.pop("chunks", None)  # the full lines list is authoritative
+                state.pop("chunks", None)
                 state["title"] = title or ""
                 state["lines"] = tlines
                 project.write_chapter(
@@ -1546,17 +1347,13 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 )
             except PipelineError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - becomes retry feedback
+            except Exception as exc:
                 state["feedback"].append(f"TRANSLATE failed: {type(exc).__name__}: {exc}")
                 failed_stage = "TRANSLATE"
             stage_exit("TRANSLATE", _t0)
 
         lines: list[str] = []
-        # Kept balance drift signals for the FAITH reviewer; resets every
-        # attempt and stays empty when resuming past BALANCE.
         balance_signals: list[str] = []
-        # Retirement decisions deferred from BALANCE (applied only after
-        # FAITH accepts; dropped when the attempt is rejected).
         pending_cleanup: dict | None = None
         if failed_stage is None:
             lines = list(state["lines"] or [])
@@ -1564,7 +1361,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
         if failed_stage is None and start_idx <= _STAGE_IDX["VALIDATE"]:
             _t0 = stage_enter("VALIDATE")
             advance("VALIDATE")
-            # ---------------- VALIDATE ----------------
             issues: list[str] = []
             if len(lines) != len(source_lines):
                 issues.append(
@@ -1586,12 +1382,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
         if failed_stage is None and start_idx <= _STAGE_IDX["BALANCE"]:
             _t0 = stage_enter("BALANCE")
             advance("BALANCE")
-            # ---------------- BALANCE (advisory) ----------------
-            # All three tiers (drift signals, usage floor, over-count
-            # ceiling) are advisory counting heuristics: none of them can
-            # fail a chapter on its own. Drift signals run through the
-            # glossary cleanup judgment, and whatever survives is handed to
-            # the FAITH reviewer, which owns the verdict.
             try:
                 drift_signals, warnings, over_count = balance.check(
                     pairs,
@@ -1612,13 +1402,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                         print(f"{tag} [warn] ... and {len(warnings) - 5} more (see logs)")
                 if drift_signals:
                     if _cfg_value(cfg, "glossary_auto_cleanup"):
-                        # Mundane glossary entries trip the drift check by
-                        # being naturally rephrased; ask the glossary job
-                        # whether each flagged term deserves enforcement.
-                        # The retirement itself is DEFERRED to the accepted
-                        # attempt (applied alongside GLOSSARY_EXPAND) -- this
-                        # split only filters which signals reach the FAITH
-                        # reviewer, which owns the verdict.
                         drift_signals, pending_cleanup = _cleanup_drift_signals(
                             project_dir, cfg, tpl_glossary_cleanup,
                             drift_signals, body_for_counts, tag, chapter=file,
@@ -1628,7 +1411,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                     balance_signals = [f["message"] for f in drift_signals]
             except PipelineError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - advisory: never block the chapter
+            except Exception as exc:
                 print(f"{tag} [warn] balance check failed - continuing: {type(exc).__name__}: {exc}")
                 logger.log_event(project_dir, {
                     "event": "balance_advisory", "chapter": file,
@@ -1639,7 +1422,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
         if failed_stage is None and start_idx <= _STAGE_IDX["FAITH"]:
             _t0 = stage_enter("FAITH")
             advance("FAITH")
-            # ---------------- FAITH ----------------
             try:
                 prompt = fill(
                     tpl_faithfulness,
@@ -1671,7 +1453,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                                reasons=[], accepted=True)
             except PipelineError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - becomes retry feedback
+            except Exception as exc:
                 state["feedback"].append(f"FAITH review failed: {type(exc).__name__}: {exc}")
                 log_gate("FAITH", "error", [f"{type(exc).__name__}: {exc}"])
                 failed_stage = "FAITH"
@@ -1680,16 +1462,8 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
         if failed_stage is None and start_idx <= _STAGE_IDX["GLOSSARY_EXPAND"]:
             _t0 = stage_enter("GLOSSARY_EXPAND")
             advance("GLOSSARY_EXPAND")
-            # ---------------- GLOSSARY_EXPAND (non-fatal) ----------------
-            # Runs only on the attempt FAITH just accepted: new terms lock in
-            # after the translation is accepted, never from a rejected one.
-            # Deferred BALANCE retirements land here too (a crash-resume
-            # entering at this stage finds no pending decisions -- nothing is
-            # retired, the fail-safe direction).
             if pending_cleanup is not None:
                 if _apply_pending_cleanup(project_dir, pending_cleanup, file, tag):
-                    # retire() rewrote glossary.json; refresh so this stage's
-                    # save cannot resurrect the retired terms.
                     g = glossary.load(project_dir)
                 pending_cleanup = None
             try:
@@ -1712,7 +1486,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 if min_occ > 0 and eligible:
                     try:
                         corpus = _gate_corpus(project_dir)
-                    except Exception as exc:  # noqa: BLE001 - fail open: expansion is auxiliary
+                    except Exception as exc:
                         print(f"{tag} [warn] occurrence gate disabled - source corpus unreadable: {type(exc).__name__}: {exc}")
                         min_occ = 0
                 applied_terms: list[str] = []
@@ -1727,7 +1501,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                         applied_terms.append(str(source))
                     except PipelineError:
                         raise
-                    except Exception as exc:  # noqa: BLE001 - skip this proposal only
+                    except Exception as exc:
                         print(f"{tag} [warn] skipped glossary proposal: {exc}")
                         skipped_terms.append(
                             f"{proposal.get('source') if isinstance(proposal, dict) else '?'}: {exc}")
@@ -1736,7 +1510,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                            skipped=skipped_terms)
             except PipelineError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - glossary expansion is auxiliary
+            except Exception as exc:
                 print(f"{tag} [warn] glossary expansion failed: {type(exc).__name__}: {exc}")
             stage_exit("GLOSSARY_EXPAND", _t0)
             glossary.save(project_dir, g)
@@ -1744,7 +1518,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
         if failed_stage is None and start_idx <= _STAGE_IDX["TN_GENERATE"]:
             _t0 = stage_enter("TN_GENERATE")
             advance("TN_GENERATE")
-            # ---------------- TN_GENERATE (parse failures non-fatal) ----------------
             try:
                 max_notes = int(_cfg_value(cfg, "max_notes_per_chapter"))
                 prompt = fill(
@@ -1763,7 +1536,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 log_result("tn_generate", notes_returned=len(raw_notes))
             except PipelineError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - notes are optional
+            except Exception as exc:
                 print(f"{tag} [warn] note generation failed - continuing without notes: {exc}")
                 state["notes"] = []
             stage_exit("TN_GENERATE", _t0)
@@ -1771,12 +1544,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
         if failed_stage is None and start_idx <= _STAGE_IDX["TN_DEDUP"]:
             _t0 = stage_enter("TN_DEDUP")
             advance("TN_DEDUP")
-            # ---------------- TN_DEDUP ----------------
-            # max_notes is enforced HERE (not by trusting the model): the
-            # prompt asks for at most max_notes severity-ordered entries,
-            # and the cap truncates whatever actually came back. The cut
-            # tail, the low-threshold discards, and invalid entries land in
-            # notes/<stem>.dropped.json for review.
             kept_notes, history, warnings, dropped = tn.process(
                 state["notes"] or [],
                 len(lines),
@@ -1797,61 +1564,34 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
             stage_exit("TN_DEDUP", _t0)
 
         if failed_stage is None:
-            # ---------------- ASSEMBLE ----------------
             _t0 = stage_enter("ASSEMBLE")
             advance("ASSEMBLE")
             out_path = paths["translated"] / file
             assemble.assemble(out_path, fm, state["title"] or "", list(lines))
-            # Notes live in the sidecar now, not in the markdown; save_notes
-            # validates line indexes against the same lines list assemble
-            # joined and drops stale entries with a warning.
             tn.save_notes(project_dir, file, list(lines), list(state["notes"] or []))
             (paths["draft"] / f"{stem}.state.json").unlink(missing_ok=True)
             project.set_status(manifest, file, "translated")
             try:
                 project.save_manifest(project_dir, manifest)
             except OSError as exc:
-                # The chapter file is already written; losing the manifest
-                # flip must not demote a finished translation (run_range's
-                # catch-all would re-mark it needs-review). The in-memory
-                # manifest keeps "translated" for the rest of the run.
                 print(f"[warn] manifest update failed for {file}: {exc} - "
                       "chapter file is written; status stays in-progress")
             print(
                 f"{tag} [ok] translated -> {out_path.name} "
                 f"(title: {state['title']}, notes: {len(state['notes'] or [])})"
             )
-            # Rolling recap: record this chapter's own entry after assembly
-            # (run_range's chapter commit versions story_state.json with the
-            # chapter). Its failure must never affect the translated outcome
-            # -- the helper swallows every exception internally.
             story.record_recap(project_dir, cfg, file,
                                state["title"] or "", "\n".join(lines),
                                prev_recap, tag)
             stage_exit("ASSEMBLE", _t0)
             return "translated", state, stages_run, attempts_run
 
-        # ---------------- failure handling ----------------
         assert failed_stage is not None
         state["attempt"] = int(state["attempt"]) + 1
-        # Persist TRANSLATE, not the failed stage: the next action is a
-        # re-translation. A persisted failed-gate stage combined with
-        # non-null lines would make a crash+resume re-validate the already
-        # rejected lines and burn attempts without ever re-translating.
         state["stage"] = "TRANSLATE"
         if failed_stage != "TRANSLATE":
-            # A gate-rejected attempt retranslates the whole chapter (the
-            # rejected snapshot covers all lines), so per-chunk resume state
-            # must not survive into the retry. A TRANSLATE-stage failure
-            # keeps its chunks: the validated parts are exactly what a
-            # crash resume would reuse.
             state["chunks"] = []
         if lines:
-            # Snapshot the translation the gate just rejected so the retry
-            # prompt can show it, not just the feedback bullets. Kept when a
-            # later attempt dies in TRANSLATE (the last gate-judged
-            # translation stays the most useful reference); cleared
-            # implicitly when ASSEMBLE deletes the state file.
             state["rejected"] = list(lines)
         save_state(paths["draft"], file, state)
         log_feedback(failed_stage)
@@ -1866,7 +1606,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 print(f"{tag} [FAIL] feedback: {item}")
             print(f"{tag} [FAIL] gave up after {state['attempt']} attempts - marked needs-review")
             return "needs-review", state, stages_run, attempts_run
-        # else: loop back to TRANSLATE with the accumulated feedback
 
 
 def _chapter_subject(file: str, outcome: str) -> str:
@@ -1898,23 +1637,15 @@ def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = Fals
             try:
                 outcome = run_chapter(project_dir, file, cfg, force=force)
             except (PipelineError, client.LLMFatal):
-                # A provider call that exhausted its retries, or an
-                # irrecoverable provider code, stops the batch. The old
-                # "one bad chapter must not abort the batch" catch marked the
-                # chapter needs-review and moved to the next file, which turned
-                # a dead API key into a whole run of needs-review chapters and
-                # a misleading exit 1. LLMFatal is also a PipelineError (see
-                # client.LLMFatal); both are named so the intent survives any
-                # future change to that hierarchy.
                 raise
-            except Exception as exc:  # noqa: BLE001 - one bad chapter must not abort the batch
+            except Exception as exc:
                 reason = str(exc).strip() or type(exc).__name__
                 print(f"[FAIL] {file}: {reason.splitlines()[0]}")
                 try:
                     manifest = project.load_manifest(project_dir)
                     project.set_status(manifest, file, "needs-review")
                     project.save_manifest(project_dir, manifest)
-                except Exception:  # noqa: BLE001 - manifest marking is best-effort
+                except Exception:
                     print(f"[FAIL] {file}: could not mark needs-review in the manifest")
                 results.setdefault("needs-review", []).append(file)
                 vcs.commit(project_dir, _chapter_subject(file, "needs-review"))

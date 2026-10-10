@@ -1,32 +1,3 @@
-"""Tests for cover acquisition: atomic JPEG writes, placeholder recording,
-scrape hardening.
-
-Covers cover._save_jpeg (both ensure_cover's scraped image and
-generate_cover's gradient route through it): the JPEG lands at the target
-path after a tmp-sibling + os.replace swap, with no *.tmp left behind, and
-a failing replace cleans the tmp up instead of leaving a partial cover.jpg
-that would satisfy the exists() fast paths (ensure_cover, epub.build)
-forever; cover._record_placeholder (the "cover_placeholder" key in
-novel_info.json): set True only when a placeholder is generated, removed
-again on a successful scrape, written only on change in init's JSON style
-(2-space indent, ensure_ascii=False, trailing LF), never creating a missing
-novel_info.json; and the scrape hardening: responses are requested with
-stream=True and timeout=15, bodies are drained in chunks under
-MAX_IMAGE_BYTES and a wall-clock deadline (connection closed on any
-breach), and ensure_cover end to end with a scripted requests module --
-scrape success writes the image and clears the flag, scrape failure
-generates the placeholder and records the flag, and an existing cover.jpg
-short-circuits without any network. The real network is never touched:
-requests/response objects are fakes and images are in-memory PIL JPEGs
-(attribute swaps per the suite's convention, no unittest.mock).
-
-Self-contained PASS/FAIL script (no pytest). cover.py imports requests,
-pillow and (via lib.project) pyyaml, so run via uv (deps declared inline
-below):
-
-    uv run tests/test_cover.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31", "pyyaml>=6.0", "pillow>=10.0"]
@@ -42,14 +13,12 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-# scripts/ (and therefore lib/) lives at novel-translator/scripts relative
-# to this file (CWD-independent).
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import cover as C  # noqa: E402
-from lib import project as P  # noqa: E402
-from PIL import Image  # noqa: E402
+from lib import cover as C
+from lib import project as P
+from PIL import Image
 
 PASSED = 0
 FAILED: list[str] = []
@@ -74,7 +43,7 @@ def capture(fn, *args, **kwargs):
     try:
         with contextlib.redirect_stdout(buf):
             result = fn(*args, **kwargs)
-    except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+    except Exception as caught:
         exc = caught
     return result, buf.getvalue(), exc
 
@@ -125,9 +94,6 @@ def install_fake_requests(responses: list[FakeResp]) -> tuple[list[dict], callab
 
     C.requests = SimpleNamespace(get=fake_get)
     return calls, (lambda: setattr(C, "requests", orig_requests))
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_save_jpeg_atomic() -> None:
@@ -235,7 +201,7 @@ def case_3_read_capped() -> None:
           data == b"abcd" and resp.closed, f"data={data!r} closed={resp.closed}")
 
     meg = b"x" * (1024 * 1024)
-    resp = FakeResp(chunks=[meg] * 17)  # 17 MB total, cap is 10 MB
+    resp = FakeResp(chunks=[meg] * 17)
     data = C._read_capped(resp, deadline)
     check("3b capped: body over MAX_IMAGE_BYTES -> None",
           data is None and resp.closed, f"data={data!r} closed={resp.closed}")
@@ -266,7 +232,6 @@ def case_4_scrape_hardening() -> None:
     og:image from an HTML page through a second capped fetch."""
     image = tiny_jpeg()
 
-    # Direct image URL, within the cap.
     calls, restore = install_fake_requests(
         [FakeResp(headers={"content-type": "image/jpeg"}, chunks=[image])])
     try:
@@ -279,7 +244,6 @@ def case_4_scrape_hardening() -> None:
           calls and calls[0].get("stream") is True
           and calls[0].get("timeout") == 15, f"calls={calls!r}")
 
-    # Direct image URL over the cap: None, connection closed.
     resp = FakeResp(headers={"content-type": "image/jpeg"},
                     chunks=[b"y" * (1024 * 1024)] * 17)
     calls, restore = install_fake_requests([resp])
@@ -290,7 +254,6 @@ def case_4_scrape_hardening() -> None:
     check("4c scrape: oversized image -> None, connection closed",
           data is None and resp.closed, f"data={data!r} closed={resp.closed}")
 
-    # HTTP error: None, connection closed.
     resp = FakeResp(status_code=404)
     calls, restore = install_fake_requests([resp])
     try:
@@ -300,7 +263,6 @@ def case_4_scrape_hardening() -> None:
     check("4d scrape: 404 -> None, connection closed",
           data is None and resp.closed, f"data={data!r} closed={resp.closed}")
 
-    # HTML page -> og:image -> second capped fetch returns the image bytes.
     html = ('<html><head><meta property="og:image" '
             'content="/img/cover.jpg"></head></html>').encode("utf-8")
     image_resp = FakeResp(headers={"content-type": "image/jpeg"},
@@ -319,9 +281,6 @@ def case_4_scrape_hardening() -> None:
           len(calls) == 2 and calls[1]["url"] == "http://example.com/img/cover.jpg",
           f"calls={calls!r}")
 
-    # Wall-clock deadline expired: the first monotonic() call sets the
-    # deadline, every later call must read past it -- the fake clock jumps
-    # forward right after the first reading.
     real_monotonic = C.time.monotonic
     state = {"calls": 0}
 
@@ -425,7 +384,6 @@ def case_5_ensure_cover_end_to_end() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

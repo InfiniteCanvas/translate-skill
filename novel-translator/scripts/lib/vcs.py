@@ -21,11 +21,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-# Ignored inside every scaffolded project: draft/ is transient per-chapter
-# state, logs/ churns once per invocation and self-prunes, export/ holds
-# epubs rebuildable from translated/, covers/ holds the generated cover art
-# (rebuilt whenever the image is missing), and atomic_write_text leaves
-# brief *.tmp siblings.
 GITIGNORE = """\
 # Transient pipeline state and rebuildable artifacts (skill-managed).
 draft/
@@ -35,25 +30,13 @@ covers/
 *.tmp
 """
 
-# Written into .git/ by ensure_repo() when it CREATES the repository; commit()
-# treats a repo as skill-managed on this marker's presence, or on a .gitignore
-# carrying the skill's own rules (repos created before the marker existed).
-# Without either, the repo is the user's own and must never see `git add -A`.
 MARKER_NAME = "novel-translator-managed"
 
-# The ignore rules every version of this skill has written. A .gitignore that
-# carries all of them, and nothing but them, is one of ours from some version
-# -- the marker cannot vouch for repositories created before it existed.
 _LEGACY_CORE = frozenset({"draft/", "logs/", "export/", "*.tmp"})
 
-# Local-only identity fallback so commits work on machines with no global
-# git config; never touches the user's global settings.
 GIT_USER_NAME = "novel-translator"
 GIT_USER_EMAIL = "novel-translator@localhost"
 
-# Foreign-repo warnings are deduped per directory: commit() fires after every
-# mutation, so without this a run inside a foreign repo would warn per commit.
-# Keys are normcase()d so Windows path casing (D:\Proj vs d:\proj) is one key.
 _FOREIGN_REPO_WARNED: set[str] = set()
 
 
@@ -153,10 +136,6 @@ def ensure_repo(project_dir: Path) -> list[str]:
         init = _run(project_dir, ["init"])
         if init.returncode != 0:
             return [f"[warn] git init failed: {_first_line(init.stderr)}"]
-        # Identity, not content: this marker (not the .gitignore) is what
-        # later tells commit() the skill created this repository -- an
-        # already-existing .gitignore of the user's must not be overwritten,
-        # and must not make the repo ours either.
         (project_dir / ".git" / MARKER_NAME).write_text(
             "managed by novel-translator\n", encoding="utf-8", newline="\n")
         gitignore = project_dir / ".gitignore"
@@ -170,7 +149,7 @@ def ensure_repo(project_dir: Path) -> list[str]:
         if autocrlf.returncode != 0 or not autocrlf.stdout.strip():
             _run(project_dir, ["config", "core.autocrlf", "false"])
         return ["[git] initialized repository"]
-    except Exception as exc:  # noqa: BLE001 - versioning must never break a run
+    except Exception as exc:
         return [f"[warn] git failed: {type(exc).__name__}: {exc}"]
 
 
@@ -187,17 +166,10 @@ def commit(project_dir: Path, subject: str) -> str | None:
     project_dir = Path(project_dir)
     if not available() or not is_repo(project_dir) or not _enabled(project_dir):
         return None
-    # A repository that is not skill-managed (neither the ensure_repo marker
-    # nor the skill .gitignore) is the user's own repository, and `git add -A`
-    # would sweep their pending changes into a skill-labeled commit.
     if not _managed(project_dir):
         key = os.path.normcase(str(project_dir))
         if key not in _FOREIGN_REPO_WARNED:
             _FOREIGN_REPO_WARNED.add(key)
-            # "no marker and no skill ignore rules": the guard also fires for
-            # a repository that carries the skill's rules AND one foreign
-            # entry, so a message naming only the missing .gitignore would be
-            # wrong exactly where the user needs to be told what to remove.
             print(
                 f"[warn] git: skipping commits - {project_dir} looks like a "
                 "foreign repository (no skill marker, and its .gitignore is "
@@ -221,6 +193,6 @@ def commit(project_dir: Path, subject: str) -> str | None:
         sha = head.stdout.strip() if head.returncode == 0 else ""
         print(f"[git] committed {sha} {subject}".rstrip())
         return sha or None
-    except Exception as exc:  # noqa: BLE001 - versioning must never break a run
+    except Exception as exc:
         print(f"[warn] git failed: {type(exc).__name__}: {exc}")
         return None

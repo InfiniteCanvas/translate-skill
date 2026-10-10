@@ -60,9 +60,6 @@ DESCRIPTION = ("a fan-out job can name its own arbitrator: providers.consensus_<
                "overrides providers.consensus for that job's merge; report which "
                "arbitrator each fan-out job resolves to")
 
-# The jobs that can actually fan out. `consensus` is excluded because it is the
-# arbitrator itself: it is always exactly one block, so it never merges
-# candidates and never has an arbitrator of its own.
 _JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "profile")
 
 _LIMIT_KEY = "max_tokens_limit"
@@ -71,8 +68,6 @@ _LIMIT_KEY = "max_tokens_limit"
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    # Read the RAW file, as v012/v013/v014 do: load_config fills the inherited
-    # blocks in, and the question here is what the author actually wrote.
     cfg_path = Path(project_dir) / "config.json"
     lines: list[str] = []
 
@@ -94,9 +89,6 @@ def migrate(project_dir: Path, templates_src: Path,
     translator = _blocks(providers.get("translator"))
     fanout: list[tuple[str, str]] = []
     for job in _JOBS:
-        # The real inheritance: an omitted non-translator job inherits the
-        # translator's WHOLE array, so it fans out too even though the file
-        # never names it. Mirroring that here is what keeps the report honest.
         blocks = translator if job == "translator" else (
             _blocks(providers.get(job)) if providers.get(job) is not None
             else translator)
@@ -108,13 +100,6 @@ def migrate(project_dir: Path, templates_src: Path,
         lines.append("[ok] config: no job fans out to more than one model, so no "
                      "consensus merge runs and no arbitrator is needed")
     elif "consensus" not in providers:
-        # The blocking condition. A fanning-out config with no authored
-        # arbitrator is now REFUSED at load, so this migration is predicting a
-        # run that will not start -- which is why it is a [FAIL], not the
-        # [info]/[ok] the pure routing map below uses. It cannot repair this:
-        # writing `consensus` from translator[0] would re-create on disk the
-        # exact inference this rule forbids, silently and with nothing to
-        # explain it.
         jobs = ", ".join(job for job, _key in fanout)
         lines.append(
             f"[FAIL] config: providers.consensus is not set but {len(fanout)} "
@@ -170,9 +155,6 @@ def _cap_notes(raw: dict, providers: dict,
     block = _one_block(providers.get(translator))
     if block is None:
         return out
-    # An unset max_tokens fills in as DEFAULT_MAX_TOKENS at load time, which the
-    # comparison below still evaluates correctly -- report it as that number
-    # rather than staying silent about a limit the runtime will apply.
     declared = _as_int(block.get("max_tokens"))
     if declared is None:
         declared = 65536

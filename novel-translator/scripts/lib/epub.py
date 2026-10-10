@@ -73,7 +73,6 @@ def chapter_md_to_xhtml(md_path: Path, notes: list[dict] | None = None) -> tuple
     markers: dict[int, list[int]] = {}
     definitions: dict[int, str] = {}
     if notes is None:
-        # Split off the trailing Translator's Notes section.
         tn_start = None
         for i, line in enumerate(lines):
             if line.strip() == _TN_HEADING:
@@ -82,13 +81,11 @@ def chapter_md_to_xhtml(md_path: Path, notes: list[dict] | None = None) -> tuple
         body_lines = lines if tn_start is None else lines[:tn_start]
         note_lines = [] if tn_start is None else lines[tn_start + 1 :]
 
-        # Definitions: [^3]: **term** — note text
         for line in note_lines:
             match = _DEFINITION_RE.match(line.strip())
             if match:
                 definitions[int(match.group(1))] = match.group(2).strip()
 
-        # Strip footnote markers from body lines, remembering which line owns them.
         cleaned: list[str] = []
         for i, line in enumerate(body_lines):
             ids = [int(n) for n in _MARKER_RE.findall(line)]
@@ -96,8 +93,6 @@ def chapter_md_to_xhtml(md_path: Path, notes: list[dict] | None = None) -> tuple
                 markers[i] = ids
             cleaned.append(_MARKER_RE.sub("", line))
     else:
-        # Sidecar path: strip any stray legacy markers defensively (their
-        # ids are NOT collected -- the sidecar owns the note numbering).
         body_lines = lines
         cleaned = [_MARKER_RE.sub("", line) for line in body_lines]
         for pos, note in enumerate(notes, start=1):
@@ -114,8 +109,6 @@ def chapter_md_to_xhtml(md_path: Path, notes: list[dict] | None = None) -> tuple
             ):
                 resolved = line_idx
             elif anchor:
-                # The stored line no longer matches (hand-edited body):
-                # re-resolve via the anchor snapshot.
                 resolved = next(
                     (i for i, line in enumerate(body_lines) if line.strip().startswith(anchor)),
                     None,
@@ -130,7 +123,6 @@ def chapter_md_to_xhtml(md_path: Path, notes: list[dict] | None = None) -> tuple
             definitions[pos] = f"**{term}** \u2014 {note_text}"
             markers.setdefault(resolved, []).append(pos)
 
-    # Render body elements.
     elements: list[dict] = []
     for i, line in enumerate(cleaned):
         stripped = line.strip()
@@ -149,8 +141,6 @@ def chapter_md_to_xhtml(md_path: Path, notes: list[dict] | None = None) -> tuple
         else:
             elements.append({"kind": "p", "html": _convert(stripped), "line": i})
 
-    # Attach noteref anchors to the end of the owning paragraph. Anchors are
-    # only emitted for ids that have a definition, so hrefs never dangle.
     emitted: set[int] = set()
 
     def anchor(nid: int) -> str:
@@ -162,16 +152,16 @@ def chapter_md_to_xhtml(md_path: Path, notes: list[dict] | None = None) -> tuple
 
     for i, ids in markers.items():
         target = None
-        for element in elements:  # the paragraph on this very line
+        for element in elements:
             if element["line"] == i and element["kind"] == "p":
                 target = element
                 break
-        if target is None:  # next non-empty paragraph ...
+        if target is None:
             for element in elements:
                 if element["kind"] == "p" and element["line"] > i:
                     target = element
                     break
-        if target is None:  # ... falling back to the previous paragraph
+        if target is None:
             for element in reversed(elements):
                 if element["kind"] == "p":
                     target = element
@@ -184,8 +174,6 @@ def chapter_md_to_xhtml(md_path: Path, notes: list[dict] | None = None) -> tuple
     parts: list[str] = []
     title = str(fm.get("title") or fm.get("chapter_title") or Path(md_path).stem)
 
-    # The translated format carries the chapter title in frontmatter only, so
-    # give the chapter a visible heading when the body has none of its own.
     if not any(element["kind"] == "h" for element in elements):
         parts.append(f"<h1>{_esc(title)}</h1>")
     for element in elements:
@@ -232,9 +220,6 @@ def build(
     paths = project.paths(project_dir)
     manifest = project.load_manifest(project_dir)
 
-    # Iterate in `order` like every other manifest consumer (see
-    # replace.replace_chapters): spine/TOC order must follow chapter order
-    # even when chapters.json was hand-edited or reordered on disk.
     chapter_paths: list[Path] = []
     for entry in sorted(manifest, key=lambda e: int(e.get("order", 0))):
         if entry.get("status") != "translated":
@@ -272,22 +257,18 @@ def build(
 
     items = []
     for i, path in enumerate(chapter_paths, start=1):
-        # An empty sidecar means "no notes" -- `or None` then selects the
-        # legacy marker-parsing path for chapters that still bake them in.
         ch_title, body_xhtml, _has_notes = chapter_md_to_xhtml(
             path, notes=tn.load_notes(project_dir, path.name) or None
         )
         item = epub.EpubHtml(
             title=ch_title, file_name=f"chapter_{i:04d}.xhtml", lang=lang
         )
-        # ebooklib's chapter template already emits xmlns:epub on <html> (and
-        # supplies <head>/<title>), so content is just the inner body markup.
         item.content = body_xhtml
         item.add_link(href="style/main.css", rel="stylesheet", type="text/css")
         book.add_item(item)
         items.append(item)
 
-    book.toc = tuple(items)  # flat TOC, one entry per chapter
+    book.toc = tuple(items)
 
     cover_path = Path(paths["covers"]) / "cover.jpg"
     if cover_path.exists():
@@ -300,13 +281,9 @@ def build(
     out_dir = Path(paths["export"])
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{_slugify(title)}.epub"
-    # Atomic swap, mirroring project.atomic_write_text's tmp + os.replace
-    # pattern (binary, so not routed through the text helper): a concurrent
-    # build must never observe a half-written epub at the export path.
     tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
     try:
         epub.write_epub(str(tmp), book)
-        # Windows: replace can race an open reader -- shared retry helper.
         project._replace_with_retry(tmp, out_path)
     finally:
         tmp.unlink(missing_ok=True)

@@ -1,40 +1,3 @@
-"""Tests for lib/replace.py: smart term replacement across translated chapters.
-
-Covers build_matcher's Latin/CJK split and \\b-bounded multi-word semantics,
-replace_text's capitalization and inflection-suffix polish, replace_chapters'
-manifest-driven surgical rewrite (frontmatter byte-verbatim, [^N] markers,
-dry-run, missing files, untouched files never rewritten), glossary_replace's
-source-or-variant lookup, alt pruning, noop short-circuit, and dry-run, and
-the matcher pre-flight: a deterministic build_matcher failure (an old
-translation of bare punctuation) must fire BEFORE the glossary save.
-
-The recovery case covers the write-ordering contract: chapters are rewritten
-BEFORE glossary.json is saved, so a mid-loop chapter-write failure (an
-attribute-swapped project.atomic_write_text raising OSError on the second
-chapter) re-raises after printing the exact "[warn] replace incomplete:
-k/N chapters rewritten; glossary.json not updated" line with the glossary
-byte-unchanged and only the pre-failure chapters rewritten -- and re-running
-the same command completes idempotently (already-rewritten chapters match
-zero occurrences) and saves the glossary. replace_chapters' optional
-`progress` list collects each durably-rewritten file name (nothing on a
-dry-run), and the util path still works with no progress argument at all.
-
-The BOM case pins replace_chapters' utf-8-sig chapter read: a BOM'd
-hand-edited chapter (Windows "UTF-8 with BOM") must not lose its
-frontmatter split -- the YAML title carrying the phrase case-insensitively
-is neither counted nor rewritten -- and a real rewrite strips the BOM while
-no-match and dry-run runs leave the BOM'd bytes untouched.
-
-All chapter/glossary fixtures are built inside tempfile.TemporaryDirectory()
-sandboxes per case — repo fixtures are never touched. Files are written with
-explicit LF newlines so byte-level comparisons are deterministic.
-
-Self-contained PASS/FAIL script (no pytest). The lib modules import pyyaml
-and requests, so run via uv (deps declared inline below):
-
-    uv run tests/test_replace.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31", "pyyaml>=6.0"]
@@ -46,12 +9,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import replace as R  # noqa: E402
-from lib.replace import ReplaceError  # noqa: E402
+from lib import replace as R
+from lib.replace import ReplaceError
 
 PASSED = 0
 FAILED: list[str] = []
@@ -89,8 +51,6 @@ def raises_replace_error(fn) -> bool:
     return False
 
 
-# ---------------------------------------------------------------- case 3 data
-
 CH1_HEAD = (
     "---\n"
     "chapter_title: 第一章 灵根\n"
@@ -121,7 +81,6 @@ CH2 = (
 )
 CH2_AFTER = CH2.replace("spirit root", "spiritual root")
 
-# translated, on disk, but contains no match -> must NOT be rewritten
 CH4 = (
     "---\n"
     "chapter_title: 第四章 山雨\n"
@@ -131,7 +90,6 @@ CH4 = (
     "The storm gathered over the sect's peaks.\n"
 )
 
-# pending status, on disk, DOES contain the phrase -> must be skipped entirely
 CH5 = (
     "---\n"
     "chapter_title: 第五章 夜行\n"
@@ -172,7 +130,6 @@ def make_chapters_project(td: str) -> tuple[Path, dict[str, bytes]]:
     write_lf(translated / "CHAPTER_0002.md", CH2)
     write_lf(translated / "CHAPTER_0004.md", CH4)
     write_lf(translated / "CHAPTER_0005.md", CH5)
-    # CHAPTER_0003.md deliberately absent -> lands in `missing`
     before = {
         "CHAPTER_0001.md": (translated / "CHAPTER_0001.md").read_bytes(),
         "CHAPTER_0002.md": (translated / "CHAPTER_0002.md").read_bytes(),
@@ -181,8 +138,6 @@ def make_chapters_project(td: str) -> tuple[Path, dict[str, bytes]]:
     }
     return root, before
 
-
-# ---------------------------------------------------------------- case 4 data
 
 GLO_CHAPTER = (
     "---\n"
@@ -238,8 +193,6 @@ def load_glossary_entry(root: Path) -> dict:
     return data["terms"][0]
 
 
-# ------------------------------------------------------------ case 7 fixtures
-
 REC_FILES = ("CHAPTER_0001.md", "CHAPTER_0002.md", "CHAPTER_0003.md")
 
 
@@ -285,19 +238,11 @@ def make_recovery_project(td: str) -> tuple[Path, dict[str, bytes]]:
     return root, before
 
 
-# ------------------------------------------------------------ case 8 fixtures
-
-# One translated chapter whose frontmatter title contains the search phrase
-# case-insensitively ("Spirit Root Awakening" vs phrase "spirit root"): a
-# BOM'd read that defeats _split_frontmatter (head "") would count the title
-# hit and rewrite the YAML. Reuses CH1 (title hit + 3 body occurrences).
 BOM_MANIFEST = [
     {"file": "CHAPTER_0001.md", "number": 1, "order": 0, "status": "translated",
      "title": "Spirit Root Awakening"},
 ]
 
-# No occurrence of the phrase anywhere (frontmatter or body): the BOM'd file
-# must stay byte-identical, BOM included.
 BOM_NO_MATCH = (
     "---\n"
     "chapter_title: 第四章 山雨\n"
@@ -317,8 +262,6 @@ def make_bom_project(td: str, chapter_text: str) -> tuple[Path, bytes]:
     write_bom(translated / "CHAPTER_0001.md", chapter_text)
     return root, (translated / "CHAPTER_0001.md").read_bytes()
 
-
-# ---------------------------------------------------------------------- cases
 
 def case_1_matcher() -> None:
     """build_matcher: regex semantics for Latin, literal for CJK, errors."""
@@ -384,7 +327,6 @@ def case_2_case_and_inflection() -> None:
 
 def case_3_replace_chapters() -> None:
     """replace_chapters: manifest-driven, surgical body-only rewrite."""
-    # Case A: real run
     with tempfile.TemporaryDirectory() as td:
         root, before = make_chapters_project(td)
         rep = R.replace_chapters(root, MANIFEST_3, "spirit root", "spiritual root")
@@ -414,7 +356,6 @@ def case_3_replace_chapters() -> None:
               (translated / "CHAPTER_0005.md").read_bytes() == before["CHAPTER_0005.md"],
               "")
 
-    # Case B: dry_run computes the identical report but writes nothing
     with tempfile.TemporaryDirectory() as td:
         root, before = make_chapters_project(td)
         rep = R.replace_chapters(root, MANIFEST_3, "spirit root", "spiritual root",
@@ -427,7 +368,6 @@ def case_3_replace_chapters() -> None:
         )
         check("3j dry-run: every on-disk file byte-identical", unchanged, "")
 
-    # Case C: zero occurrences -> zero changes
     with tempfile.TemporaryDirectory() as td:
         root, before = make_chapters_project(td)
         rep = R.replace_chapters(root, MANIFEST_3, "golden core", "golden core")
@@ -444,7 +384,6 @@ def case_3_replace_chapters() -> None:
 def case_4_glossary_replace() -> None:
     """glossary_replace: lookup, alt pruning, noop, dry-run."""
 
-    # Case A: default — prune old rendering from alts, rewrite chapters
     with tempfile.TemporaryDirectory() as td:
         root, _before = make_glossary_project(td)
         rep = R.glossary_replace(root, "灵根", "spiritual root")
@@ -470,7 +409,6 @@ def case_4_glossary_replace() -> None:
         check("4d default: chapter rewritten with polished replacements",
               ch == expected, f"got={ch!r}")
 
-    # Case B: keep_alt=True leaves the alt list untouched
     with tempfile.TemporaryDirectory() as td:
         root, _before = make_glossary_project(td)
         rep = R.glossary_replace(root, "灵根", "spiritual root", keep_alt=True)
@@ -485,7 +423,6 @@ def case_4_glossary_replace() -> None:
               and "spiritual root" in (root / "translated" / "CHAPTER_0001.md")
               .read_text(encoding="utf-8"), f"chapters={rep['chapters']}")
 
-    # Case C: lookup by variant finds the entry
     with tempfile.TemporaryDirectory() as td:
         root, _before = make_glossary_project(td)
         rep = R.glossary_replace(root, "靈根", "spirit essence")
@@ -501,13 +438,11 @@ def case_4_glossary_replace() -> None:
               and "The elder examined Spirit essences with an old mirror." in ch,
               f"got={ch!r}")
 
-    # Case D: unknown term raises ReplaceError
     with tempfile.TemporaryDirectory() as td:
         root, _before = make_glossary_project(td)
         check("4k unknown term: ReplaceError raised",
               raises_replace_error(lambda: R.glossary_replace(root, "道基", "dao foundation")))
 
-    # Case E: old == new (case-insensitive) -> noop, nothing written
     with tempfile.TemporaryDirectory() as td:
         root, before = make_glossary_project(td)
         rep = R.glossary_replace(root, "灵根", "Spirit Root")
@@ -521,7 +456,6 @@ def case_4_glossary_replace() -> None:
               and (root / "translated" / "CHAPTER_0001.md").read_bytes() == before["chapter"],
               "")
 
-    # Case F: dry_run reports the diff but writes nothing
     with tempfile.TemporaryDirectory() as td:
         root, before = make_glossary_project(td)
         rep = R.glossary_replace(root, "灵根", "spiritual root", dry_run=True)
@@ -575,7 +509,6 @@ def case_6_preflight() -> None:
     a deterministic setup failure leaves glossary.json byte-unchanged. Only
     hyphen/whitespace-only old translations fail ('-' has no matchable
     words); '...' escapes into a valid regex and the run proceeds."""
-    # Case A: old translation '-' -> ReplaceError, glossary bytes untouched
     with tempfile.TemporaryDirectory() as td:
         root, _before = make_glossary_project(td)
         entry = load_glossary_entry(root)
@@ -587,8 +520,6 @@ def case_6_preflight() -> None:
         check("6b pre-flight: glossary.json byte-identical after the '-' failure",
               (root / "glossary.json").read_bytes() == hyphen_bytes)
 
-    # Case B: old '...' builds a valid regex -> no pre-flight failure; the
-    # glossary save lands and the (match-free) chapter rewrite completes.
     with tempfile.TemporaryDirectory() as td:
         root, _before = make_glossary_project(td)
         entry = load_glossary_entry(root)
@@ -611,7 +542,6 @@ def case_7_progress_and_recovery() -> None:
     path), then glossary_replace's write ordering: a chapter-write failure
     mid-loop leaves glossary.json untouched after the exact warn line, and
     re-running the same command finishes the job idempotently."""
-    # A: the util path with NO progress argument still rewrites everything
     with tempfile.TemporaryDirectory() as td:
         root, _before = make_recovery_project(td)
         rep = R.replace_chapters(root, REC_MANIFEST, "spirit root",
@@ -624,8 +554,6 @@ def case_7_progress_and_recovery() -> None:
             == rec_chapter(i).replace("spirit root", "spiritual root")
             for i, n in enumerate(REC_FILES, 1)), "")
 
-    # B: progress collects each durably-rewritten file name; dry-run collects
-    # nothing (a rewrite that never landed must not be reported as done)
     with tempfile.TemporaryDirectory() as td:
         root, _before = make_recovery_project(td)
         progress: list[str] = []
@@ -647,8 +575,6 @@ def case_7_progress_and_recovery() -> None:
             (root / "translated" / n).read_bytes() == before[n]
             for n in REC_FILES), "")
 
-    # C: a chapter-write failure on the 2nd chapter -> warn + re-raise,
-    # glossary.json untouched, only chapter 1 rewritten
     with tempfile.TemporaryDirectory() as td:
         root, before = make_recovery_project(td)
         translated = root / "translated"
@@ -666,7 +592,7 @@ def case_7_progress_and_recovery() -> None:
             try:
                 with contextlib.redirect_stdout(buf):
                     R.glossary_replace(root, "灵根", "spiritual root")
-            except Exception as caught:  # noqa: BLE001 - asserted below
+            except Exception as caught:
                 exc = caught
         finally:
             R.project.atomic_write_text = orig_awt
@@ -692,9 +618,6 @@ def case_7_progress_and_recovery() -> None:
               list(translated.glob("*.tmp")) == [],
               f"tmp={[str(p) for p in translated.glob('*.tmp')]}")
 
-        # D: re-run the SAME command with the failure removed -> completes,
-        # glossary saved; already-rewritten chapter 1 matches zero and is
-        # skipped, so the recovery is idempotent
         rep = R.glossary_replace(root, "灵根", "spiritual root")
         check("7l recovery: re-run completes (only the 2 untouched chapters)",
               rep["chapters"]["changed"] == 2
@@ -725,7 +648,6 @@ def case_8_bom_chapters() -> None:
     case-insensitively would be counted and rewritten (the old plain-utf-8
     read). A real rewrite strips the BOM; a no-match or dry-run run leaves
     the BOM'd bytes untouched."""
-    # Case A: real run -- frontmatter excluded from count and rewrite
     with tempfile.TemporaryDirectory() as td:
         root, _before = make_bom_project(td, CH1)
         rep = R.replace_chapters(root, BOM_MANIFEST, "spirit root", "spiritual root")
@@ -745,7 +667,6 @@ def case_8_bom_chapters() -> None:
         check("8d BOM: rewritten file equals the plain (non-BOM'd) expectation",
               text == CH1_AFTER, f"got={text!r}")
 
-    # Case B: dry_run -- same body-only count, BOM'd bytes untouched
     with tempfile.TemporaryDirectory() as td:
         root, before = make_bom_project(td, CH1)
         rep = R.replace_chapters(root, BOM_MANIFEST, "spirit root", "spiritual root",
@@ -755,7 +676,6 @@ def case_8_bom_chapters() -> None:
         check("8f BOM: dry-run leaves the BOM'd file byte-identical",
               (root / "translated" / "CHAPTER_0001.md").read_bytes() == before)
 
-    # Case C: no match anywhere -- nothing rewritten, BOM preserved
     with tempfile.TemporaryDirectory() as td:
         root, before = make_bom_project(td, BOM_NO_MATCH)
         rep = R.replace_chapters(root, BOM_MANIFEST, "spirit root", "spiritual root")
@@ -766,7 +686,6 @@ def case_8_bom_chapters() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

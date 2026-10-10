@@ -37,29 +37,15 @@ from typing import Iterable
 from . import balance, glossary, review
 
 
-# Subset of glossary verbs the parser accepts from a "- Command:" bullet.
-# Any other verb (incl. the legacy header "- Command: `review glossary`")
-# is ignored with a warning, never executed.
 _SUPPORTED_VERBS = {"replace", "set", "merge", "retire"}
 
-# Machine-detectable no-op marker: the CLI prints a line starting with this
-# prefix in every nothing-changed path (already up-to-date, already retired,
-# nothing to apply, ...). _looks_like_noop keys the applied/noop bucket on
-# that marker alone -- keying on prose substrings false-positived when a
-# model-written definition containing e.g. "nothing to do" was echoed
-# verbatim by a success line.
 _NOOP_MARKER = "[glossary] noop:"
 
-# Exact, full-line templates for heuristic reason lines. Anchored, no
-# free-form prose is matched anywhere -- the parser refuses to interpret
-# model-written reasons.
 _HEURISTIC_DUP_RE = re.compile(r"^(source|variant) '(.+?)' also belongs to entry '(.+?)'$")
 _HEURISTIC_VARIANT_RE = re.compile(r"^variant '(.+?)' contains no CJK characters$")
 
-# Finding-block heading pattern: "### [N] severity / kind / source".
 _HEADING_RE = re.compile(r"^### \[(\d+)\] (\w+) / (\w+) / (.+?)\s*$")
 
-# Command-line bullet pattern: "- Command: <text>".
 _COMMAND_RE = re.compile(r"^- Command: (.+?)\s*$")
 
 
@@ -72,10 +58,10 @@ class FixError(Exception):
 @dataclass
 class CommandSpec:
     """A single - Command: line (or synthesized equivalent) ready to run."""
-    raw: str                  # exact text after "- Command: " ("" when synthesized)
+    raw: str
     argv: list[str] = field(default_factory=list)
-    line_no: int = 0          # 1-based line number of the bullet (0 for synthesized)
-    finding: dict = field(default_factory=dict)  # minimal finding for logging
+    line_no: int = 0
+    finding: dict = field(default_factory=dict)
 
 
 def parse_report(path: Path) -> tuple[list[CommandSpec], int]:
@@ -86,8 +72,6 @@ def parse_report(path: Path) -> tuple[list[CommandSpec], int]:
     commands are extracted in either mode (so the CLI exits 2 with a
     clear message).
     """
-    # utf-8-sig: the report is hand-editable, so tolerate a BOM -- it would
-    # otherwise break the line-1 anchored ^- Command: / ^### [N] regexes.
     text = path.read_text(encoding="utf-8-sig")
     lines = text.splitlines()
 
@@ -346,9 +330,6 @@ def _resolve_source(g: dict, value: str | None) -> str | None:
     return value
 
 
-# `glossary set` flags whose field edits the conflict guard tracks -- every
-# present flag contributes its own key. Variant/alt edits name their own
-# string and stay untracked.
 _SET_FIELD_FLAGS = ("--definition", "--category", "--translation")
 
 
@@ -387,7 +368,6 @@ def _conflict_keys(argv: list[str], g: dict) -> set[tuple]:
         source = _resolve_source(g, _argv_value(argv, "--source"))
         if source is None:
             return set()
-        # All fields the command writes, not the first present one.
         return {
             (f"set:{flag[2:]}", source)
             for flag in _SET_FIELD_FLAGS
@@ -398,9 +378,6 @@ def _conflict_keys(argv: list[str], g: dict) -> set[tuple]:
         remove = _resolve_source(g, _argv_value(argv, "--remove"))
         if keep is None or remove is None:
             return set()
-        # Keyed on the PAIR: one report legitimately emits
-        # `merge --keep M --remove A` and `merge --keep M --remove B` when two
-        # entries are duplicates of the same keeper, and both must run.
         return {("merge", keep, remove)}
     return set()
 
@@ -428,16 +405,13 @@ def run_commands(
     applied = 0
     noop = 0
     failed = 0
-    specs_run = 0  # subprocesses actually started (skipped guards excluded)
+    specs_run = 0
     skipped_invalid = 0
     skipped_conflict = 0
     seen_keys: set[tuple] = set()
     changed_chapters = False
 
     for i, spec in enumerate(specs, 1):
-        # The writer never emits --project, but the report is hand-editable:
-        # a smuggled --project token would silently override the project dir
-        # the executor prepends below, so such commands are never run.
         if any(
             tok == "--project" or tok.startswith("--project=")
             for tok in spec.argv
@@ -448,10 +422,6 @@ def run_commands(
                 f" ({' '.join(shlex.quote(t) for t in spec.argv)})"
             )
             continue
-        # Reload per spec: earlier subprocesses mutate glossary.json, so a
-        # single up-front load would guard against a stale glossary. A
-        # corrupt file defers to the subprocess -- the guard's verdict is
-        # moot when the verb itself cannot run.
         try:
             g = glossary.load(project_dir)
         except ValueError:
@@ -464,17 +434,9 @@ def run_commands(
                 f" ({' '.join(shlex.quote(t) for t in spec.argv)})"
             )
             continue
-        # Conflict guard: a second command writing any field a queued
-        # command already claimed for the same resolved target -- an
-        # identical re-run or a contradicting suggestion -- never runs;
-        # the first command wins. The keys are queued regardless of the
-        # first command's exit, so a failed first attempt still blocks its
-        # duplicates (a contradicting retry of a broken command is not
-        # safer than the original).
         keys = conflict_keys(spec.argv, g)
         if keys and not keys.isdisjoint(seen_keys):
             skipped_conflict += 1
-            # All keys of one spec share the resolved source, so any works.
             print(
                 f"[review fix] skipped [{i}]: conflicting command for "
                 f"'{sorted(keys)[0][1]}' (already queued)"
@@ -482,27 +444,11 @@ def run_commands(
             continue
         seen_keys |= keys
         argv = _prepare_argv(spec.argv)
-        # The executor always prepends --project at the top level (the
-        # GLOBAL flag, dest="project_global"). Writer-generated Command
-        # lines never carry --project: the nested glossary action
-        # subparsers also register it (dest="project_action"), and a
-        # nested --project would silently override the prepended one by
-        # argparse precedence -- which is why the writer never emits it.
         full_argv = [
             sys.executable, str(script_path),
             "--project", str(project_dir),
             *argv,
         ]
-        # The child (translate.py) reconfigures its stdout/stderr to UTF-8
-        # before printing CJK terms, so decode with the same codec -- the
-        # Windows locale default (cp1252) raises UnicodeDecodeError here.
-        # stdin=DEVNULL: a child that unexpectedly tries to read stdin must
-        # see EOF, never park the whole fix run on a prompt. The env marks
-        # GIT_TERMINAL_PROMPT=0 so a git credential prompt inside the child
-        # fails fast instead of blocking. timeout=1800 bounds a wedged
-        # child: subprocess.run kills it on expiry and raises
-        # TimeoutExpired, which counts the spec as failed -- never
-        # applied/no-op -- and honors exit_on_error like any other failure.
         try:
             proc = subprocess.run(
                 full_argv, capture_output=True, text=True, check=False,
@@ -526,7 +472,6 @@ def run_commands(
             failed += 1
             print(f"[review fix] failed at [{i}]: {' '.join(shlex.quote(t) for t in argv)}")
             if out.strip():
-                # Surface the last useful line of output for diagnostics.
                 tail = out.strip().splitlines()[-1]
                 print(f"[review fix] {tail}")
             if exit_on_error:

@@ -42,11 +42,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import glossary, review  # noqa: E402
+from lib import glossary, review
 
 PASSED = 0
 FAILED: list[str] = []
@@ -302,7 +301,6 @@ def case_8_batch_resilience() -> None:
     with tempfile.TemporaryDirectory() as td:
         project_dir = Path(td)
         write_glossary(project_dir, entries)
-        # batch_size 2 -> batches [灵一,灵二] [灵三,灵四] [灵五]; 2nd call raises
         rows_by_call = [
             {"findings": [{"source": "灵一", "kind": "mistranslation",
                            "severity": "warn", "reason": "b1",
@@ -343,7 +341,6 @@ def case_9_apply_fixes_guards() -> None:
         def entry(g: dict, source: str) -> dict:
             return next(t for t in g["terms"] if t["source"] == source)
 
-        # 9a: eligible model warn mistranslation -> applied, fields preserved
         fixes = review.apply_fixes(project_dir, [
             {"source": "天雷宗", "kind": "mistranslation", "severity": "warn",
              "reason": "wrong rendering", "suggestion": "Heavenly Thunder Sect",
@@ -367,10 +364,7 @@ def case_9_apply_fixes_guards() -> None:
         check("9d apply: untouched entry stays untouched",
               entry(g, "灵根")["translation"] == "灵根")
 
-        # 9e-9j: the guard batch -- nothing may apply
         guard_findings = [
-            # heuristic findings only qualify when the merge flagged their
-            # borrowed suggestion "fixable"; a bare heuristic never does
             {"source": "天雷宗", "kind": "mistranslation", "severity": "warn",
              "reason": "heuristic without the merge flag", "suggestion": "Never Applied",
              "origin": "heuristic"},
@@ -416,7 +410,6 @@ def case_9_apply_fixes_guards() -> None:
               and entry(g, "灵根")["translation"] == "灵根"
               and entry(g, "灵根")["category"] == "skill")
 
-        # 9g2: a merge-borrowed suggestion (heuristic origin, fixable) applies
         fixes = review.apply_fixes(project_dir, [
             {"source": "天雷宗", "kind": "wrong_language", "severity": "warn",
              "reason": "borrowed fix", "suggestion": "Heavenly Thunder Sect (merged)",
@@ -430,7 +423,6 @@ def case_9_apply_fixes_guards() -> None:
               and ap[0]["new"] == "Heavenly Thunder Sect (merged)",
               f"applied={ap} skipped={sk}")
 
-        # 9h: a valid category fix on the other entry -> applied
         fixes = review.apply_fixes(project_dir, [
             {"source": "灵根", "kind": "category", "severity": "warn",
              "reason": "miscategorized", "suggestion": "org", "origin": "model"},
@@ -482,8 +474,6 @@ def case_10_report() -> None:
              "suggestion": "", "origin": "heuristic"},
         ]
 
-        # report-only run: machine finding [1] under Machine-applicable,
-        # manual finding [2] under Needs manual review
         path = review.write_report(
             project_dir, findings=findings, terms=terms, applied=[], skipped=[],
             ran_fix=False, batches=1, batch_errors=[], cfg=cfg,
@@ -539,8 +529,6 @@ def case_10_report() -> None:
         check("10e report: next-steps footer",
               "retry --chapters" in text and "retired" in text, "footer missing")
 
-        # --fix run where the translation fix resolved the warn: excluded from
-        # numbering, listed under Fixed automatically instead
         applied = [{"source": "天雷宗", "field": "translation",
                     "kind": "mistranslation", "old": "river town",
                     "new": "Heavenly Thunder Sect"}]
@@ -570,7 +558,6 @@ def case_10_report() -> None:
         check("10h report: skipped section with reason",
               "conflicting suggestions" in text, "skipped section wrong")
 
-        # clean run
         path = review.write_report(
             project_dir, findings=[], terms=terms, applied=[], skipped=[],
             ran_fix=False, batches=1, batch_errors=[], cfg=cfg,
@@ -597,8 +584,6 @@ def case_11_mundane() -> None:
         terms = [{"source": source, "translation": "spirit stone", "category": "item"}]
         write_glossary(project_dir, terms)
 
-        # 11a: a valid mundane warn row passes through verbatim -- a known
-        # kind is never collapsed to "other", even with an empty suggestion
         rows = {"findings": [
             {"source": source, "kind": "mundane", "severity": "warn",
              "reason": "ordinary word, not a novel-specific term",
@@ -612,8 +597,6 @@ def case_11_mundane() -> None:
               and not pick(result["findings"], source, "other"),
               f"findings={[(f['source'], f['kind']) for f in result['findings']]}")
 
-        # 11b: the retire mapping holds for any origin and ignores the
-        # suggestion entirely (no suggestion is needed to retire)
         spec = review.command_for_finding(
             {"source": source, "kind": "mundane", "suggestion": "", "origin": "model"})
         check("11b mundane: command_for_finding -> glossary retire --source",
@@ -626,15 +609,12 @@ def case_11_mundane() -> None:
               spec == {"name": "glossary retire", "args": {"source": source}},
               f"spec={spec}")
 
-        # 11c: the per-kind Action template points at the retired list
         action = review._action_text({"kind": "mundane", "suggestion": ""},
                                      "Chinese", "English")
         check("11c mundane: action text mentions the top-level retired list",
               "retired" in action and "Retire this term" in action,
               f"action={action!r}")
 
-        # 11d: the report renders the finding with a retire Command bullet
-        # whose CJK source is shlex-quoted and round-trips back to argv
         finding = {"source": source, "kind": "mundane", "severity": "warn",
                    "reason": "ordinary word, not a novel-specific term",
                    "suggestion": "", "action": "", "origin": "model"}
@@ -652,8 +632,6 @@ def case_11_mundane() -> None:
         argv = shlex.split(retire_lines[0][len("- Command: "):]) if retire_lines else []
         check("11d2 mundane: CJK source survives the shlex round-trip",
               argv == ["glossary", "retire", "--source", source], f"argv={argv}")
-        # mundane maps to `glossary retire`, so it is machine-applicable and
-        # belongs in the Machine-applicable section (no manual section here)
         check("11d3 mundane: finding lives in Machine-applicable, no manual section",
               "## Machine-applicable (apply with `review fix`)" in text
               and text.index("## Machine-applicable")
@@ -668,9 +646,6 @@ def case_11_mundane() -> None:
               and "\nmanual_review_indices: []\n" in text,
               "frontmatter wrong")
 
-        # 11e: mundane has no target field, so a warn model finding is never
-        # eligible -- not applied and not even listed in skipped (the
-        # suggestion is non-empty on purpose: kind gating, not emptiness)
         fixes = review.apply_fixes(project_dir, [
             {"source": source, "kind": "mundane", "severity": "warn",
              "reason": "retire me", "suggestion": "never used", "origin": "model"},
@@ -681,8 +656,6 @@ def case_11_mundane() -> None:
         check("11e2 mundane: glossary on disk untouched by the fix attempt",
               g["terms"][0]["translation"] == "spirit stone", f"terms={g['terms']}")
 
-        # 11f: report-only kinds stay outstanding even after the same entry's
-        # translation was fixed (a mundane fix is retirement, not an edit)
         outstanding = review.outstanding_filter(
             [{"source": source, "field": "translation"}])
         check("11f mundane: still outstanding after a translation fix on the source "
@@ -723,7 +696,6 @@ def case_12_apply_fixes_already_set() -> None:
         check("12d already-set: glossary.json byte-unchanged",
               (project_dir / "glossary.json").read_bytes() == before)
 
-        # whitespace-padded equal suggestion: the comparison strips first
         fixes = review.apply_fixes(project_dir, [
             {"source": "灵根", "kind": "mistranslation", "severity": "warn",
              "reason": "padded re-run of the same suggestion",
@@ -736,7 +708,6 @@ def case_12_apply_fixes_already_set() -> None:
                                         "reason": "already set"}],
               f"fixes={fixes}")
 
-        # control: a genuinely different suggestion on the same entry applies
         fixes = review.apply_fixes(project_dir, [
             {"source": "灵根", "kind": "mistranslation", "severity": "warn",
              "reason": "a genuinely different rendering",
@@ -835,7 +806,6 @@ def case_14_apply_fixes_unit_warn() -> None:
              "category": "item"},
         ])
 
-        # A: 'unit' onto an entry WITH a translation -> warn + applied
         finding = {"source": "灵根", "kind": "category", "severity": "warn",
                    "reason": "miscategorized", "suggestion": "unit",
                    "origin": "model"}
@@ -859,7 +829,6 @@ def case_14_apply_fixes_unit_warn() -> None:
               entry["category"] == "unit"
               and entry["translation"] == "spirit root", f"entry={entry}")
 
-        # B: 'unit' onto an entry with an EMPTY translation -> silent
         finding = {"source": "灵石", "kind": "category", "severity": "warn",
                    "reason": "miscategorized", "suggestion": "unit",
                    "origin": "model"}
@@ -878,7 +847,6 @@ def case_14_apply_fixes_unit_warn() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

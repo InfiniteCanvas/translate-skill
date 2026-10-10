@@ -78,13 +78,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# scripts/ (and therefore lib/ and translate.py) lives at
-# novel-translator/scripts relative to this file (CWD-independent).
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import translate  # noqa: E402
-from lib import config, fix, glossary, pipeline, profile, project, styles, tn  # noqa: E402
+import translate
+from lib import config, fix, glossary, pipeline, profile, project, styles, tn
 
 PASSED = 0
 FAILED: list[str] = []
@@ -109,7 +107,7 @@ def capture(fn, *args, **kwargs):
     try:
         with contextlib.redirect_stdout(buf):
             result = fn(*args, **kwargs)
-    except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+    except Exception as caught:
         exc = caught
     return result, buf.getvalue(), exc
 
@@ -127,15 +125,11 @@ def write_bom(path: Path, text: str) -> None:
     write_lf(path, "\ufeff" + text)
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_bom_json_project_files() -> None:
     """Every JSON project file loads cleanly with its data when BOM-prefixed."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
 
-        # glossary.json
         glossary_in = {"terms": [
             {"source": "灵根", "variants": ["靈根"],
              "translation": "spirit root"},
@@ -148,7 +142,6 @@ def case_1_bom_json_project_files() -> None:
         check("1b glossary: silent (no discard warning)",
               out == "", f"out={out!r}")
 
-        # chapters.json
         manifest_in = [{"file": "CHAPTER_0001.md", "number": 1, "suffix": "",
                         "order": 0, "status": "translated",
                         "title": "Spirit Root"}]
@@ -159,7 +152,6 @@ def case_1_bom_json_project_files() -> None:
               exc is None and m == manifest_in, f"exc={exc!r} m={m}")
         check("1d manifest: silent", out == "", f"out={out!r}")
 
-        # tn_history.json
         history_in = {"灵根": {"note": "Innate aptitude for cultivation.",
                                "last_order": 3, "times": 2}}
         write_bom(root / "tn_history.json",
@@ -168,9 +160,6 @@ def case_1_bom_json_project_files() -> None:
         check("1e tn_history: BOM'd file loads with its term",
               exc is None and h == history_in, f"exc={exc!r} h={h}")
         check("1f tn_history: silent", out == "", f"out={out!r}")
-        # The save counterpart (A4 pin, natural to the load it mirrors):
-        # LF newlines and exactly one trailing newline, like every other
-        # project JSON writer.
         _res, _out_save, exc_save = capture(tn.save_history, root, history_in)
         raw = (root / "tn_history.json").read_bytes()
         check("1f2 tn_history: save_history pins LF + one trailing newline",
@@ -180,7 +169,6 @@ def case_1_bom_json_project_files() -> None:
               and b"\r" not in raw,
               f"exc={exc_save!r} raw={raw!r}")
 
-        # notes sidecar
         notes_in = [{"line": 0, "term": "灵根",
                      "note": "Innate aptitude for cultivation.",
                      "anchor": "He tested his spirit root."}]
@@ -193,7 +181,6 @@ def case_1_bom_json_project_files() -> None:
               exc is None and n == notes_in, f"exc={exc!r} n={n}")
         check("1h notes: silent", out == "", f"out={out!r}")
 
-        # draft/<stem>.state.json
         state_in = {"stage": "FAITH", "attempt": 1, "feedback": ["b1"],
                     "title": "T", "lines": None, "notes": None,
                     "rejected": None, "updated_at": "", "pipeline": 2}
@@ -207,9 +194,6 @@ def case_1_bom_json_project_files() -> None:
               f"exc={exc!r} s={s}")
         check("1j state: silent", out == "", f"out={out!r}")
 
-        # config.json: the user override must win over DEFAULTS while the
-        # deep-merge still fills untouched keys -- a BOM-broken read would
-        # raise instead of quietly returning pure DEFAULTS.
         write_bom(root / "config.json",
                   json.dumps({"max_attempts": 9, "providers": {}}, indent=2))
         cfg, out, exc = capture(config.load_config, root)
@@ -226,7 +210,6 @@ def case_1_bom_json_project_files() -> None:
               f"providers={sorted(cfg.get('providers', {})) if cfg else None}")
         check("1m config: silent", out == "", f"out={out!r}")
 
-        # novel_info.json via translate's strict helper
         info_in = {"title": "凡人修仙传", "author": "忘语",
                    "background": "A mortal's cultivation epic."}
         write_bom(root / "novel_info.json",
@@ -275,7 +258,6 @@ def case_3_parse_report_bom() -> None:
     with tempfile.TemporaryDirectory() as td:
         report = Path(td) / "review-report.md"
 
-        # explicit mode: the - Command: bullet ON LINE 1
         write_bom(report, "- Command: glossary replace --source '灵根' "
                           "--translation 'spiritual root'\n")
         result, out, exc = capture(fix.parse_report, report)
@@ -287,7 +269,6 @@ def case_3_parse_report_bom() -> None:
               and specs[0].line_no == 1,
               f"exc={exc!r} specs={[(s.argv, s.line_no) for s in specs]}")
 
-        # legacy synthesis mode: the '### [N]' heading ON LINE 1
         write_bom(report,
                   "### [1] warn / mundane / 灵根\n"
                   "\n"
@@ -426,7 +407,6 @@ def case_7_styles_bom() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

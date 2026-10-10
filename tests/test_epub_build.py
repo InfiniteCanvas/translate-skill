@@ -59,13 +59,12 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import epub as E  # noqa: E402
-from lib import project as P  # noqa: E402
-import translate  # noqa: E402
+from lib import epub as E
+from lib import project as P
+import translate
 
 PASSED = 0
 FAILED: list[str] = []
@@ -90,7 +89,7 @@ def capture(fn, *args, **kwargs):
     try:
         with contextlib.redirect_stdout(buf):
             result = fn(*args, **kwargs)
-    except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+    except Exception as caught:
         exc = caught
     return result, buf.getvalue(), exc
 
@@ -143,16 +142,10 @@ def export_paths(root: Path) -> tuple[Path, Path]:
     return export, export / "atomic-test-novel.epub"
 
 
-# A minimal hand-built JPEG (SOI + JFIF APP0 + EOI): build() only stores
-# the bytes via set_cover (media_type image/jpeg) and these hermetic builds
-# skip the epubcheck docker run, so no real decoder ever sees it.
 JPEG_BYTES = (
     b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
     b"\xff\xd9"
 )
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_success_atomic() -> None:
@@ -184,9 +177,6 @@ def case_1_success_atomic() -> None:
               "mimetype" in names and "EPUB/chapter_0001.xhtml" in names
               and "EPUB/chapter_0002.xhtml" in names, f"names={names}")
 
-        # Rebuild over the existing epub: still atomic, still clean (the
-        # rebuilt zip is NOT compared byte-for-byte: ebooklib stamps the
-        # OPF with a dcterms:modified clock time).
         _res, _out2, exc2 = capture(E.build, root, NOVEL_INFO, CFG,
                                     skip_check=True)
         check("1g build: rebuild over the existing epub succeeds",
@@ -318,23 +308,17 @@ def case_4_docker_infra_tri_state() -> None:
             "unix:///var/run/docker.sock. Is the docker daemon running?", True),
         (1, "docker: Unable to find image 'epubcheck:latest' locally", True),
         (1, "Error During Connect: The client cannot connect to the daemon",
-         True),  # needles match case-insensitively
+         True),
         (1, "There were validation errors in the EPUB", False),
         (1, "", False),
         (2, "some other docker failure", False),
         (127, "command not found", False),
-        # docker exits 1, not 125, on the registry paths: a machine whose
-        # pulls are blocked must degrade to "could not run" too, or it keeps
-        # reporting good epubs as malformed.
         (1, "Error response from daemon: pull access denied for epubcheck",
          True),
         (1, "Error response from daemon: Could not select a version for the "
             "image", True),
         (1, "dial tcp: lookup epubcheck on host: no such host", True),
         (1, "manifest for epubcheck:1.0 not found: manifest unknown", True),
-        # Proven real exit-1 infra failures the original needle set missed:
-        # daemon-socket permission denial, platform manifest mismatch,
-        # credential-helper failure, pull rate limit.
         (1, "docker: permission denied while trying to connect to the "
             "docker daemon socket at unix:///var/run/docker.sock", True),
         (1, "docker: no matching manifest for windows/amd64 in the "
@@ -342,8 +326,6 @@ def case_4_docker_infra_tri_state() -> None:
         (1, "error getting credentials - err: exec: "
             "\"docker-credential-desktop\": executable file not found", True),
         (1, "toomanyrequests: You have reached your pull rate limit", True),
-        # An epubcheck-side "denied" finding must not read as docker infra
-        # (near-collision with the daemon-socket needle).
         (1, "ERROR: permission denied to write output file", False),
     ]
     for i, (rc, output, expected) in enumerate(pairs):
@@ -416,7 +398,6 @@ def case_5_autobuild_tri_state() -> None:
     clean exit 0 with "[warn] epubcheck skipped"."""
     fake_path = Path("R:/fake/export/book.epub")
 
-    # A: ok=None -> the skip path (warn, not failure)
     with tempfile.TemporaryDirectory() as td:
         root = make_autobuild_project(td)
         orig_build = translate.epub.build
@@ -434,7 +415,6 @@ def case_5_autobuild_tri_state() -> None:
                      "unavailable) - skipping validation\n",
               f"out={out!r}")
 
-    # B: ok=True -> the [epub-auto] ok line with the reason and path
     with tempfile.TemporaryDirectory() as td:
         root = make_autobuild_project(td)
         orig_build = translate.epub.build
@@ -451,7 +431,6 @@ def case_5_autobuild_tri_state() -> None:
                          f"{fake_path}\n",
               f"exc={exc!r} out={out!r}")
 
-    # C: ok=False -> the failed-validation warn
     with tempfile.TemporaryDirectory() as td:
         root = make_autobuild_project(td)
         orig_build = translate.epub.build
@@ -468,7 +447,6 @@ def case_5_autobuild_tri_state() -> None:
                          f"{fake_path}\n",
               f"exc={exc!r} out={out!r}")
 
-    # D: changed=False -> early return, nothing printed
     with tempfile.TemporaryDirectory() as td:
         root = make_autobuild_project(td)
         _res, out, exc = capture(
@@ -477,7 +455,6 @@ def case_5_autobuild_tri_state() -> None:
         check("5e autobuild changed=False: silent no-op",
               exc is None and out == "", f"exc={exc!r} out={out!r}")
 
-    # E: cmd_build_epub with an ok=None build -> exit 0 + the skip warn
     with tempfile.TemporaryDirectory() as td:
         root = make_autobuild_project(td)
         orig_build = translate.epub.build
@@ -501,7 +478,6 @@ def case_6_cover_embed() -> None:
     carries the EPUB/cover.jpg member with the EXACT source bytes (plus
     ebooklib's cover page), while a project without covers/ embeds no
     cover at all (the exists() gate stays shut)."""
-    # A: with covers/cover.jpg -> embedded byte-verbatim
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td)
         cover = root / "covers" / "cover.jpg"
@@ -527,7 +503,6 @@ def case_6_cover_embed() -> None:
               embedded == JPEG_BYTES,
               f"got={None if embedded is None else len(embedded)} bytes")
 
-    # B: control -- no covers/ -> no cover member anywhere in the zip
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td)
         _export, final = export_paths(root)
@@ -543,7 +518,6 @@ def case_6_cover_embed() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

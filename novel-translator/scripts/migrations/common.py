@@ -42,7 +42,6 @@ def materialize_config(project_dir: Path, dry_run: bool) -> list[str]:
             f"[ok] config: materialized {len(new_keys)} new key(s): "
             + ", ".join(new_keys)
         ]
-    # No new top-level keys: the only change was nested provider defaults.
     return ["[ok] config: provider blocks normalized (no new top-level keys)"]
 
 
@@ -70,8 +69,6 @@ def sync_templates(project_dir: Path, templates_src: Path,
                 shutil.copy2(tpl, dest)
             lines.append(f"[ok] templates + {tpl.name} (new)")
             continue
-        # Text comparison, not bytes: line-ending or BOM drift alone is not
-        # a meaningful "user edit" worth a prompt.
         if (dest.read_text(encoding="utf-8-sig")
                 == tpl.read_text(encoding="utf-8-sig")):
             continue

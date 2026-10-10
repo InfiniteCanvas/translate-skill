@@ -1,26 +1,3 @@
-"""Regression tests for glossary.contextual() cross-entry longest-first counting.
-
-contextual() must count with a single regex alternation over ALL entries'
-matchable strings (source + variants), sorted longest-first: each text
-occurrence credits only the entry/entries owning the longest string that
-matches at that position. Motivating incident: body text 修仙界 wrongly
-credited the entry 仙界 even though the 修仙 match consumes those
-characters, so a shorter term shadowed by another entry's in-place match
-must receive no credit.
-
-Also pins count_in_text()'s unchanged per-entry substring semantics (used
-by seed()) and balance.check()'s drift-signal tier, including the
-guide-only category skip (unit entries are never checked) and the minimal
-hand-entry skip: an entry with a source (and variants) but NO translation
-that occurs in the source text produces no signal on any tier (there is no
-canonical rendering to enforce, and no KeyError), while a normal entry over
-the same text still drifts.
-
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
-
-    uv run tests/test_glossary_counting.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6.0"]
@@ -28,11 +5,10 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 import sys
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import balance, glossary  # noqa: E402
+from lib import balance, glossary
 
 PASSED = 0
 FAILED: list[str] = []
@@ -199,8 +175,6 @@ def case_9_guide_only_units() -> None:
     entry under any other category still drifts."""
     li_unit = {"source": "里", "translation": "li", "category": "unit"}
     li_other = {"source": "里", "translation": "li", "category": "other"}
-    # src 5x (locative 这里/里面 substrings inflate the count), rendering
-    # never appears: the exact shape that makes unit counting noise.
     lines = [
         "他在房间里走了十里路。",
         "这里的风景不错，那里也一样。",
@@ -238,9 +212,6 @@ def case_10_minimal_hand_entry() -> None:
     c = counts(pairs)
     check("10a minimal: both entries counted in the source text",
           c.get("灵根") == 2 and c.get("仙界") == 2, f"pairs={c}")
-    # Neither rendering appears in the translation: the normal entry must
-    # drift (the regression guard), the translation-less one must stay
-    # silent on all three tiers.
     lines = [
         "He awakened a rare aptitude, one in ten thousand.",
         "He ascended to a boundless plane above.",
@@ -259,7 +230,6 @@ def case_10_minimal_hand_entry() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

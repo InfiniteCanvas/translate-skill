@@ -40,14 +40,10 @@ import json
 import sys
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file
-# (CWD-independent); the catalogues at novel-translator/assets/catalogues,
-# discovered exactly like translate.py's `init` does it
-# (sorted(CATALOGUES_DIR.glob("*.json"))).
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import glossary  # noqa: E402
+from lib import glossary
 
 CATALOGUES_DIR = (
     Path(__file__).resolve().parent.parent / "novel-translator" / "assets" / "catalogues"
@@ -214,7 +210,6 @@ def case_6_total(catalogues: dict[str, dict]) -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

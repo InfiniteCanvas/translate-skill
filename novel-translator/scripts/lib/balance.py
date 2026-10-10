@@ -15,12 +15,6 @@ def is_cjk(text: str) -> bool:
     their own surrounding guards (e.g. isinstance(source, str))."""
     return bool(CJK_RE.search(text))
 
-# Entries in these categories are injected into the translation prompt as
-# rendering guides (contextual glossary) but ignored by the checker: their
-# source strings are short and polysemous (里 in 这里/里面, 寸 in idioms), so
-# drift/usage counting for them is noise. They are catalogue-curated, and
-# because the checker emits no signals for them the cleanup judgment can
-# never retire them either.
 GUIDE_ONLY_CATEGORIES = frozenset({"unit"})
 
 
@@ -78,9 +72,6 @@ def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
     if not targets:
         return 0
     text = "\n".join(lines)
-    # Per-target script split: a CJK rendering counts as an exact substring
-    # while a Latin rendering in the SAME entry keeps the word-boundary/
-    # stem/fuzzy path below.
     total = sum(text.count(target) for target in targets if CJK_RE.search(target))
     wordy = [target for target in targets if not CJK_RE.search(target)]
     if not wordy:
@@ -88,18 +79,10 @@ def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
     low = text.lower()
     tokens = _TOKEN_RE.findall(low)
     for target in wordy:
-        # Hyphens are normalization-level: split them into words so a
-        # hyphenated target ("outer-sect") also matches spaced text and,
-        # via the [\s-]+ joiner below, a spaced target matches hyphenated
-        # attributive text ("outer-sect disciple").
         words = target.lower().replace("-", " ").split()
         if not words:
             continue
         if len(words) > 1:
-            # Phrase match with word boundaries; words may be joined by
-            # whitespace OR a hyphen ("outer sect" also matches the natural
-            # attributive "outer-sect disciple"), and the final word may take
-            # a natural inflection ("spirit stone(s)").
             joiner = r"[\s-]+"
             head = joiner.join(re.escape(w) for w in words[:-1])
             tail = re.escape(words[-1]) + r"(?:es|s|ed|ing)?"
@@ -155,8 +138,6 @@ def check(pairs: list[tuple[dict, int]],
     for entry, src_count in pairs:
         if entry.get("category") in GUIDE_ONLY_CATEGORIES:
             continue
-        # Hand-added entries may be minimal (source only, no translation
-        # yet): without a canonical rendering there is nothing to check.
         if not entry.get("translation"):
             continue
         tgt_count = count_in_target(entry, translated_lines, fuzzy_max)

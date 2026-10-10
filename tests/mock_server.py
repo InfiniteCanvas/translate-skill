@@ -79,10 +79,6 @@ def _balanced_arrays(text: str):
 
 
 def mock_reply(prompt: str) -> str:
-    # Consensus arbitration is sniffed FIRST: the consensus prompt embeds
-    # the whole original task prompt (translation arrays, "terms", "recap"
-    # labels and all), so any later branch would misroute it. The mock
-    # arbitrator simply returns candidate 1 verbatim.
     if "### Candidate 1" in prompt and "consensus arbitrator" in prompt:
         m = re.search(
             r"### Candidate 1 \(model: [^)]*\)\n\n(.*?)(?=\n### Candidate \d+ \(model:|\Z)",
@@ -107,13 +103,11 @@ def mock_reply(prompt: str) -> str:
     if "style_summary" in prompt:
         return json.dumps({"style_summary": "A mock literary style.", "background": "A mock novel background."})
     if "Flagged Terms" in prompt:
-        # glossary cleanup on balance drift signals: remove every flagged term
         terms = re.findall(r"- (\S+) translates to", prompt)
         return json.dumps(
             {"decisions": [{"source": t, "keep": False, "reason": "mundane mock term"} for t in terms]}
         )
     if "Glossary Review" in prompt:
-        # review glossary model tier: flag the first listed entry as fixable
         m = re.search(r'"source":\s*"([^"]+)"', prompt)
         first = m.group(1) if m else "测试"
         return json.dumps({"findings": [{
@@ -124,8 +118,6 @@ def mock_reply(prompt: str) -> str:
         }]})
     if '"terms"' in prompt:
         return json.dumps({"terms": []})
-    # translation: mirror the last line array in the prompt — numbered
-    # objects ({"i", "t"}) under the numbered-line protocol, or plain strings
     for arr in reversed(list(_balanced_arrays(prompt))):
         if arr and all(
             isinstance(x, dict) and isinstance(x.get("i"), int) and isinstance(x.get("t"), str)
@@ -139,8 +131,6 @@ def mock_reply(prompt: str) -> str:
         if arr and all(isinstance(x, str) for x in arr):
             out = ["Translated line %d." % i if ln.strip() else "" for i, ln in enumerate(arr)]
             return json.dumps({"title": "Mock Chapter Title", "lines": out})
-    # recap generation (story_state's recap.md prompt): AFTER the balanced-
-    # array scan above, BEFORE the empty-translation fallback below.
     if "recap" in prompt:
         return json.dumps({"recap": "Mock recap: the story continues."})
     return json.dumps({"title": "Mock Chapter Title", "lines": []})
@@ -166,7 +156,7 @@ def mock_message(body: dict) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):  # quiet
+    def log_message(self, *args):
         pass
 
     def _send(self, code: int, body: bytes, ctype: str):
@@ -192,9 +182,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self):
-        # Accept any base path (e.g. /v1 or a hosted-style /api/paas/v4) so
-        # providers with non-/v1 bases can be simulated; /models stays
-        # /v1-only, letting tests exercise the ping chat-probe fallback.
         if not self.path.endswith("/chat/completions"):
             self._send(404, b"not found", "text/plain")
             return

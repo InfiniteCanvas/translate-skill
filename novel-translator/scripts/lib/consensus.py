@@ -41,22 +41,10 @@ from pathlib import Path
 
 from lib import client, config, logger, project
 
-# Console announce state: a multi-chapter run shares one config, so the
-# "N model(s)" line prints once per (job, n) per process. Resettable for
-# tests, like pipeline._TOKEN_CAP_WARNED.
 _ANNOUNCED: set[tuple[str, int]] = set()
 
-# Live fan-out count. While > 0, worker threads are mid-HTTP-call and a
-# Ctrl-C must hard-exit the CLI (translate.main's KeyboardInterrupt handler
-# checks this): SIGINT only interrupts the main thread, and the
-# interpreter's atexit join would otherwise wait out each abandoned
-# worker's full retry ladder (minutes against a hung endpoint).
 _ACTIVE_FANS = 0
 
-# consensus.md: the synthesize-over-candidates prompt. Loaded through
-# pipeline's helpers (project templates/ first, skill assets fallback,
-# no-rescan fill) via a lazy import -- pipeline imports this module, so a
-# top-level import would be a cycle.
 _CONSENSUS_TEMPLATE = "consensus.md"
 
 
@@ -70,7 +58,7 @@ def _model_label(block: dict) -> str:
     try:
         return client.resolve_model(str(block.get("base_url", "")),
                                     headers=client.auth_headers(block))
-    except Exception:  # noqa: BLE001 - label only, never fails the task
+    except Exception:
         return "(unresolved model)"
 
 
@@ -179,13 +167,6 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
         print(f"[consensus] {job}: {n} model(s) - merging results "
               "via the consensus provider")
 
-    # Fan out: one worker thread per block (wall-clock ~= the slowest
-    # model, not the sum). Outcomes are collected in block order so the
-    # per-candidate warnings print deterministically; only the main thread
-    # prints. A Ctrl-C cancels pending calls and abandons in-flight ones
-    # (an HTTP request in flight cannot be interrupted); _ACTIVE_FANS
-    # staying elevated tells the CLI to hard-exit rather than let the
-    # interpreter's atexit join wait out the abandoned workers.
     global _ACTIVE_FANS
     _ACTIVE_FANS += 1
     outcomes: list[str | None] = [None] * n
@@ -203,12 +184,9 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
         for i, future in enumerate(futures):
             try:
                 outcomes[i] = future.result()
-            except Exception as exc:  # noqa: BLE001 - per-candidate tolerance
+            except Exception as exc:
                 errors[i] = exc
     except KeyboardInterrupt:
-        # _ACTIVE_FANS deliberately stays elevated (no decrement): the
-        # workers are being abandoned, and translate.main hard-exits the
-        # process exactly because this count is nonzero.
         pool.shutdown(wait=False, cancel_futures=True)
         raise
     pool.shutdown(wait=True)
@@ -219,18 +197,6 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     failures = [(i, errors[i - 1]) for i in range(1, n + 1)
                 if errors[i - 1] is not None]
     if failures:
-        # Every failure is collected and NAMED first -- the operator needs to
-        # know which models failed, not just the last one to raise -- and then
-        # the run stops. There is deliberately no "continue with the remaining
-        # candidates" path: a provider failure that survives its retries means
-        # the configured provider cannot do the job, and a chapter built from
-        # whichever model happened to survive is not the chapter the project
-        # configured. It also used to be silent -- the multi-model merge quietly
-        # became a single-model call behind one [warn] line.
-        #
-        # This one check also covers the old "only one candidate survived"
-        # branch: reaching a survivor count below n IS reaching a failure, so
-        # there is no separate single-survivor state left to guard.
         for i, exc in failures:
             print(f"[FAIL] consensus: {job} candidate {i}/{n} "
                   f"({_model_label(blocks[i - 1])}) failed: "
@@ -240,10 +206,7 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
                    f"- the run stops rather than merging a partial fan-out")
         raise failures[0][1]
 
-    # Synthesize: the consensus provider judges the candidates against the
-    # original task prompt (which carries the output contract) and writes
-    # the single final response in exactly that format.
-    from lib import pipeline  # lazy: pipeline imports this module at top level
+    from lib import pipeline
     cblock = config.consensus_provider(cfg, job)
     sections = [
         f"### Candidate {i} (model: {_model_label(blocks[i - 1])})\n\n{text}"
@@ -256,28 +219,7 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
         {"task_prompt": prompt,
          "candidates_section": "\n\n".join(sections)},
         _CONSENSUS_TEMPLATE)
-    # Never below the task's explicit cap (the synthesis must fit what the
-    # task's own contract allows) nor the consensus block's declared cap
-    # (a deliberately raised/lowered consensus max_tokens must win).
-    # enforce_ceiling=False: this call is the ONE place allowed to exceed its
-    # block's own max_tokens. c_max is already max(task, block), so clamping
-    # it to the consensus block's declared cap would cap a full-chapter merge
-    # at the arbitrator's own budget -- which is routinely smaller than the
-    # candidates it has to merge (see config.local.example.mixed.json:
-    # translator 256000, consensus 65536).
-    #
-    # It is a FLOOR, not a licence to ignore the provider: client._resolve_cap
-    # still clamps this to the block's `max_tokens_limit`, so a block whose
-    # declared max_tokens IS its provider's real limit (Z.AI: 131072) merges at
-    # that limit rather than being sent the task cap and 400ing.
     c_max = max(max_tokens or 0, int(cblock.get("max_tokens") or 0)) or None
-    # No try/except around the merge. A synthesis that fails after its retries
-    # used to be logged as `degraded` and answered with candidate 1's text
-    # verbatim -- the single worst failure in the pipeline, because the chapter
-    # looked translated and the multi-model merge everyone configured had never
-    # run. `client.LMFatal` (an irrecoverable provider code) is raised by
-    # client.chat itself; an exhausted retry raises `LLMError`, which is fatal
-    # for the same reason and is re-raised here so no stage absorbs it.
     return client.chat(
         cblock, c_prompt, json_schema=json_schema, max_tokens=c_max,
         enforce_ceiling=False,

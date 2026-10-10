@@ -55,7 +55,7 @@ import requests
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import client, config, logger, pipeline  # noqa: E402
+from lib import client, config, logger, pipeline
 
 PASSED = 0
 FAILED: list[str] = []
@@ -145,8 +145,6 @@ def call(**kw):
     return client.chat(block(), "hi", json_schema={"type": "object"}, **kw)
 
 
-# The codes client.ZAI_FATAL_CODES claims, with the HTTP status the vendor pairs
-# them with. If the vendor re-buckets one, this table is the thing that fails.
 FATAL_CASES = [
     ("1000", 401), ("1001", 401), ("1003", 401), ("1005", 401),
     ("1113", 429), ("1210", 400), ("1211", 400), ("1212", 400),
@@ -156,8 +154,6 @@ FATAL_CASES = [
     ("1315", 429),
 ]
 
-# Quota windows that publish a reset time. Fatalizing these would convert a
-# self-healing wait into a guaranteed kill on a run that spans hours.
 RETRYABLE_CODES = ["1302", "1305", "1308", "1310", "1316", "1317", "1318",
                    "1319", "1320", "1321"]
 
@@ -168,7 +164,7 @@ def case_a_fatal_codes_raise_on_the_first_attempt() -> None:
         with scripted([zai(code, status=status)]) as log:
             try:
                 call()
-            except Exception as caught:  # noqa: BLE001 - the caller asserts
+            except Exception as caught:
                 exc = caught
         check(f"a {code}: raises LLMFatal naming the code",
               isinstance(exc, client.LLMFatal) and code in str(exc),
@@ -190,7 +186,7 @@ def case_b_the_fatal_check_precedes_the_guided_json_fallback() -> None:
     with scripted([zai("1214", "Parameter `response_format` is invalid.")]) as log:
         try:
             call()
-        except Exception as caught:  # noqa: BLE001 - the caller asserts
+        except Exception as caught:
             exc = caught
     check("b1 a 1214 blaming response_format is fatal, not a guided-JSON drop",
           isinstance(exc, client.LLMFatal), f"exc={exc!r}")
@@ -202,12 +198,11 @@ def case_b_the_fatal_check_precedes_the_guided_json_fallback() -> None:
 
 def case_c_recoverable_codes_still_retry() -> None:
     for code in RETRYABLE_CODES:
-        # Exhaust the ladder: if the code were fatal this would stop at one.
         exc: Exception | None = None
         with scripted([zai(code, status=429)]) as log:
             try:
                 call()
-            except Exception as caught:  # noqa: BLE001 - the caller asserts
+            except Exception as caught:
                 exc = caught
         check(f"c {code}: a reset-window/rate-limit code is NOT fatal",
               not isinstance(exc, client.LLMFatal), f"exc={exc!r}")
@@ -240,17 +235,14 @@ def case_e_unreadable_bodies_never_raise() -> None:
         check(f"e {name}: _fatal_code returns None, no raise",
               client._fatal_code(resp) is None, "")
 
-    # An int code is what the vendor may actually send; string comparison must
-    # not miss it.
     check("e int code is normalized to a string",
           client._fatal_code(FakeResponse(400, '{"error":{"code":1210}}')) == "1210",
           "")
 
-    # And the ladder still behaves: an unparseable 400 is retried, as before.
     with scripted([FakeResponse(400, "<html>gateway</html>")] * 8) as log:
         try:
             call()
-        except Exception:  # noqa: BLE001 - exhaustion is the expected outcome
+        except Exception:
             pass
     check("e an unparseable 400 keeps the ordinary retry ladder",
           len(log.bodies) == client._MAX_ATTEMPTS, f"posts={len(log.bodies)}")
@@ -280,7 +272,7 @@ def case_f_the_fatal_channel_rides_pipeline_error() -> None:
             raise client.LLMFatal("dead key")
         except pipeline.PipelineError:
             absorbed.append("re-raised by the guard")
-        except Exception:  # noqa: BLE001 - the failure mode being guarded
+        except Exception:
             absorbed.append("SWALLOWED")
 
     stage_guard()
@@ -297,7 +289,7 @@ def case_g_exhausted_retries_are_still_llmerror() -> None:
         exc: Exception | None = None
         try:
             call()
-        except Exception as caught:  # noqa: BLE001 - the caller asserts
+        except Exception as caught:
             exc = caught
     check("g1 an exhausted retry ladder raises LLMError",
           isinstance(exc, client.LLMError)
@@ -315,7 +307,7 @@ def case_h_probe_names_the_business_code() -> None:
         exc: Exception | None = None
         try:
             client.probe(b)
-        except Exception as caught:  # noqa: BLE001 - the caller asserts
+        except Exception as caught:
             exc = caught
     check("h1 probe names the irrecoverable code",
           isinstance(exc, client.LLMError) and "1113" in str(exc), f"exc={exc!r}")
@@ -326,7 +318,7 @@ def case_h_probe_names_the_business_code() -> None:
         exc2: Exception | None = None
         try:
             client.probe(b)
-        except Exception as caught:  # noqa: BLE001 - the caller asserts
+        except Exception as caught:
             exc2 = caught
     check("h3 a retryable code is reported without the irrecoverable tag",
           "1302" not in str(exc2) or "irrecoverable" not in str(exc2),

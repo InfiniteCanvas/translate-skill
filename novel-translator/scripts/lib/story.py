@@ -94,7 +94,7 @@ def _prune_absent_stems(project_dir: Path, state: dict) -> None:
     data on uncertain grounds. Silent: routine housekeeping, not a failure."""
     try:
         manifest = project.load_manifest(project_dir)
-    except (OSError, ValueError):  # corrupt chapters.json (JSONDecodeError)
+    except (OSError, ValueError):
         return
     if not manifest:
         return
@@ -167,7 +167,7 @@ def _default_chat(project_dir: Path, cfg: dict,
     `chapter` is the chapter whose tier-2 bucket the exchange belongs in --
     for a backfill that is the PREDECESSOR being summarized, not the chapter
     currently being translated."""
-    from lib import pipeline  # local: pipeline imports this module at load time
+    from lib import pipeline
 
     def chat(prompt: str) -> str:
         return pipeline._chat(project_dir, cfg, "recap", prompt,
@@ -185,7 +185,7 @@ def _generate(project_dir: Path, cfg: dict, chapter_title: str, body: str,
     `chapter` only selects the tier-2 bucket when `chat` is the default
     (tests pass a stub and observe nothing). Raises on any failure (callers
     treat recap generation as advisory)."""
-    from lib import pipeline  # local: pipeline imports this module at load time
+    from lib import pipeline
 
     tpl = pipeline._load_template(project.paths(project_dir)["templates"], "recap.md")
     prompt = pipeline.fill(
@@ -239,8 +239,6 @@ def ensure_recap(project_dir: Path, cfg: dict, manifest: list[dict], file: str,
         fm, body = project.read_chapter(prev_path)
         title = str(fm.get("title") or fm.get("chapter_title") or "")
         previous_recap = _nearest_earlier_recap(state, manifest, prev)
-        # The recap describes the PREDECESSOR, so its model call belongs in
-        # the predecessor's tier-2 bucket, next to that chapter's own work.
         recap = _generate(project_dir, cfg, title, body, previous_recap, chat,
                           chapter=prev)
         state.setdefault("chapters", {})[Path(prev).stem] = _stamp(recap)
@@ -249,7 +247,7 @@ def ensure_recap(project_dir: Path, cfg: dict, manifest: list[dict], file: str,
         return recap
     except client.LLMFatal:
         raise
-    except Exception as exc:  # noqa: BLE001 - advisory: never block a chapter
+    except Exception as exc:
         print(f"{tag} [warn] recap backfill failed for {prev or file}: {exc}")
         return ""
 
@@ -277,5 +275,5 @@ def record_recap(project_dir: Path, cfg: dict, file: str,
         print(f"{tag} [init] recap")
     except client.LLMFatal:
         raise
-    except Exception as exc:  # noqa: BLE001 - advisory: never block a chapter
+    except Exception as exc:
         print(f"{tag} [warn] recap generation failed for {file}: {exc}")

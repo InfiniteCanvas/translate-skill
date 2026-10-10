@@ -1,39 +1,3 @@
-"""Tests for lib/tn.py notes-sidecar IO + strip_marked_notes, and
-lib/assemble.py's clean-output contract.
-
-Covers save_notes/load_notes round-trip (document shape chapter/updated_at/
-notes, note keys exactly {line, term, note, category, anchor} with a
-model-supplied threshold dropped and a missing/unknown category silently
-defaulted to "other", anchor snapshotted from the stripped line and capped
-at 80 chars, trailing newline, ensure_ascii=False so CJK stays readable in
-the raw bytes); invalid-entry dropping (non-dict, negative line, line ==
-len, bool line, non-str/empty term/note); the empty-kept-list rule
-(all-invalid or notes=[] DELETES the sidecar, pre-existing file included);
-load_notes leniency (missing file, malformed JSON, notes not a list,
-non-dict notes entries -> []); the loud-discard contract for genuinely
-corrupt files (not a BOM): load_history and load_notes keep their lenient
-defaults ({}, []) AND each discard prints exactly one '[warn] ...
-unreadable (<reason>)' line -- the reason in parentheses is
-'JSONDecodeError' for a syntax error, 'list' for a non-object
-tn_history.json, 'invalid notes' for a sidecar without a valid notes list
-(the pipeline.load_state counterpart lives in test_bom_tolerance.py);
-strip_marked_notes (full legacy body, stacked [^1][^2] markers, markers
-with no section, section with no markers, clean-body passthrough,
-whitespace-tolerant definition lines); and assemble.assemble writing clean
-markdown (no markers, no TN section, title in frontmatter, body lines
-verbatim via project.read_chapter).
-
-All chapter fixtures are built inside tempfile.TemporaryDirectory()
-sandboxes per case — repo fixtures are never touched. Files are written with
-explicit LF newlines so byte-level comparisons are deterministic. stdout
-around the loud-discard calls is captured with contextlib.redirect_stdout.
-
-Self-contained PASS/FAIL script (no pytest). The lib modules import
-pyyaml, so run via uv (deps declared inline below):
-
-    uv run tests/test_tn_sidecar.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6.0"]
@@ -45,12 +9,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import assemble, project  # noqa: E402
-from lib import tn  # noqa: E402
+from lib import assemble, project
+from lib import tn
 
 PASSED = 0
 FAILED: list[str] = []
@@ -80,14 +43,11 @@ def capture(fn, *args, **kwargs):
     return result, buf.getvalue()
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_round_trip() -> None:
     """save_notes + load_notes: document shape, anchor, encoding, newline."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        long_line = "A very long paragraph line. " * 5  # > 80 chars stripped
+        long_line = "A very long paragraph line. " * 5
         lines = [
             "  He swept the tombs at Qingming.  ",
             long_line,
@@ -95,7 +55,7 @@ def case_1_round_trip() -> None:
         ]
         notes = [
             {"line": 0, "term": "清明", "note": "Tomb-sweeping festival.",
-             "threshold": "high"},  # model note: threshold must NOT persist
+             "threshold": "high"},
             {"line": 1, "term": "灵石", "note": "Spirit stones: currency and fuel.",
              "category": "cultural"},
         ]
@@ -149,16 +109,16 @@ def case_2_invalid_entries() -> None:
         root = Path(td)
         lines = ["Line zero.", "Line one.", "Line two."]
         notes = [
-            "not a dict",                                   # non-dict
-            {"line": -1, "term": "t", "note": "n"},         # negative line
-            {"line": 3, "term": "t", "note": "n"},          # line == len(lines)
-            {"line": True, "term": "t", "note": "n"},       # bool is not an int here
-            {"term": "t", "note": "n"},                     # line missing
-            {"line": 0, "term": 5, "note": "n"},            # non-str term
-            {"line": 0, "term": "t", "note": None},         # non-str note
-            {"line": 0, "term": "", "note": "n"},           # empty term
-            {"line": 0, "term": "t", "note": "   "},        # whitespace-only note
-            {"line": 1, "term": "筑基", "note": "Second realm."},  # valid
+            "not a dict",
+            {"line": -1, "term": "t", "note": "n"},
+            {"line": 3, "term": "t", "note": "n"},
+            {"line": True, "term": "t", "note": "n"},
+            {"term": "t", "note": "n"},
+            {"line": 0, "term": 5, "note": "n"},
+            {"line": 0, "term": "t", "note": None},
+            {"line": 0, "term": "", "note": "n"},
+            {"line": 0, "term": "t", "note": "   "},
+            {"line": 1, "term": "筑基", "note": "Second realm."},
         ]
         kept = tn.save_notes(root, "CHAPTER_0001.md", lines, notes)
         check("2a invalid: only the one valid entry kept",
@@ -177,12 +137,10 @@ def case_3_empty_kept_deletes() -> None:
         lines = ["Line zero.", "Line one."]
         path = tn.notes_path(root, "CHAPTER_0001.md")
 
-        # notes=[] on a fresh project: nothing to delete, still no file
         kept = tn.save_notes(root, "CHAPTER_0001.md", lines, [])
         check("3a empty: notes=[] returns [] and writes nothing",
               kept == [] and not path.exists(), f"kept={kept}")
 
-        # pre-existing file removed by notes=[]
         tn.save_notes(root, "CHAPTER_0001.md", lines,
                       [{"line": 0, "term": "t", "note": "n"}])
         check("3b empty: pre-existing sidecar in place", path.is_file(), "")
@@ -190,7 +148,6 @@ def case_3_empty_kept_deletes() -> None:
         check("3c empty: notes=[] DELETES the pre-existing sidecar",
               kept == [] and not path.exists(), f"kept={kept}")
 
-        # all-invalid input removes it too
         tn.save_notes(root, "CHAPTER_0001.md", lines,
                       [{"line": 0, "term": "t", "note": "n"}])
         kept = tn.save_notes(root, "CHAPTER_0001.md", lines,
@@ -236,7 +193,6 @@ def case_4_load_leniency() -> None:
 
 def case_5_strip_marked_notes() -> None:
     """strip_marked_notes: legacy baked-in note extraction, pure text."""
-    # Full case: body + blanks + heading + definitions
     body = (
         "Lin Feng pressed his palm to the crystal.[^1]\n"
         "\n"
@@ -259,7 +215,6 @@ def case_5_strip_marked_notes() -> None:
               {"term": "sect", "note": "a cultivation organization."},
           ], f"existing={existing}")
 
-    # Stacked markers on one line
     clean, existing = tn.strip_marked_notes(
         "One line carries two notes.[^1][^2]\n"
         "\n"
@@ -274,32 +229,27 @@ def case_5_strip_marked_notes() -> None:
           existing == [{"term": "a", "note": "first."},
                        {"term": "b", "note": "second."}], f"existing={existing}")
 
-    # Markers with no section
     clean, existing = tn.strip_marked_notes("A marked line.[^3]\nPlain line.")
     check("5e strip: markers without a section still stripped, no entries",
           clean == "A marked line.\nPlain line." and existing == [],
           f"clean={clean!r}, existing={existing}")
 
-    # Section with no markers
     clean, existing = tn.strip_marked_notes(
         "Body line.\n\n\n## Translator's Notes\n\n[^1]: **t** — n\n")
     check("5f strip: section without markers truncates body at the heading",
           clean == "Body line." and existing == [{"term": "t", "note": "n"}],
           f"clean={clean!r}, existing={existing}")
 
-    # Clean passthrough: byte-identical string, empty list (trailing blanks kept)
     pristine = "Untouched body.\n\nStill clean.\n\n"
     clean, existing = tn.strip_marked_notes(pristine)
     check("5g strip: clean body passthrough identical, no entries",
           clean == pristine and existing == [], f"clean={clean!r}")
 
-    # Definition-line parsing tolerant of extra whitespace
     clean, existing = tn.strip_marked_notes(
         "Line.\n\n## Translator's Notes\n\n[^1]:    **t**  —  n  \n")
     check("5h strip: extra whitespace in the definition line tolerated",
           existing == [{"term": "t", "note": "n"}], f"existing={existing}")
 
-    # Unparseable definition lines are skipped silently
     clean, existing = tn.strip_marked_notes(
         "Line.\n\n## Translator's Notes\n\nfree text\n[^2]: no bold term format\n")
     check("5i strip: unparseable definition lines skipped silently",
@@ -342,7 +292,6 @@ def case_7_loud_discard() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
 
-        # tn_history.json: JSON syntax error -> {} + one warn
         write_lf(root / "tn_history.json", "{not json")
         h, out = capture(tn.load_history, root)
         check("7a history: JSON syntax error -> {} (lenient default holds)",
@@ -351,7 +300,6 @@ def case_7_loud_discard() -> None:
               out == "[warn] tn_history.json unreadable (JSONDecodeError)"
                      " - resetting note-gap tracking\n", f"out={out!r}")
 
-        # a non-object document where the dict is required -> same contract
         write_lf(root / "tn_history.json", "[]")
         h, out = capture(tn.load_history, root)
         check("7c history: non-object document -> {}",
@@ -360,7 +308,6 @@ def case_7_loud_discard() -> None:
               out == "[warn] tn_history.json unreadable (list)"
                      " - resetting note-gap tracking\n", f"out={out!r}")
 
-        # notes sidecar: JSON syntax error -> [] + one warn
         path = tn.notes_path(root, "CHAPTER_0001.md")
         write_lf(path, "{not json")
         n, out = capture(tn.load_notes, root, "CHAPTER_0001.md")
@@ -370,7 +317,6 @@ def case_7_loud_discard() -> None:
               out == "[warn] CHAPTER_0001.json unreadable (JSONDecodeError)"
                      " - treating as no notes\n", f"out={out!r}")
 
-        # a JSON document without a valid notes list -> 'invalid notes'
         write_lf(path, "[]")
         n, out = capture(tn.load_notes, root, "CHAPTER_0001.md")
         check("7g notes: non-object document -> []",
@@ -382,7 +328,6 @@ def case_7_loud_discard() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

@@ -12,8 +12,6 @@ import requests
 from typing import Callable
 from urllib.parse import urlparse
 
-# Plain package import (no flat-module fallback): the skill runs in package
-# mode only -- translate.py puts scripts/ on sys.path before importing lib.
 from lib import config
 from lib.errors import PipelineError as _PipelineError
 
@@ -49,65 +47,35 @@ class LLMFatal(LLMError, _PipelineError):
     """
 
 
-# Model-resolution cache keyed on (normalized base URL, Authorization header
-# value): two jobs may share a base URL with different API keys and see
-# different model lists, so one job's resolution must not pin the other's.
-# Keys stay in memory only and are never logged.
 _MODEL_CACHE: dict[tuple[str, str | None], str] = {}
 _PAIRS = {"{": "}", "[": "]"}
 _FENCE_RE = re.compile(r"^```[\w+-]*[ \t]*\n?(.*?)\n?[ \t]*```$", re.DOTALL)
 _THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
-# A 400 counts as "guided JSON unsupported" only when the server's error text
-# blames the mechanism -- wording varies across OpenAI-compatible servers
-# ("response_format", "json_schema", "guided json", "x-guided"). Any other 400
-# (bad model name, oversized context, malformed request) is a real failure,
-# not a license to silently drop response_format.
 _GUIDED_UNSUPPORTED_RE = re.compile(
     r"response_format|json_schema|guided json|x-guided", re.IGNORECASE)
 
-# Z.AI business error codes that retrying CANNOT fix.
-# Source: https://docs.z.ai/api-reference/api-code (checked 2026-10-07).
-#
-# The vendor returns these in the body as {"error": {"code": "...", "message":
-# ...}} alongside an outer HTTP status. They are matched by CODE, not by
-# message text, so a docs rewrite cannot silently reclassify one.
-#
-# The test applied here: can retrying the byte-identical request ever succeed?
-# If not, it is in this set.
-#
-# Deliberately EXCLUDED, even though they are 429-class:
-#   1302 rate limit, 1305 temporarily overloaded  -- transient by definition.
-#   1308, 1310, 1316-1321  usage limits (5h / 7d / monthly spend). These publish
-#     a `next_flush_time` and a whole-novel run routinely spans hours, so a run
-#     that hits one may well clear it before the last chapter. They stay on the
-#     retry ladder; an exhausted retry is fatal anyway, so the only difference
-#     is how many attempts are spent first.
-# The 401/403 codes (1000/1001/1003/1005/1220) are listed for completeness:
-# their HTTP status is already non-retryable in the ladder below.
 ZAI_FATAL_CODES = frozenset({
-    # auth / account
-    "1000",  # Authentication Failed
-    "1001",  # Authentication parameter not received in Header
-    "1003",  # Authentication Token expired
-    "1005",  # Need Two-Factor Authentication
-    "1113",  # Insufficient balance or no resource package (recharge required)
-    "1220",  # No permission to access
-    "1309",  # GLM Coding Plan package expired
-    "1311",  # Subscription plan does not include this model
-    "1313",  # Fair Usage Policy violation
-    "1314",  # Enterprise package expired
-    "1315",  # API key restricted to a different product tier
-    # request shape -- these can only be fixed by editing config.json
-    "1210",  # Invalid API parameter
-    "1211",  # Unknown model
-    "1212",  # Model does not support this call method
-    "1213",  # A required parameter was not sent
-    "1214",  # A parameter is invalid
-    "1215",  # Two mutually exclusive parameters both sent
-    "1221",  # API taken offline
-    "1222",  # API does not exist
-    "1261",  # Prompt too long
-    "1301",  # Content filtered as unsafe/sensitive
+    "1000",
+    "1001",
+    "1003",
+    "1005",
+    "1113",
+    "1220",
+    "1309",
+    "1311",
+    "1313",
+    "1314",
+    "1315",
+    "1210",
+    "1211",
+    "1212",
+    "1213",
+    "1214",
+    "1215",
+    "1221",
+    "1222",
+    "1261",
+    "1301",
 })
 
 
@@ -124,7 +92,7 @@ def _fatal_code(resp) -> str | None:
     """
     try:
         payload = resp.json()
-    except Exception:  # noqa: BLE001 - non-JSON body, no code to find
+    except Exception:
         return None
     if not isinstance(payload, dict):
         return None
@@ -172,8 +140,6 @@ def resolve_model(base_url: str, headers: dict | None = None) -> str:
     base_url + auth identity in a module dict). Raises LLMError on connection
     failure or an unexpected payload."""
     base = _v1_url(base_url)
-    # Auth identity = the resolved Authorization value the models request
-    # just used (None when anonymous), so per-key model lists stay distinct.
     auth = headers.get("Authorization") if headers else None
     key = (base, auth)
     if key in _MODEL_CACHE:
@@ -220,10 +186,6 @@ def probe(provider_cfg: dict, timeout: int = 30) -> str:
     except requests.RequestException as exc:
         raise LLMError(f"probe request to {url} failed: {exc}") from exc
     if resp.status_code >= 400:
-        # Name the business code when the provider sent one. `ping` is the
-        # command an operator runs when a key stops working, so "HTTP 429" alone
-        # leaves them unable to tell a wrong URL from an exhausted balance --
-        # 1113 vs 1302 is the difference between recharging and waiting.
         fatal = _code_is_fatal(resp)
         detail = f"provider code {fatal} (irrecoverable)" if fatal else ""
         raise LLMError(f"probe HTTP {resp.status_code} from {url}"
@@ -271,8 +233,6 @@ def _resolve_cap(provider_cfg: dict, max_tokens: int | None,
         cap = min(int(max_tokens), block_max)
     else:
         cap = int(max_tokens)
-    # Applied last so it survives the enforce_ceiling opt-out above: the
-    # synthesis may exceed the block's declared budget, never the provider's.
     limit = provider_cfg.get("max_tokens_limit")
     return min(cap, int(limit)) if limit else cap
 
@@ -315,34 +275,22 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     """
     base_url = _v1_url(str(provider_cfg["base_url"]))
     url = base_url + "/chat/completions"
-    # Optional auth for hosted providers; local sglang needs none.
     headers = auth_headers(provider_cfg)
     model = provider_cfg.get("model") or resolve_model(base_url, headers=headers)
     body: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        # Temperature comes from the provider block only -- every job bakes
-        # its sampling profile into config defaults (translator 0.7, etc.).
         "temperature": provider_cfg.get("temperature", 0.2),
         "max_tokens": _resolve_cap(provider_cfg, max_tokens, enforce_ceiling),
     }
-    # Optional sampling knobs: a key is sent only when the provider block
-    # carries it with a non-None value (top_k may legitimately be -1,
-    # meaning "disabled").
     if provider_cfg.get("top_p") is not None:
         body["top_p"] = float(provider_cfg["top_p"])
     if provider_cfg.get("top_k") is not None:
         body["top_k"] = int(provider_cfg["top_k"])
     if provider_cfg.get("repetition_penalty") is not None:
         body["repetition_penalty"] = float(provider_cfg["repetition_penalty"])
-    # Hybrid-thinking models (sglang chat_template_kwargs): false spends the
-    # output budget on the answer instead of a reasoning chain.
     if provider_cfg.get("thinking") is not None:
         body["chat_template_kwargs"] = {"enable_thinking": bool(provider_cfg["thinking"])}
-    # Escape hatch for provider-specific parameters: merged verbatim into the
-    # request body after the known knobs (so it can override them) and before
-    # response_format (guided JSON stays pipeline-controlled). Not applied to
-    # probe() - the ping probe deliberately sends a minimal body.
     extra = provider_cfg.get("extra_body")
     if extra is not None:
         if not isinstance(extra, dict):
@@ -390,7 +338,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     if meta_hook:
         meta_hook(_request_meta())
     started = time.monotonic()
-    failures = 0  # retryable failures so far (network error, 5xx, 429)
+    failures = 0
     while True:
         try:
             resp = requests.post(url, json=body, headers=headers, timeout=_CHAT_TIMEOUT)
@@ -404,13 +352,6 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
             time.sleep(_BACKOFF[failures - 1])
             continue
 
-        # An irrecoverable provider code is checked FIRST, before the
-        # guided-JSON fallback below and before the retry ladder. Order is
-        # load-bearing: a Z.AI 1214 whose message names `response_format`
-        # matches _GUIDED_UNSUPPORTED_RE, so placing this after that branch
-        # would silently drop response_format and re-POST a request the
-        # provider has already refused as malformed -- burning the retry
-        # budget on a request that can never succeed.
         fatal = _code_is_fatal(resp)
         if fatal is not None:
             err = (f"HTTP {resp.status_code} from {url}: provider code {fatal} "
@@ -422,15 +363,9 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
 
         retryable_400 = False
         if resp.status_code == 400 and "response_format" in body:
-            # Only an error text blaming the mechanism means guided JSON is
-            # unsupported: disarm it (pop) and retry once immediately. Any
-            # other 400 keeps response_format and falls through to the shared
-            # retryable-failure handling below, so a bad model name or an
-            # oversized context consumes retry budget instead of silently
-            # degrading to unguided decoding.
             if _GUIDED_UNSUPPORTED_RE.search(resp.text):
                 body.pop("response_format")
-                if meta_hook:  # log the retried request; it differs from the first
+                if meta_hook:
                     meta_hook(_request_meta())
                 continue
             retryable_400 = True
@@ -466,14 +401,7 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
                 meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
             raise LLMError(err) from exc
         message = choice.get("message") if isinstance(choice, dict) else None
-        # A reasoning model that exhausts its budget returns finish_reason
-        # "length" with `content` ABSENT rather than empty -- reasoning_content
-        # is the only populated field. Read it with .get() so that shape falls
-        # through to the empty-content diagnostic below, which names the real
-        # cause, instead of being misreported as a malformed payload.
         content = message.get("content") if isinstance(message, dict) else None
-        # Servers without a reasoning parser may inline a leading <think>
-        # block into content; strip it before the empty-content check.
         if isinstance(content, str):
             content = _THINK_BLOCK_RE.sub("", content, count=1)
         if not isinstance(content, str) or not content.strip():

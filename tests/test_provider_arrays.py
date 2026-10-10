@@ -1,40 +1,3 @@
-"""Tests for the provider-array normalization in lib/config.py: the
-multi-model shape of providers.<job> and the consensus job's rules.
-
-Covered (against config._normalize_providers directly on raw provider
-dicts, plus config.load_config round trips on TemporaryDirectory
-projects): the "consensus" job is registered last in PROVIDER_JOBS with
-temperature 0.2; a legacy single-block dict wraps into a one-element
-list; an authored array passes through with per-element default fill
-(missing keys come from PROVIDER_DEFAULTS[job], authored keys win); an
-omitted non-translator job inherits the translator's whole list
-element-wise at ITS OWN defaults (the translator's default temperature
-0.7 does not leak; glossary's 0.2 applies); an omitted consensus job is
-exactly the translator's FIRST block at the consensus temperature 0.2;
-an explicitly authored 2-block consensus array raises the exact
-contractual ValueError, as do an empty array, a non-object value, and a
-non-dict array element; unknown extra jobs pass through untouched; a
-missing translator leaves every job at plain defaults; provider() /
-provider_list() tolerate hand-built dict-shaped cfgs (no load_config
-pass) by wrapping a bare dict on the fly; and load_config normalizes a
-dict-shaped config.json on disk into arrays (translator list of one with
-user values inside, consensus inherited from translator[0]) and passes
-an authored 2-element translator list through unchanged. Per-job arbitrators
-(v015): an absent `consensus_<job>` resolves to the global consensus block
-IDENTICALLY (same dict object), an authored one wins key-wise while inheriting
-the global's base_url and auth, a bare-dict one is shape-normalized to a
-one-element list (which is what keeps it in the run_start provider_jobs
-snapshot) but NOT key-prefilled, every PROVIDER_JOBS member except consensus is
-a legal suffix, and a two-block arbitrator, a typo'd suffix,
-`consensus_consensus` and an empty array each raise.
-
-Self-contained PASS/FAIL script (no pytest). lib.config imports nothing
-beyond the stdlib, but the header below keeps the house dependency set
-so `uv run tests/test_provider_arrays.py` works from any environment:
-
-    uv run tests/test_provider_arrays.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
@@ -46,12 +9,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# scripts/ (and therefore lib/) lives at novel-translator/scripts
-# relative to this file (CWD-independent).
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config  # noqa: E402
+from lib import config
 
 PASSED = 0
 FAILED: list[str] = []
@@ -129,9 +90,6 @@ def case_list_passthrough() -> None:
             {"model": "a"},
             {"base_url": OTHER, "model": "b", "temperature": 0.1},
         ],
-        # Authored only because a two-block translator fans out, and a
-        # fanning-out config must name its arbitrator (v015). This case is
-        # about array passthrough, not about consensus.
         "consensus": {"model": "arb"},
     })
     check("c1 list pass-through: both blocks kept in order with defaults filled",
@@ -177,9 +135,6 @@ def case_inheritance() -> None:
           and consensus[0]["base_url"] == MINE and consensus[0]["model"] == "arb"
           and consensus[0]["temperature"] == 0.2,
           f"consensus={consensus!r}")
-    # An authored temperature on the translator block DOES inherit (the
-    # per-key override semantics apply to consensus like every other job:
-    # authored keys win, job defaults fill only the unauthored ones).
     norm_pinned = config._normalize_providers({
         "translator": [{"base_url": MINE, "model": "m1", "temperature": 0.3}],
     })
@@ -202,8 +157,6 @@ def case_consensus_derived_fallback() -> None:
     rule -- it cannot be reached with a multi-block job, which is the only
     situation in which an arbitrator is ever called.
     """
-    # Single block: nothing fans out, so nothing needs an arbitrator and the
-    # derived block is still what gets built.
     norm = config._normalize_providers(
         {"translator": [{"base_url": MINE, "model": "m1", "temperature": 0.3}]})
     derived = norm["consensus"][0]
@@ -215,9 +168,6 @@ def case_consensus_derived_fallback() -> None:
           and derived["temperature"] == 0.2,
           f"consensus={norm['consensus']!r}")
 
-    # Two blocks with no `consensus`: refused, and the message names every job
-    # that was going to fan out -- all six, since omitted jobs inherit the
-    # translator's whole array.
     two = {"translator": [{"base_url": MINE, "model": "m1"},
                           {"base_url": OTHER, "model": "m2"}]}
     refusal = raises_value_error(two)
@@ -331,8 +281,6 @@ def case_load_config() -> None:
                 {"base_url": MINE, "model": "m1"},
                 {"base_url": OTHER, "model": "m2"},
             ],
-                # A two-block translator fans out, so the arbitrator must be
-                # named explicitly (v015) or the load is refused.
                 "consensus": {"model": "arb"}},
         }, indent=2) + "\n", encoding="utf-8")
         cfg = config.load_config(proj)
@@ -355,13 +303,8 @@ def case_per_job_consensus() -> None:
     asserts with `c["block"] is cblock`."""
     two = {"translator": [{"base_url": MINE, "model": "m1"},
                           {"base_url": OTHER, "model": "m2"}],
-           # A two-block translator fans out, so the global arbitrator is now
-           # REQUIRED (v015). It is authored here rather than relied on from
-           # translator[0], which load_config can no longer reach with a
-           # fan-out -- see case_consensus_derived_fallback.
            "consensus": [{"base_url": MINE, "model": "global-arb"}]}
 
-    # --- absent: identity with the global block, for every job ------------
     norm = config._normalize_providers(json.loads(json.dumps(two)))
     cfg = {"providers": norm}
     global_block = norm["consensus"][0]
@@ -374,7 +317,6 @@ def case_per_job_consensus() -> None:
               {"providers": {"translator": [{"base_url": MINE}], "consensus": [global_block]}},
               "translator") is global_block)
 
-    # --- authored: wins key-wise, inherits endpoint and auth ---------------
     authored = config._normalize_providers(json.loads(json.dumps({
         **two,
         "consensus": [{"base_url": OTHER, "model": "global-arb",
@@ -396,10 +338,6 @@ def case_per_job_consensus() -> None:
           config.consensus_provider(acfg, "annotator")["model"] == "global-arb",
           f"got {config.consensus_provider(acfg, 'annotator')['model']!r}")
 
-    # --- layering always builds a NEW dict, never the global's own object ---
-    # The identity guarantee in i1 covers the ABSENT-key path only. When a
-    # per-job key IS authored, the result is a merged copy, so a caller cannot
-    # mutate the global block through the job's arbitrator.
     layered = config.consensus_provider(acfg, "translator")
     check("i7 layered: an authored per-job key yields a NEW merged block, never "
           "the global block's own object",
@@ -408,8 +346,6 @@ def case_per_job_consensus() -> None:
           and acfg["providers"]["consensus"][0]["model"] == "global-arb",
           f"block={layered!r}")
 
-    # --- shape normalization: a bare dict becomes a list, so the run_start
-    # --- provider_jobs snapshot (which filters isinstance(blocks, list)) keeps it
     bare = config._normalize_providers(json.loads(json.dumps({
         **two, "consensus_translator": {"model": "bare-dict-shape"}})))
     check("i8 shape: a bare-dict consensus_<job> is normalized to a one-element "
@@ -422,7 +358,6 @@ def case_per_job_consensus() -> None:
           bare["consensus_translator"][0] == {"model": "bare-dict-shape"},
           f"got {bare['consensus_translator'][0]!r}")
 
-    # --- every real job is a legal suffix ---------------------------------
     ok = True
     for job in config.CONSENSUS_JOBS:
         n = config._normalize_providers(json.loads(json.dumps({
@@ -434,7 +369,6 @@ def case_per_job_consensus() -> None:
               "translator", "glossary", "reviewer", "annotator", "recap", "profile"),
           f"jobs={config.CONSENSUS_JOBS}")
 
-    # --- validation --------------------------------------------------------
     two_own = raises_value_error({**two, "consensus_annotator": [
         {"model": "a"}, {"model": "b"}]})
     check("i11 errors: a two-block per-job arbitrator is rejected with the "
@@ -463,7 +397,6 @@ def case_per_job_consensus() -> None:
           empty == "providers.consensus_translator must not be an empty array",
           f"got {empty!r}")
 
-    # --- on-disk round trip: the run ledger keeps the arbitrator ----------
     with tempfile.TemporaryDirectory() as td:
         proj = Path(td)
         (proj / "config.json").write_text(json.dumps({
@@ -485,8 +418,6 @@ def case_per_job_consensus() -> None:
 
 
 def main() -> int:
-    # CJK-free output, but keep the house reconfigure guard for consistency
-    # with non-UTF-8 consoles/pipes (e.g. Windows cp1252).
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

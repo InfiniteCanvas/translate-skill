@@ -1,36 +1,3 @@
-"""Tests for profile.generate_profile's sampling and char-budget bounds.
-
-generate_profile samples up to `sample_chapters` random source chapters,
-concatenates their bodies until roughly `sample_chars` characters are
-collected (truncating the last one at a line boundary when a newline
-survives past the midpoint), fills templates/style_profile.md, and asks
-the "profile" provider. The sample text is the prompt material the whole
-style profile is judged on, so its boundaries are pinned here:
-
-- the sampling cap: with a deterministic random.sample stub, exactly
-  `sample_chapters` chapters are sampled (the unpicked markers never
-  appear in the prompt); the cap clamps BOTH ways -- above the available
-  count every chapter is sampled, and a zero/negative request still
-  samples exactly one (the max(1, ...) clamp);
-- the char budget: a chapter longer than the remaining budget is
-  truncated -- at a line boundary when the cut's last newline sits past
-  the midpoint, else exactly at the budget -- and once the budget is
-  exhausted the loop breaks (later chapters never appear); the embedded
-  sample's length always respects the budget constant;
-- the empty/underflow cases raise ProfileError before any LLM call: no
-  source chapters at all, and chapters whose bodies are all empty.
-
-The LLM boundary is faked the suite's way: profile.client.chat is swapped
-for a canned responder that records the prompt (the sample is extracted
-between the template's stable [Source Sample] / [Task] markers), and
-random.sample is swapped only where determinism is load-bearing.
-
-Self-contained PASS/FAIL script (no pytest). lib.profile transitively
-imports the whole lib package -- run via uv (deps declared inline below):
-
-    uv run tests/test_profile_bounds.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
@@ -40,13 +7,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file
-# (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config  # noqa: E402
-from lib import profile as profile_mod  # noqa: E402
+from lib import config
+from lib import profile as profile_mod
 
 PASSED = 0
 FAILED: list[str] = []
@@ -111,7 +76,7 @@ def run_generate(proj: Path, cfg: dict, sample_chapters: int,
         try:
             result = profile_mod.generate_profile(
                 proj, cfg, sample_chapters, sample_chars)
-        except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+        except Exception as caught:
             exc = caught
     finally:
         profile_mod.client.chat = orig_chat
@@ -125,7 +90,6 @@ def case_sampling_cap() -> None:
     bodies = {f"CHAPTER_000{i}.md": f"第{i}章采样标记行。"
               for i in range(1, 7)}
 
-    # A: cap 3 of 6 available, deterministic stub -> chapters 1-3 only.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", bodies)
         cfg = config.load_config(proj)
@@ -150,8 +114,6 @@ def case_sampling_cap() -> None:
                         "第3章采样标记行。",
               f"sample={sample!r}")
 
-    # B: cap 10 above the 3 available -> the clamp samples every chapter
-    #    (real random.sample: all are picked, no determinism needed).
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj",
                             {f"CHAPTER_000{i}.md": f"第{i}章采样标记行。"
@@ -165,7 +127,6 @@ def case_sampling_cap() -> None:
               all(f"第{i}章采样标记行。" in sample for i in (1, 2, 3)),
               f"sample={sample!r}")
 
-    # C: a zero request still samples exactly one chapter (max(1, ...)).
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj",
                             {f"CHAPTER_000{i}.md": f"第{i}章采样标记行。"
@@ -189,9 +150,6 @@ def case_char_budget() -> None:
     the midpoint, exactly at the budget when it does not, and the loop
     breaks once the budget is exhausted."""
 
-    # A: line-boundary truncation -- 6 lines of 10 A's, budget 25: the cut
-    #    lands at 25 with a newline at 21 (past the 12 midpoint), so the
-    #    sample ends after the second full line.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", {
             "CHAPTER_0001.md": "\n".join(["A" * 10] * 6),
@@ -209,10 +167,6 @@ def case_char_budget() -> None:
               "A" * 10 + "\n" + "A" * 10 + "\n" not in sample,
               f"sample={sample!r}")
 
-    # B: no newline past the midpoint (single 40-char line, budget 25) ->
-    #    truncated exactly at the budget; and the NEXT chapter never
-    #    appears because the loop breaks at remaining <= 0. The sample
-    #    order is pinned (head-first stub) so chapter 1 fills the budget.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "proj", {
             "CHAPTER_0001.md": "A" * 40,
@@ -241,7 +195,6 @@ def case_char_budget() -> None:
 def case_underflow_errors() -> None:
     """The empty/underflow cases raise ProfileError before any LLM call:
     no source chapters at all, and chapters whose bodies are all empty."""
-    # A: no source/ directory -> no chapters found.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "no-source", with_source=False)
         cfg = config.load_config(proj)
@@ -255,7 +208,6 @@ def case_underflow_errors() -> None:
               and "no source chapters found in source/" in str(exc),
               f"exc={exc!r}")
 
-    # B: chapters exist but every body is empty -> no sample text.
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), "empty-bodies", {
             "CHAPTER_0001.md": "",
@@ -274,7 +226,6 @@ def case_underflow_errors() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

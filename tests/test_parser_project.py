@@ -38,19 +38,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-# scripts/ lives at novel-translator/scripts relative to this file
-# (CWD-independent); translate.py puts it on sys.path itself as well.
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import translate  # noqa: E402
+import translate
 
 PASSED = 0
 FAILED: list[str] = []
 
-# Any directory-shaped string works for parsing; a tempdir-derived absolute
-# path keeps the resolution comparison deterministic (resolve() is a no-op
-# on absolute paths).
 DIR = str(Path(tempfile.gettempdir()) / "nt-parser-project")
 
 
@@ -80,9 +75,6 @@ def resolve_dir(ns: argparse.Namespace) -> Path:
     return translate.resolve_project_dir(ns)
 
 
-# Per-action required/representative arguments (mirrors _build_parser):
-# replace needs --source/--translation, set needs --source, merge needs
-# --keep/--remove, retire needs --source, search takes a positional TERM.
 NESTED_ARGS = {
     "replace": ["--source", "灵根", "--translation", "spiritual root"],
     "set": ["--source", "灵根", "--definition", "Innate aptitude."],
@@ -235,7 +227,6 @@ def case_11_no_abbrev() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

@@ -60,11 +60,10 @@ from types import SimpleNamespace
 
 import requests
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import client, config, consensus, logger, pipeline  # noqa: E402
+from lib import client, config, consensus, logger, pipeline
 
 PASSED = 0
 FAILED: list[str] = []
@@ -127,8 +126,6 @@ def sent(log: PostLog) -> list:
     return [b["max_tokens"] for b in log.bodies]
 
 
-# --- the clamp ---------------------------------------------------------------
-
 def case_a_clamp_directions() -> None:
     """The cap may be lowered by the caller, never raised above the block."""
     with patched_post() as log:
@@ -149,9 +146,6 @@ def case_a_clamp_directions() -> None:
     with patched_post() as log:
         client.chat(block(131072, model="m1"), "hi", max_tokens=256000)
         client.chat(block(262144, model="m2"), "hi", max_tokens=256000)
-    # One caller cap, two different blocks, two different results: m1 sits
-    # BELOW the cap and is lowered to its own limit; m2 sits above it and keeps
-    # the caller's ceiling. Neither borrows the other's number.
     check("a4 clamp: per block inside one fan-out, not a shared scalar",
           sent(log) == [131072, 256000], f"sent={sent(log)}")
 
@@ -166,11 +160,8 @@ def case_b_unvalidated_block_values() -> None:
                 client.chat(block(value), "hi", max_tokens=4096)
                 got = sent(log)
                 err = ""
-            except Exception as exc:  # noqa: BLE001 - the failure IS the check
+            except Exception as exc:
                 got, err = [], f"{type(exc).__name__}: {exc}"
-        # The block's own value falls back to DEFAULT_MAX_TOKENS, and the
-        # caller's 4096 then applies on top. The point is that it does NOT
-        # raise: a bare min(int, None) would.
         check(f"b1 unvalidated max_tokens ({label}) falls back, never raises",
               got == [4096] and not err, f"sent={got} err={err}")
 
@@ -212,8 +203,6 @@ def case_d_enforce_ceiling_opt_out() -> None:
           sent(log) == [512], f"sent={sent(log)}")
 
 
-# --- the consensus carve-out, through the REAL client.chat ------------------
-
 def case_e_consensus_synthesis_is_not_clamped() -> None:
     """The synthesis call is the ONE place allowed past the clamp.
 
@@ -234,14 +223,11 @@ def case_e_consensus_synthesis_is_not_clamped() -> None:
         with patched_post() as log:
             consensus.chat(proj, cfg, "translator", "translate these lines",
                            json_schema=None, max_tokens=256000)
-        # 2 fan-out candidates + 1 synthesis.
         check("e1 consensus: synthesis is not clamped to the arbitrator's cap",
               sent(log)[-1] == 256000, f"sent={sent(log)}")
         check("e2 consensus: candidates keep the task ceiling",
               sent(log)[:2] == [256000, 256000], f"sent={sent(log)}")
 
-        # And the same shape where the arbitrator is the tightest block: the
-        # candidates must be lowered per block, the synthesis must not.
         cfg["providers"]["translator"] = [block(131072, "m1"),
                                           block(262144, "m2")]
         consensus._ANNOUNCED.clear()
@@ -252,8 +238,6 @@ def case_e_consensus_synthesis_is_not_clamped() -> None:
               sent(log)[:2] == [131072, 256000] and sent(log)[-1] == 256000,
               f"sent={sent(log)}")
 
-
-# --- pipeline-side contracts -------------------------------------------------
 
 def case_f_provider_max_floor() -> None:
     """A translator block that OMITS max_tokens contributes DEFAULT_MAX_TOKENS
@@ -274,9 +258,6 @@ def case_f_provider_max_floor() -> None:
                  "max_tokens": 256000},
                 {"base_url": "http://fake:1/v1", "model": "m2"},
             ],
-                # A two-block translator fans out, so the arbitrator must be
-                # named explicitly or load_config refuses (v015). This case is
-                # about max_tokens defaults, not about consensus.
                 "consensus": {"base_url": "http://fake:1/v1", "model": "arb"}}
         }, indent=2) + "\n", encoding="utf-8")
         cfg = config.load_config(proj)
@@ -327,23 +308,19 @@ def case_h_pack_cap_vs_wire_cap() -> None:
     """_pack_chunks takes the sizing budget and the sent ceiling as SEPARATE
     arguments. Passing pack_cap for both is what let a chapter be sized for a
     budget the tightest block cannot return."""
-    lines = ["中" * 20] * 10          # cost 30/line
-    # Sized generously, sent conservatively.
+    lines = ["中" * 20] * 10
     plan = pipeline._pack_chunks(lines, 200000, 200000, 200000)
     check("h1 pack: room comes from pack_cap, not wire_cap",
           [(lo, hi) for lo, hi, _c in plan] == [(0, 10)],
           f"plan={plan}")
     check("h2 pack: the sent cap comes from wire_cap",
           all(cap == 200000 for _lo, _hi, cap in plan), f"plan={plan}")
-    # Sized conservatively: must split even though wire_cap is huge.
     plan_small = pipeline._pack_chunks(lines, 500, 750, 200000)
     check("h3 pack: a small pack_cap splits even with a large wire_cap",
           len(plan_small) > 1
           and all(cap == 200000 for _lo, _hi, cap in plan_small),
           f"plan={plan_small}")
 
-
-# --- the provider HARD ceiling (max_tokens_limit) ----------------------------
 
 def case_i_max_tokens_limit() -> None:
     """`max_tokens_limit` is the provider's rejection threshold, not a budget,
@@ -357,7 +334,6 @@ def case_i_max_tokens_limit() -> None:
     provider refuses above 128000" while still meaning "this block may be
     under-provisioned on purpose", so it is a second key.
     """
-    # --- backward compatibility: absence means UNCHANGED, both directions ---
     with patched_post() as log:
         client.chat(block(128000), "hi", max_tokens=256000)
         client.chat(block(256000), "hi", max_tokens=128000)
@@ -371,7 +347,6 @@ def case_i_max_tokens_limit() -> None:
     check("i2 no limit: per-block clamping inside one fan-out still holds",
           sent(log) == [128000, 256000], f"sent={sent(log)}")
 
-    # --- the limit lowers the block's effective cap --------------------------
     with patched_post() as log:
         client.chat(block(256000, limit=131072), "hi", max_tokens=256000)
     check("i3 limit: a caller's cap is clamped down to the declared limit",
@@ -382,10 +357,6 @@ def case_i_max_tokens_limit() -> None:
     check("i4 limit: with no caller cap the limit still binds",
           sent(log) == [131072], f"sent={sent(log)}")
 
-    # The direction a user is most likely to get wrong: writing a limit
-    # believing it RAISES the block. min() does nothing here. Pinned in both
-    # call shapes -- with and without the synthesis opt-out, since that flag
-    # turns the block's max_tokens into a floor rather than a ceiling.
     with patched_post() as log:
         client.chat(block(65536, limit=131072), "hi", max_tokens=4096,
                     enforce_ceiling=False)
@@ -394,16 +365,12 @@ def case_i_max_tokens_limit() -> None:
     check("i5 limit above the block is a no-op, never a raise",
           sent(log) == [4096, 65536, 4096], f"sent={sent(log)}")
 
-    # Under the synthesis opt-out the BLOCK is not a ceiling, so a caller cap
-    # above it is legal -- but the limit still bounds it. This is the floor
-    # working as designed, not a raise past the block.
     with patched_post() as log:
         client.chat(block(65536, limit=131072), "hi", max_tokens=256000,
                     enforce_ceiling=False)
     check("i6 synthesis may exceed the block but never the limit",
           sent(log) == [131072], f"sent={sent(log)}")
 
-    # Absent / null / 0 all mean "no declared limit" (repo-wide `or` idiom).
     with patched_post() as log:
         client.chat(block(128000, limit=None), "hi", max_tokens=256000)
         b0 = block(128000)
@@ -426,8 +393,6 @@ def case_j_limit_bounds_the_consensus_synthesis() -> None:
         (proj / "templates").mkdir(parents=True)
         logger._run_path = None
 
-        # The failing run: ceiling 256000, consensus block 128000 on a provider
-        # whose real limit is 131072. Without a declared limit: sent 256000.
         cfg = {"providers": {"translator": [block(128000, "m1"),
                                             block(256000, "m2")],
                              "consensus": [block(128000, "arbiter")]},
@@ -439,7 +404,6 @@ def case_j_limit_bounds_the_consensus_synthesis() -> None:
         check("j1 regression shape: without a limit the synthesis overran",
               sent(log)[-1] == 256000, f"sent={sent(log)}")
 
-        # Same shape, one key added.
         cfg["providers"]["consensus"] = [block(128000, "arbiter",
                                                limit=131072)]
         consensus._ANNOUNCED.clear()
@@ -449,15 +413,9 @@ def case_j_limit_bounds_the_consensus_synthesis() -> None:
         check("j2 fix: the synthesis is clamped to the declared limit",
               sent(log)[-1] == 131072, f"sent={sent(log)}")
 
-        # The fan-out candidates are bounded by it too: it is a provider limit,
-        # not a synthesis rule. m1's own 128000 is the tighter of the two here,
-        # so it must be UNCHANGED -- the limit must not become a second, lower
-        # budget for a block that never asked for more.
         check("j3 the limit does not disturb a block already below it",
               sent(log)[:2] == [128000, 256000], f"sent={sent(log)}")
 
-        # ...and it does bound a block that asked for more than the provider
-        # allows, which is the other half of "provider limit, not budget".
         cfg["providers"]["translator"] = [block(256000, "m1",
                                                 limit=131072),
                                           block(256000, "m2")]
@@ -468,11 +426,6 @@ def case_j_limit_bounds_the_consensus_synthesis() -> None:
         check("j4 a translator block over its own limit is clamped too",
               sent(log)[:2] == [131072, 256000], f"sent={sent(log)}")
 
-        # The under-provisioned arbitrator keeps its FLOOR: consensus.chat raises
-        # the merge to max(task, block) so a 65536 arbitrator can still merge
-        # 256000 candidates, and a limit ABOVE the task cap must not suppress
-        # that. This is the config.local.example.mixed.json shape and it must
-        # not regress -- j2 is the case where the limit DOES bind.
         cfg["providers"]["translator"] = [block(256000, "m1"),
                                           block(256000, "m2")]
         cfg["providers"]["consensus"] = [block(65536, "arbiter",
@@ -484,8 +437,6 @@ def case_j_limit_bounds_the_consensus_synthesis() -> None:
         check("j5 a limit above the task cap leaves the floor intact",
               sent(log)[-1] == 256000, f"sent={sent(log)}")
 
-        # ...and the same arbitrator whose provider only reaches 131072 gets
-        # exactly that, not the 256000 it asked for.
         cfg["providers"]["consensus"] = [block(65536, "arbiter",
                                                limit=131072)]
         consensus._ANNOUNCED.clear()
@@ -511,16 +462,11 @@ def case_k_limit_reaches_packing() -> None:
           and config.block_cap(block(65536, limit=131072)) == 65536,
           "block_cap disagrees with min(max_tokens, limit)")
 
-    # What pipeline computes for the packing minimum.
     blocks = [block(256000, "m1"), block(256000, "m2", limit=131072)]
     pmax = min(config.block_cap(b) for b in blocks)
     check("k2 the packing minimum follows the limit, not the declaration",
           pmax == 131072, f"provider_max={pmax}")
 
-    # And it must actually split: the same lines packed at 131072 vs 256000.
-    # 600 lines x ~210 output tokens = 126000, which sits between the two
-    # budgets (floor(0.8*256000)-256 = 204544, floor(0.8*131072)-256 = 104601)
-    # so the limited pack must split where the unlimited one does not.
     lines = ["中" * 200] * 600
     big = pipeline._pack_chunks(lines, 256000, 256000, 256000)
     limited = pipeline._pack_chunks(lines, pmax, 256000, 256000)
@@ -537,30 +483,20 @@ def case_k_limit_reaches_packing() -> None:
             pipeline._check_translator_caps(bs, wire)
         return buf.getvalue()
 
-    # A limit below the packing floor is the same hard error as a low
-    # max_tokens: the chapter cannot be packed into it at all.
     out = warn([block(256000, "m1", limit=4096)], 256000)
     check("k4 a limit below MIN_TRANSLATOR_MAX_TOKENS warns as unpackable",
           "[warn]" in out and "cannot be packed into" in out, f"out={out!r}")
 
-    # The squeeze warning must compare against the DECLARED budget, not the
-    # limit -- otherwise a limit and the ceiling look identical to it and the
-    # measured Flash-Preview failure (max effort under a small cap returns
-    # nothing) goes undiagnosed. A limit BELOW the declaration is exactly that
-    # undiagnosed case, so it must warn even when the ceiling does not squeeze.
     out = warn([block(256000, "reasoner", limit=65536,
                       extra={"reasoning_effort": "max"})], 256000)
     check("k5 a limit squeezing a reasoning block still warns",
           "[warn]" in out and "converging" in out, f"out={out!r}")
 
-    # A limit AT the declaration is not a squeeze -- nothing is lost.
     out = warn([block(256000, "reasoner", limit=256000,
                       extra={"reasoning_effort": "max"})], 256000)
     check("k6 a limit at the declared cap is not a squeeze",
           out.strip() == "", f"out={out!r}")
 
-    # The limit is about capacity, not reasoning: a plain model pinned by one
-    # is fine, same as a plain model squeezed by the ceiling (case g4).
     out = warn([block(256000, "plain", limit=65536)], 256000)
     check("k7 a limit on a non-reasoning block is not a squeeze",
           out.strip() == "", f"out={out!r}")

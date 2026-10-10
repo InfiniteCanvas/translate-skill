@@ -5,159 +5,49 @@ from pathlib import Path
 
 PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "profile", "consensus")
 
-# A per-job arbitrator is authored as a SIBLING key, `consensus_<job>`:
-# `providers.consensus_translator` is the model that merges the translator's
-# candidates, `providers.consensus_annotator` the one that merges the
-# annotator's. An ABSENT key resolves to `providers.consensus`, the global
-# arbitrator, so a project that authors none behaves exactly as it did before
-# per-job arbitrators existed -- that fallback is the whole backward-compat
-# contract.
-#
-# The jobs that may carry a suffix. `consensus` is excluded deliberately: it is
-# the global arbitrator, it can never hold two blocks (see _normalize_providers),
-# and consensus.chat is never called with job="consensus", so
-# `consensus_consensus` would be accepted, normalized, and then read by nothing.
 CONSENSUS_PREFIX = "consensus_"
 CONSENSUS_JOBS = tuple(j for j in PROVIDER_JOBS if j != "consensus")
 
 DEFAULTS: dict = {
     "seed_min_count": 3,
-    # Minimum novel-wide occurrences for a glossary-expansion proposal to be
-    # added as a brand-new term (0 disables the gate).
     "min_term_occurrences": 3,
-    # Canonical glossary rendering must appear >= ceil(coverage*src) times;
-    # zero occurrences with src >= 2 is the drift signal handed to the FAITH reviewer.
     "min_term_coverage": 0.25,
     "fuzzy_max_distance": 2,
     "tn_gap_chapters": 10,
-    # Keep model self-assessed low-comprehension (threshold "low") notes
-    # instead of dropping them; some models (e.g. Qwen) self-assess too
-    # harshly and their low notes are still useful.
     "tn_keep_low_confidence": False,
     "max_attempts": 3,
-    # Runaway safety valve only: every glossary term present in the chapter
-    # goes into the prompt; this caps the rendered list if it ever explodes.
     "contextual_glossary_cap": 200,
     "max_new_terms_per_chapter": 15,
     "max_notes_per_chapter": 10,
-    # Per-call OUTPUT cap for translation and the packing budget: long chapters
-    # split into parts sized so each part's expected output (per-line cost, 0.8
-    # headroom) fits this cap; smaller ones translate whole. Input context is
-    # never limited by this.
-    #
-    # 65536, not the Hy-MT2 card's 4k-8k: reasoning-capable hosted models
-    # (GLM-5.3, MiniMax-M3) draw from THIS SAME budget, measured live at
-    # ~700-1300 reasoning tokens for a plain chapter but ~10462 for a
-    # translator's-notes prompt -- an overthinking GLM would otherwise hit the
-    # old 8192 ceiling with the answer truncated away.
-    #
-    # This is a CEILING, not an override. A translator block's own max_tokens
-    # is a hard provider limit the pipeline may never raise, and where it is
-    # lower it wins: client.chat clamps the sent cap down per block, and
-    # pipeline packs to min(this, the tightest block) so no model in the array
-    # truncates its part. Setting this above a block's cap is therefore
-    # supported, not a misconfiguration -- it just means the block wins and
-    # this number is not the cap in force.
     "translate_max_output_tokens": 65536,
-    # Style-profile generation at init: how many chapters to sample and
-    # roughly how many source characters to include in the prompt.
     "style_sample_chapters": 4,
     "style_sample_chars": 12000,
-    # Two-tier trace (see lib/logger.py). Tier 1 is the orchestration
-    # timeline -- run/chapter lifecycle, stage transitions, gate verdicts,
-    # degradations, and a per-call llm_call summary; it NEVER carries a
-    # prompt or a response. Tier 2 is one file per chapter carrying the
-    # full model exchange. Both tiers are written per (chapter, invocation).
-    #
-    # Tier-1 structural events. false leaves the chapter tier-2 files and
-    # both index.jsonl indexes untouched -- only the orchestration timeline
-    # goes away.
     "log_orchestration": True,
-    # llm_request/llm_response lines ONLY (the prompt/response bodies and
-    # the metadata they carry). result/chunk/feedback and both indexes are
-    # unconditional, so log_llm:false still leaves a chapter's tier-2 file
-    # with the pipeline's own per-chunk record.
     "log_llm": True,
-    # The prompt/response strings inside those two lines. false keeps
-    # finish_reason/usage/elapsed_s/error and records prompt_chars /
-    # response_chars instead -- the call stays accountable without the text.
     "log_prompt_bodies": True,
-    # Retention for the logs/ root and logs/project/ buckets, by mtime.
     "log_llm_keep_runs": 10,
-    # Retention per chapter directory, independent of every other chapter.
     "log_chapter_keep_runs": 3,
-    # Rebuild the epub in a parallel subprocess after every chapter that
-    # finishes translation (serialized; one final build at batch end
-    # guarantees completeness). Set false to build only via build-epub.
     "auto_build_epub": True,
-    # On balance drift signals, one glossary-job call judges whether each
-    # flagged term truly belongs in the glossary; mundane terms are removed
-    # and retired (never re-added; the retirement is applied only after the
-    # translation passes the faithfulness gate). Set false to skip the
-    # judgment.
     "glossary_auto_cleanup": True,
-    # Commit every mutating action to the project's git repository (created
-    # by `init`, backfilled by migrate v003). Set false to keep a project
-    # un-versioned; lib/vcs.commit is the single gate.
     "git_commits": True,
-    # `review glossary` / `review notes` batching: entries per model review
-    # call; also settable per run with `--batch-size`.
     "review_batch_size": 40,
-    # Filename of the advisory review report written by `review glossary` /
-    # `review notes` and read back by `review fix`; relative to the project
-    # dir.
     "review_report_path": "review-report.md",
 }
 
 DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"
-# Every provider job's max_tokens default. Used as the `or`-fallback for a
-# block that omits or nulls the key -- provider max_tokens is NOT
-# schema-validated (see references/file-formats.md), and "unset" must mean
-# "this default", never "unlimited": an omission on one translator block
-# otherwise contributes nothing to pipeline's provider_max minimum and lets a
-# single forgotten key size the whole job. It is a fallback, not a clamp --
-# nothing reads it as an upper bound. A local server that cannot generate 64k
-# should set its own lower value per project, but not below
-# pipeline.MIN_TRANSLATOR_MAX_TOKENS, under which chapters cannot be packed.
 DEFAULT_MAX_TOKENS = 65536
 
-# Skill-level settings overlay, copied into every project `init` creates and
-# merged on demand by `sync-config`. It holds the same shape as config.json
-# (any subset of its keys) and is gitignored, so per-machine details -- most
-# usefully the provider endpoint, model, and auth of whoever runs the skill --
-# live in exactly one place instead of being retyped per novel.
-#
-# Deliberately NOT a config.DEFAULTS key: an overlay that is absent must be a
-# silent no-op, and a boolean gate would have to be materialized into every
-# existing project's config.json (and carried by every migration). The file's
-# presence IS the opt-in, so nothing is added to the project schema and no
-# migration is required.
 LOCAL_CONFIG_NAME = "config.local.json"
 
-# Keys the overlay may never carry. `version` is the project's own migration
-# stamp: taking it from the overlay would make `migrate` replay steps the
-# project has already run (or skip ones it has not), and the stamp is written
-# by `init`/`migrate` alone.
 LOCAL_CONFIG_FORBIDDEN = ("version",)
 
-# translator temperature/top_p follow the Hy-MT2 model card recommendation
-# (0.7 / 1.0); every other job keeps the server default for its sampling
-# knobs (no top_p key sent). `thinking` maps to sglang's
-# chat_template_kwargs.enable_thinking -- false spends the output budget on
-# the answer instead of a reasoning chain (recommended for this pipeline);
-# set true per job to experiment.
 PROVIDER_DEFAULTS: dict[str, dict] = {
     "translator": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.7, "top_p": 1.0, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
     "glossary": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
     "reviewer": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.0, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
     "annotator": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
-    # Rolling story-so-far recap generation (one cheap call per translated
-    # chapter, story_state.json); point it at a cheap model.
     "recap": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
     "profile": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.3, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
-    # The consensus job merges the multi-model candidates of a fan-out into
-    # the final response (one call per fan-out); temperature 0.2 like the
-    # annotator/glossary synthesis jobs.
     "consensus": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
 }
 
@@ -226,11 +116,6 @@ def _normalize_per_job_consensus(providers: dict, normalized: dict) -> None:
             continue
         job = key[len(CONSENSUS_PREFIX):]
         if job not in CONSENSUS_JOBS:
-            # Reachable by a one-character typo on the exact key this feature
-            # introduces, and the consequence of letting it through is a silent
-            # no-op: an unrecognized providers key passes straight through
-            # untouched, nothing ever reads it, and the job quietly keeps
-            # merging through the global arbitrator.
             raise ValueError(
                 f"providers.{key} names no job: expected "
                 f"{CONSENSUS_PREFIX}<job> where <job> is one of "
@@ -239,8 +124,6 @@ def _normalize_per_job_consensus(providers: dict, normalized: dict) -> None:
         if blocks is None:
             continue
         if len(blocks) > 1:
-            # Same invariant as the global consensus job: the arbitrator
-            # synthesizes ONE final response, so it is exactly one model.
             raise ValueError(
                 f"providers.{key} must list exactly one model (got {len(blocks)})")
         normalized[key] = blocks
@@ -281,11 +164,10 @@ def _normalize_providers(providers: dict) -> dict:
             authored = _provider_blocks(providers, job)
             if authored is None:
                 if job == "consensus":
-                    # The arbitrator is ONE model: first translator block only.
                     authored = [translator[0]] if translator else None
                 else:
                     authored = translator
-        if authored is None:  # nothing authored to inherit from: plain defaults
+        if authored is None:
             normalized[job] = [_with_defaults(job, {})]
             continue
         if job == "consensus" and len(authored) > 1:
@@ -397,11 +279,6 @@ def load_local_config(skill_root: Path) -> dict | None:
         raise ValueError(f"{path} is not valid JSON: {exc}") from exc
     if not isinstance(raw, dict):
         raise ValueError(f"{path} must contain a JSON object")
-    # `providers` is the one key whose shape the merge special-case reaches
-    # into directly, so a non-object here would raise AttributeError deep in
-    # merge_overlay -- which main() does not catch, turning a typo in the
-    # user's own overlay into a traceback and exit 1. Reject it here, where
-    # the message can name the file.
     if "providers" in raw and not isinstance(raw["providers"], dict):
         raise ValueError(f"{path}: 'providers' must be a JSON object")
     forbidden = [key for key in LOCAL_CONFIG_FORBIDDEN if key in raw]
@@ -477,17 +354,11 @@ def apply_overlay(project_dir: Path, overlay: dict) -> tuple[dict, list[str]]:
         raise ValueError(f"{cfg_path} must contain a JSON object")
     if "providers" in raw and not isinstance(raw["providers"], dict):
         raise ValueError(f"{cfg_path}: 'providers' must be a JSON object")
-    # Same guard on the overlay side: apply_overlay is a public helper, and a
-    # hand-built overlay dict (not one from load_local_config) can still carry
-    # a non-object `providers`. Checked here so no caller can reach the
-    # AttributeError inside merge_overlay.
     if not isinstance(overlay, dict):
         raise ValueError("config.local.json overlay must be a JSON object")
     if "providers" in overlay and not isinstance(overlay["providers"], dict):
         raise ValueError("config.local.json: 'providers' must be a JSON object")
     merged = merge_overlay(raw, overlay)
-    # Prove the result is loadable before it replaces a working config.json.
-    # Validation only: the value written below is `merged`, not this form.
     _normalize_providers(merged.get("providers") or {})
     changed = sorted(_changed_keys(raw, merged))
     if merged != raw:

@@ -1,28 +1,3 @@
-"""Tests for glossary.merge_entries(): the happy-path merge contract, the
-definition-discard warning, and the user-literal "retired" recording shared
-with retire().
-
-merge_entries() unions variants/alt_translations (keep-first, deduped),
-fills the kept entry's definition only when it is empty, and discards the
-removed entry's definition when the kept one already has one -- that
-discard now prints one [warn] line naming both canonical sources while the
-kept definition stays verbatim and the rest of the merge still applies.
-The merge and retire paths also record the caller's raw literal in
-"retired" (remove_literal= / source_literal=) when it differs from the
-canonical source, so the CLI's literal-comparing idempotency gate
-(translate.py compares args.remove / args.source against
-retired_sources()) recognizes a re-run that names a variant spelling; the
-default (no kwarg) keeps the canonical-only recording the older tests pin.
-
-merge_entries() itself never writes -- the merge cases assert on the
-in-memory dict; the retire cases use a temp-project glossary.json written
-via glossary.save (the same atomic writer retire() itself uses).
-
-Self-contained PASS/FAIL script (no pytest). Run from anywhere:
-
-    uv run tests/test_glossary_merge.py
-"""
-
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6.0"]
@@ -34,11 +9,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# lib/ lives at novel-translator/scripts relative to this file (CWD-independent)
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import glossary  # noqa: E402
+from lib import glossary
 
 PASSED = 0
 FAILED: list[str] = []
@@ -90,7 +64,7 @@ def case_1_happy_path() -> None:
     recorded in "retired", exact return tuple, and no warn on the fill
     path."""
     g = make_g(keep_entry(), remove_entry())
-    del g["terms"][0]["definition"]  # kept lacks a definition -> fill
+    del g["terms"][0]["definition"]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         kept, removed_key, variants_added, alt_added, def_filled = (
@@ -127,7 +101,7 @@ def case_2_definition_discard_warn() -> None:
     """Both entries have a definition: the removed one is dropped with one
     exact [warn] line naming both canonical sources; the kept definition is
     unchanged and the rest of the merge still applies."""
-    g = make_g(keep_entry(), remove_entry())  # both have definitions
+    g = make_g(keep_entry(), remove_entry())
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         kept, removed_key, variants_added, alt_added, def_filled = (
@@ -172,9 +146,6 @@ def case_4_remove_literal_recording() -> None:
     idempotency gate recognizes a re-run; a canonical-equal literal is not
     duplicated, and the default (no kwarg) keeps the canonical-only
     recording."""
-    # User typed the variant 靈石: canonical 灵石 recorded first, then the
-    # literal -- retired_sources(g) (what the CLI gate compares against)
-    # must contain both spellings.
     g = make_g(keep_entry(), remove_entry())
     glossary.merge_entries(g, "灵砂", "靈石", remove_literal="靈石")
     check("4a merge: variant literal recorded next to the canonical source",
@@ -183,13 +154,11 @@ def case_4_remove_literal_recording() -> None:
           glossary.retired_sources(g) == {"灵石", "靈石"},
           f"retired={g.get('retired')}")
 
-    # Literal == canonical: no duplicate.
     g = make_g(keep_entry(), remove_entry())
     glossary.merge_entries(g, "灵砂", "灵石", remove_literal="灵石")
     check("4c merge: canonical-equal literal not duplicated",
           g.get("retired") == ["灵石"], f"retired={g.get('retired')}")
 
-    # Default keeps the canonical-only recording.
     g = make_g(keep_entry(), remove_entry())
     glossary.merge_entries(g, "灵砂", "靈石")
     check("4d merge: without the kwarg only the canonical source is recorded",
@@ -248,7 +217,6 @@ def case_5_retire_source_literal() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

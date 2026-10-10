@@ -41,12 +41,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# scripts/ (and therefore lib/) lives at novel-translator/scripts relative
-# to this file (CWD-independent); translate.py puts it on sys.path itself.
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from translate import cmd_init  # noqa: E402
+from translate import cmd_init
 
 PASSED = 0
 FAILED: list[str] = []
@@ -138,9 +136,6 @@ def snapshot(root: Path) -> dict[str, bytes | None]:
     }
 
 
-# ---------------------------------------------------------------------- cases
-
-
 def case_1_recovery_init_preserves_state() -> None:
     """Deleted config.json + init WITHOUT --force: all three model-grown
     state files survive byte-identical, the preserve line prints, and no
@@ -227,7 +222,6 @@ def case_3_fresh_init_is_silent() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

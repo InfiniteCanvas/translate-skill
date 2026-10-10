@@ -121,8 +121,6 @@ def replace_chapters(
             missing.append(file)
             continue
         scanned += 1
-        # utf-8-sig: hand-edited chapters can arrive BOM-prefixed; the extra
-        # "\ufeff" would hide the opening '---' from _split_frontmatter.
         text = path.read_text(encoding="utf-8-sig")
         head, tail = _split_frontmatter(text)
         new_tail, n = replace_text(tail, phrase, new)
@@ -174,7 +172,6 @@ def glossary_replace(
         raise ReplaceError(
             f"no glossary entry for '{source_term}' (matched by source or variants)"
         )
-    # str(None) would otherwise become the literal phrase "None".
     old = str(entry.get("translation") or "")
     if not old.strip():
         raise ReplaceError(
@@ -194,7 +191,6 @@ def glossary_replace(
         result["chapters"] = empty_chapters
         return result
 
-    # Fail on setup problems BEFORE the first write (the chapter rewrites).
     manifest_path = project.paths(project_dir)["manifest"]
     if not manifest_path.is_file():
         raise ReplaceError(f"{manifest_path} not found - run 'init' first")
@@ -202,12 +198,6 @@ def glossary_replace(
         manifest = project.load_manifest(project_dir)
     except (OSError, ValueError) as exc:
         raise ReplaceError(f"cannot read manifest: {exc}") from exc
-    # Pre-flight the deterministic part of replace_chapters: build_matcher is
-    # pure, but replace_text rebuilds it per chapter and can raise (an old
-    # translation of bare punctuation like '...' or '-' has no matchable
-    # words). Failing it here keeps the promise above: a deterministic error
-    # must surface as a setup failure before the first write, not as a
-    # mid-run crash (balance would flag a half-rewritten book as drift).
     build_matcher(old)
 
     pruned: list[str] = []
@@ -218,12 +208,6 @@ def glossary_replace(
             entry["alt_translations"] = [a for a in alts if a not in pruned]
             result["glossary"]["pruned_alt"] = pruned
 
-    # Rewrite the chapters FIRST and save the glossary LAST, so a run that
-    # dies mid-loop (e.g. a Windows PermissionError while another process
-    # holds a chapter open) leaves glossary.json still saying the old
-    # translation -- and re-running the same command finishes the job:
-    # already-rewritten chapters no longer contain the old rendering, match
-    # zero occurrences and are skipped, so the re-run is idempotent.
     rewritten: list[str] = []
     try:
         result["chapters"] = replace_chapters(

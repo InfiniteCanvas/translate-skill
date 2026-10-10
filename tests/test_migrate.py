@@ -78,16 +78,13 @@ import types
 from collections.abc import Callable
 from pathlib import Path
 
-# scripts/ (and therefore lib/ and migrations/) lives at
-# novel-translator/scripts relative to this file (CWD-independent);
-# translate.py puts it on sys.path itself as well.
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import config  # noqa: E402
-import migrations  # noqa: E402
-from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015  # noqa: E402
-import translate  # noqa: E402
+from lib import config
+import migrations
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015
+import translate
 
 PASSED = 0
 FAILED: list[str] = []
@@ -112,7 +109,7 @@ def run_migrate(ns: argparse.Namespace, project_dir: Path):
     try:
         with contextlib.redirect_stdout(buf):
             code = translate.cmd_migrate(ns, project_dir)
-    except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+    except Exception as caught:
         exc = caught
     return code, buf.getvalue(), exc
 
@@ -171,9 +168,6 @@ def patched_confirm(fake: Callable[[str], bool]):
         sys.stdin = orig_stdin
 
 
-# A config written by a pre-versioning init: user-tuned tn_gap_chapters and
-# a custom translator endpoint, but none of today's DEFAULTS keys and no
-# other provider jobs.
 FIXTURE_CFG = {
     "source_lang": "zh",
     "target_lang": "en",
@@ -188,7 +182,7 @@ def case_1_v001() -> None:
     --dry-run); materialize DEFAULTS preserving user values; stamp the
     chain-head version; second run no-op; the already-current maintenance
     pass (trap fixed)."""
-    HEAD = migrations.current_version()  # real chain head (10 since v010)
+    HEAD = migrations.current_version()
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
@@ -219,7 +213,7 @@ def case_1_v001() -> None:
 
         ns = argparse.Namespace(dry_run=False, force=False)
         orig_tpl = translate.TEMPLATES_SRC_DIR
-        translate.TEMPLATES_SRC_DIR = src  # cmd_migrate reads it at call time
+        translate.TEMPLATES_SRC_DIR = src
         try:
             proj = make_project("main")
             with patched_confirm(lambda question: False):
@@ -250,9 +244,6 @@ def case_1_v001() -> None:
             check("1j chain: version stamped to the chain head",
                   disk.get("version") == HEAD,
                   f"version={disk.get('version')!r} head={HEAD}")
-            # The full v001->vNNN walk ends array-shaped (v008's step, and
-            # the normalization every materialize performs since then):
-            # every job a list of blocks, the consensus job exactly one.
             check("1j2 chain: full walk leaves array-shaped providers with consensus",
                   all(isinstance(disk["providers"][job], list)
                       for job in config.PROVIDER_JOBS)
@@ -271,8 +262,6 @@ def case_1_v001() -> None:
             check("1l v001: second run wrote nothing (byte snapshot equal)",
                   snapshot(proj) == before)
 
-            # Interactive yes: the one differing template is refreshed to
-            # the shipped bytes after exactly one prompt.
             asked: list[str] = []
 
             def yes_confirm(question: str) -> bool:
@@ -289,9 +278,6 @@ def case_1_v001() -> None:
                   and len(asked) == 1 and "b.md" in asked[0],
                   f"code={code_y} exc={exc_y!r} asked={asked!r} out={out_y}")
 
-            # Fresh version-0 project: the main project is already stamped,
-            # so the version gate would (correctly) skip v001 and --force
-            # would never reach the template refresh.
             force = make_project("force")
             with patched_confirm(refuse_confirm):
                 code3, out3, exc3 = run_migrate(
@@ -319,8 +305,6 @@ def case_1_v001() -> None:
                   "(y/N choice in a real run)" in out4
                   and "kept (your version)" not in out4, f"out={out4}")
 
-            # --dry-run --force: the report must say what a real --force run
-            # would do (overwrite), not promise a prompt that would never come.
             dryf = make_project("dryf")
             before_dryf = snapshot(dryf)
             codef, outf, excf = run_migrate(
@@ -335,10 +319,6 @@ def case_1_v001() -> None:
                   snapshot(dry) == before_dry and "version" not in dry_disk,
                   f"version={dry_disk.get('version')!r}")
 
-            # A project with no templates/ dir at all: --dry-run must not
-            # even create it; a real run creates it lazily on first copy.
-            # Missing templates never prompt, so the refusal fake doubles
-            # as a guard against accidental interactivity.
             bare = root / "bare"
             bare.mkdir()
             (bare / "config.json").write_text(
@@ -357,8 +337,6 @@ def case_1_v001() -> None:
                   == ["a.md", "b.md", "c.md"],
                   f"code={code5} exc={exc5!r}")
 
-            # Already-current projects: the maintenance pass (template
-            # refresh as upkeep, not a chain step).
             cur_yes, cfg_yes = make_current("cur-yes")
             with patched_confirm(lambda question: True):
                 code6, out6, exc6 = run_migrate(ns, cur_yes)
@@ -391,10 +369,6 @@ def case_1_v001() -> None:
                   and (cur_force / "templates" / "b.md").read_bytes() == (src / "b.md").read_bytes()
                   and "[ok] templates ~ b.md refreshed (--force)" in out8, f"out={out8}")
 
-            # confirm=None (pipes, CI): sync_templates itself auto-keeps.
-            # Direct call, because cmd_migrate cannot be forced
-            # non-interactive without patching sys.stdin; migrations.common
-            # is bound by the real chain walked further up in this case.
             none_proj, _cfg_n = make_current("cur-none")
             lines = migrations.common.sync_templates(
                 none_proj, src, dry_run=False, force=False, confirm=None)
@@ -442,7 +416,7 @@ def case_2_walker() -> None:
         return root
 
     def with_chain(steps, ns, root):
-        orig = migrations.chain  # current_version() follows the swap too
+        orig = migrations.chain
         migrations.chain = lambda: list(steps)
         try:
             return run_migrate(ns, root)
@@ -495,10 +469,6 @@ def case_2_walker() -> None:
               and not (root / "marker.txt").exists() and "version" not in disk,
               f"code={code} out={out} disk={disk}")
 
-    # The walker must hand every step the confirm callable it resolved --
-    # deterministic regardless of this process's real stdin: the module
-    # global is swapped for a sentinel and stdin for an object whose
-    # isatty() is True.
     with tempfile.TemporaryDirectory() as td:
         root = make_project(td)
         received: list = []
@@ -656,8 +626,6 @@ def case_6_v002() -> None:
                                          "model": "m1"}},
         })
         if user_sets_new_keys:
-            # Hand-set before upgrading: materialize must keep these
-            # verbatim, never fold in the new defaults 40/"review-report.md".
             cfg["review_batch_size"] = 100
             cfg["review_report_path"] = "custom-report.md"
         (proj / "config.json").write_text(
@@ -667,10 +635,8 @@ def case_6_v002() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
-        src.mkdir()  # no shipped *.md: sync_templates stays silent
+        src.mkdir()
 
-        # The add-only pin: the file already carries user values under the
-        # two new key names.
         proj = make_v1_project(root, "user-wins", user_sets_new_keys=True)
         lines = v002.migrate(proj, src)
         check("6a v002: nothing new to add -> provider-normalize report only",
@@ -690,8 +656,6 @@ def case_6_v002() -> None:
         check("6e v002: the step itself never moves the version stamp",
               disk.get("version") == 1, f"version={disk.get('version')!r}")
 
-        # A v1-era file missing exactly the two new keys: the report must
-        # name them, and the defaults land on disk.
         fresh = make_v1_project(root, "fresh", user_sets_new_keys=False)
         lines_f = v002.migrate(fresh, src)
         check("6f v002: materializes exactly 2 new key(s), named in the report",
@@ -705,8 +669,6 @@ def case_6_v002() -> None:
               f"review_batch_size={disk_f.get('review_batch_size')!r} "
               f"review_report_path={disk_f.get('review_report_path')!r}")
 
-        # Idempotency: re-running on the migrated file reports nothing and
-        # writes nothing (byte snapshot, stronger than mtime on Windows).
         before = snapshot(proj)
         again = v002.migrate(proj, src)
         check("6h v002: second identical call returns []",
@@ -742,8 +704,6 @@ def case_7_v004() -> None:
                                          "model": "m1"}},
         })
         if user_sets_new_key:
-            # Hand-set before upgrading: materialize must keep this
-            # verbatim, never fold in the new default 3.
             cfg["min_term_occurrences"] = 7
         (proj / "config.json").write_text(
             json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
@@ -753,13 +713,9 @@ def case_7_v004() -> None:
         root = Path(td)
         src = root / "ship"
         src.mkdir()
-        # One shipped template: proves v004 chains sync_templates like
-        # v003 (missing copies are always added, never prompted).
         (src / "extra.md").write_text("extra template\n", encoding="utf-8",
                                       newline="\n")
 
-        # The add-only pin: the file already carries a user value under
-        # the new key's name.
         proj = make_v3_project(root, "user-wins", user_sets_new_key=True)
         lines = v004.migrate(proj, src)
         check("7a v004: user value -> no materialize line (provider-normalize report)",
@@ -773,8 +729,6 @@ def case_7_v004() -> None:
         check("7c v004: other user-set default survives (max_attempts == 9)",
               disk.get("max_attempts") == 9, f"max_attempts={disk.get('max_attempts')!r}")
 
-        # A v3-era file missing exactly the new key: the report must name
-        # it, the default lands on disk, and the template sync runs too.
         fresh = make_v3_project(root, "fresh", user_sets_new_key=False)
         lines_f = v004.migrate(fresh, src)
         check("7d v004: materializes exactly 1 new key, named in the report",
@@ -793,8 +747,6 @@ def case_7_v004() -> None:
         check("7g v004: the step itself never moves the version stamp",
               disk_f.get("version") == 3, f"version={disk_f.get('version')!r}")
 
-        # Idempotency: re-running on the migrated file reports nothing and
-        # writes nothing (byte snapshot, stronger than mtime on Windows).
         before = snapshot(fresh)
         again = v004.migrate(fresh, src)
         check("7h v004: second identical call returns []",
@@ -830,7 +782,6 @@ def case_8_v005() -> None:
                 "providers": {"translator": {"base_url": "http://mine:9999/v1",
                                              "model": "m1"}},
             }, indent=2) + "\n", encoding="utf-8")
-        # Fold to the merged form exactly as materialize_config would have.
         config.save_config(proj, config.load_config(proj))
         tdir = proj / "templates"
         tdir.mkdir()
@@ -844,8 +795,6 @@ def case_8_v005() -> None:
         root = Path(td)
         src = root / "ship"
         src.mkdir()
-        # Three shipped templates: one the project drifted on, one it
-        # already matches (stays silent), one it is missing entirely.
         (src / "drift.md").write_text("shipped drift\n", encoding="utf-8",
                                       newline="\n")
         (src / "same.md").write_text("identical\n", encoding="utf-8",
@@ -853,8 +802,6 @@ def case_8_v005() -> None:
         (src / "fresh.md").write_text("newly shipped\n", encoding="utf-8",
                                       newline="\n")
 
-        # confirm=None: the drifted copy is kept with the non-interactive
-        # warning, the missing one is copied, the identical one is silent.
         proj = make_current_project(root, "main")
         cfg_bytes = (proj / "config.json").read_bytes()
         lines = v005.migrate(proj, src)
@@ -873,8 +820,6 @@ def case_8_v005() -> None:
               and (proj / "templates" / "fresh.md").read_text(encoding="utf-8")
               == "newly shipped\n")
 
-        # --force: the drifted copy is refreshed silently to the shipped
-        # bytes; config.json still never moves.
         lines_f = v005.migrate(proj, src, force=True)
         check("8e v005: --force refreshes the drifted template",
               lines_f == ["[ok] templates ~ drift.md refreshed (--force)"]
@@ -883,9 +828,6 @@ def case_8_v005() -> None:
         check("8f v005: --force still never touches config.json",
               (proj / "config.json").read_bytes() == cfg_bytes)
 
-        # Idempotency: everything now matches the shipped copies, so a
-        # second run reports [] and writes nothing (byte snapshot, stronger
-        # than mtime on Windows).
         before = snapshot(proj)
         again = v005.migrate(proj, src)
         check("8g v005: second identical call returns []",
@@ -893,10 +835,6 @@ def case_8_v005() -> None:
         check("8h v005: second call wrote nothing (byte snapshot equal)",
               snapshot(proj) == before)
 
-        # A sparse pre-merge config (missing DEFAULTS keys) proves the
-        # point negatively: v005 must not materialize config even where
-        # materialize_config would have something to do -- that was
-        # v001-v004's job, and the file stays byte-identical.
         sparse = root / "sparse"
         sparse.mkdir()
         (sparse / "config.json").write_text(
@@ -966,8 +904,6 @@ def case_9_v007() -> None:
         root = Path(td)
         src = root / "ship"
         src.mkdir()
-        # The three v007 template changes: two newly shipped templates and
-        # the rewritten annotator prompt.
         (src / "recap.md").write_text("v7 recap prompt\n", encoding="utf-8",
                                       newline="\n")
         (src / "notes_review.md").write_text("v7 notes review prompt\n",
@@ -975,9 +911,6 @@ def case_9_v007() -> None:
         (src / "tn_generate.md").write_text("v7 tn prompt\n", encoding="utf-8",
                                             newline="\n")
 
-        # Direct call, confirm=None (cmd_migrate's non-interactive form):
-        # recap job materialized, both new templates copied, drifted
-        # tn_generate.md kept with the non-interactive warning.
         proj = make_v6_project(root, "direct")
         lines = v007.migrate(proj, src)
         check("9a v007: recap job materialized, both templates added, drift kept",
@@ -1007,8 +940,6 @@ def case_9_v007() -> None:
               and (proj / "templates" / "tn_generate.md").read_text(encoding="utf-8")
               == "v6-era tn prompt\n")
 
-        # --force: the drifted annotator prompt refreshes to the shipped
-        # bytes silently; config is already merged so it stays untouched.
         cfg_bytes = (proj / "config.json").read_bytes()
         lines_f = v007.migrate(proj, src, force=True)
         check("9g v007: --force refreshes the drifted tn_generate.md",
@@ -1018,8 +949,6 @@ def case_9_v007() -> None:
         check("9h v007: --force leaves the already-merged config alone",
               (proj / "config.json").read_bytes() == cfg_bytes)
 
-        # Idempotency: config merged, all three templates matching -- a
-        # second run reports [] and writes nothing (byte snapshot).
         before = snapshot(proj)
         again = v007.migrate(proj, src)
         check("9i v007: second identical call returns []",
@@ -1027,11 +956,6 @@ def case_9_v007() -> None:
         check("9j v007: second call wrote nothing (byte snapshot equal)",
               snapshot(proj) == before)
 
-    # Chain-walked end to end through cmd_migrate: the v6 stamp gates the
-    # chain to v007+v008, the last applied step stamps 8, and the accepted
-    # prompt refreshes the drifted tn_generate.md byte-equal to the ship
-    # dir. (No git setup needed: v003 never runs for a version-6 project,
-    # and vcs.commit is a silent no-op on a non-repo directory.)
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
@@ -1056,9 +980,6 @@ def case_9_v007() -> None:
                 code, out, exc = run_migrate(ns, full)
             disk = json.loads((full / "config.json").read_text(encoding="utf-8"))
             head = migrations.current_version()
-            # A v6 project walks every step from v007 to the chain head, so
-            # the number of "[migrate]" lines and the stamped version both
-            # track migrations.current_version() rather than a literal.
             expected_steps = head - 6
             check(f"9k v007: chain-walked v6 project applies v007..v{head:03d}, exit 0",
                   code == 0 and exc is None and "applying v007" in out
@@ -1079,9 +1000,6 @@ def case_9_v007() -> None:
                   and len(asked) == 1 and "tn_generate.md" in asked[0],
                   f"asked={asked!r}")
 
-            # --dry-run: same would-be changes reported (the new templates,
-            # the pending y/N choice, "version 6 -> {head}"), nothing written --
-            # byte snapshot equal, version still 6, no templates added.
             dry = make_v6_project(root, "dry")
             before_dry = snapshot(dry)
             with patched_confirm(refuse_confirm):
@@ -1116,7 +1034,6 @@ def case_10_sync_bom() -> None:
         src.mkdir()
         (src / "a.md").write_text("alpha\n", encoding="utf-8", newline="\n")
 
-        # Case 1: BOM-only difference -> identical, silent, untouched.
         quiet = root / "quiet"
         (quiet / "templates").mkdir(parents=True)
         bom_alpha = b"\xef\xbb\xbf" + b"alpha\n"
@@ -1128,8 +1045,6 @@ def case_10_sync_bom() -> None:
               and (quiet / "templates" / "a.md").read_bytes() == bom_alpha,
               f"lines={lines!r}")
 
-        # Case 2 (positive control): BOM plus real drift -> prompt, refresh
-        # to the shipped bytes (BOM stripped by the copy).
         drift = root / "drift"
         (drift / "templates").mkdir(parents=True)
         (drift / "templates" / "a.md").write_bytes(b"\xef\xbb\xbf" + b"user drift\n")
@@ -1193,9 +1108,6 @@ def case_11_v008() -> None:
             json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         tdir = proj / "templates"
         tdir.mkdir()
-        # A v7-era template that keeps matching the ship dir below: proves
-        # sync_templates stays silent for identical copies while consensus.md
-        # lands as the only new one.
         (tdir / "translation.md").write_text("v7 translation prompt\n",
                                              encoding="utf-8", newline="\n")
         return proj
@@ -1209,9 +1121,6 @@ def case_11_v008() -> None:
         (src / "translation.md").write_text("v7 translation prompt\n",
                                             encoding="utf-8", newline="\n")
 
-        # Direct call, confirm=None (cmd_migrate's non-interactive form):
-        # dict blocks wrap into arrays, consensus materializes, consensus.md
-        # is copied, the identical translation.md stays silent.
         proj = make_v7_project(root, "direct")
         lines = v008.migrate(proj, src)
         check("11a v008: provider blocks normalized + consensus.md shipped",
@@ -1246,8 +1155,6 @@ def case_11_v008() -> None:
         check("11g v008: the step itself never moves the version stamp",
               disk.get("version") == 7, f"version={disk.get('version')!r}")
 
-        # Idempotency: config normalized, all templates matching -- a second
-        # run reports [] and writes nothing (byte snapshot).
         before = snapshot(proj)
         again = v008.migrate(proj, src)
         check("11h v008: second identical call returns []",
@@ -1255,9 +1162,6 @@ def case_11_v008() -> None:
         check("11i v008: second call wrote nothing (byte snapshot equal)",
               snapshot(proj) == before)
 
-        # --dry-run: the report still names both changes, but the on-disk
-        # config stays dict-shaped with no consensus key and no template is
-        # copied.
         dry = make_v7_project(root, "dry")
         before_dry = snapshot(dry)
         lines_d = v008.migrate(dry, src, dry_run=True)
@@ -1327,7 +1231,7 @@ def case_12_v010() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        src = root / "ship"           # no templates -> sync_templates stays silent
+        src = root / "ship"
         src.mkdir()
         proj = make_v9_project(root, "p")
         lines = v010.migrate(proj, src)
@@ -1412,9 +1316,6 @@ def case_12_v010() -> None:
         src = root / "ship"
         src.mkdir()
         proj = make_v9_project(root, "p")
-        # A REAL collision, and one that can actually exist as two files on a
-        # case-insensitive filesystem: the canonical CHAPTER_0001.md plus a
-        # short-padded Chapter_1.md that wants the same canonical name.
         (proj / "source" / "CHAPTER_0001.md").write_text("keep me\n", encoding="utf-8")
         (proj / "source" / "Chapter_1.md").write_text("short padded\n", encoding="utf-8")
         clash = v010.migrate(proj, src)
@@ -1468,7 +1369,7 @@ def case_13_v011() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        src = root / "ship"           # no templates -> sync_templates stays silent
+        src = root / "ship"
         src.mkdir()
 
         proj = make(root, "on-default", 5)
@@ -1491,7 +1392,6 @@ def case_13_v011() -> None:
               v011.migrate(proj, src) == [],
               f"{v011.migrate(proj, src)!r}")
 
-        # A project that CHOSE a different number keeps it.
         proj2 = make(root, "chosen", 25)
         v011.migrate(proj2, src)
         after2 = json.loads((proj2 / "config.json").read_text(encoding="utf-8"))
@@ -1500,7 +1400,6 @@ def case_13_v011() -> None:
         check("13g v011: but the new keys are still added",
               after2["log_chapter_keep_runs"] == 3, "")
 
-        # --dry-run writes nothing and still names the bump.
         proj3 = make(root, "dry", 5)
         dry = v011.migrate(proj3, src, dry_run=True)
         check("13h v011: --dry-run reports the rewrite without writing",
@@ -1514,8 +1413,6 @@ def case_13_v011() -> None:
               isinstance(v011.DESCRIPTION, str)
               and "\n" not in v011.DESCRIPTION, "")
 
-        # v015 is the chain head: chain() is ascending, so the head is the
-        # LAST entry, and current_version() is what init/migrate actually use.
         check("13k v015 is the chain head",
               migrations.chain()[-1].VERSION == 15
               and migrations.current_version() == 15,
@@ -1572,7 +1469,6 @@ def case_14_v012() -> None:
         src = root / "ship"
         src.mkdir()
 
-        # The maintainer's real shape: ceiling above the tightest block.
         proj = make(root, "mismatch", 256000, [128000, 256000])
         before = (proj / "config.json").read_text(encoding="utf-8")
         out = v012.migrate(proj, src)
@@ -1591,7 +1487,6 @@ def case_14_v012() -> None:
         check("14e v012: idempotent -- a second run reports the same thing",
               v012.migrate(proj, src) == out, f"{v012.migrate(proj, src)!r}")
 
-        # The agreeing shape: [ok], still untouched.
         proj_ok = make(root, "agree", 65536, [65536])
         out_ok = v012.migrate(proj_ok, src)
         check("14f v012: an agreeing pair reports [ok] and rewrites nothing",
@@ -1600,7 +1495,6 @@ def case_14_v012() -> None:
                              .read_text(encoding="utf-8"))["version"] == 11,
               f"out={out_ok}")
 
-        # A block too small to pack into gets its own, different advice.
         proj_low = make(root, "low", 65536, [100])
         out_low = v012.migrate(proj_low, src)
         check("14g v012: an unpackable block reports the packing floor, not the ceiling",
@@ -1608,7 +1502,6 @@ def case_14_v012() -> None:
               and "exceeds the tightest" not in "\n".join(out_low),
               f"out={out_low}")
 
-        # A legacy single-dict providers.translator must not raise.
         proj_legacy = root / "legacy"
         proj_legacy.mkdir()
         (proj_legacy / "config.json").write_text(_json.dumps({
@@ -1662,9 +1555,6 @@ def case_15_v013() -> None:
         src = root / "ship"
         src.mkdir()
 
-        # The failing shape: the merge would be sent 256000 against a block
-        # that declares 128000 -- a 400 on any provider whose real limit is the
-        # declared number.
         proj = make(root, "over", ceiling=256000, consensus_max=128000)
         before = (proj / "config.json").read_text(encoding="utf-8")
         out = v013.migrate(proj, src)
@@ -1683,9 +1573,6 @@ def case_15_v013() -> None:
         check("15e v013: idempotent -- a second run reports the same thing",
               v013.migrate(proj, src) == out, f"{v013.migrate(proj, src)!r}")
 
-        # The supported shape since v012: ceiling above the block, but the
-        # ceiling is BELOW what the synthesis would need, so nothing is sent
-        # past the declared cap and there is nothing to report.
         proj_ok = make(root, "ok", ceiling=65536, consensus_max=128000)
         out_ok = v013.migrate(proj_ok, src)
         check("15f v013: a synthesis at or below the block reports [ok]",
@@ -1693,7 +1580,6 @@ def case_15_v013() -> None:
               and not any(line.startswith("[warn]") for line in out_ok),
               f"out={out_ok}")
 
-        # Already declared: defer, and say so.
         proj_set = make(root, "set", ceiling=256000, consensus_max=128000,
                         limit=131072)
         out_set = v013.migrate(proj_set, src)
@@ -1702,8 +1588,6 @@ def case_15_v013() -> None:
                   for line in out_set)
               and not any("add" in line for line in out_set), f"out={out_set}")
 
-        # A single-model translator never fans out, so there is no consensus
-        # call to bound -- reporting here would be a false positive.
         proj_single = make(root, "single", ceiling=256000,
                            consensus_max=128000, blocks=1)
         out_single = v013.migrate(proj_single, src)
@@ -1712,8 +1596,6 @@ def case_15_v013() -> None:
               and not any(line.startswith("[info]") for line in out_single),
               f"out={out_single}")
 
-        # An omitted consensus block inherits translator[0] at load time, but
-        # the raw file has none -- stay quiet rather than guessing.
         proj_absent = root / "absent"
         proj_absent.mkdir()
         (proj_absent / "config.json").write_text(_json.dumps({
@@ -1729,7 +1611,6 @@ def case_15_v013() -> None:
         check("15i v013: an absent consensus block is tolerated quietly",
               out_absent == [], f"out={out_absent}")
 
-        # A corrupt config is v001's business; report the skip, do not raise.
         proj_bad = root / "bad"
         proj_bad.mkdir()
         (proj_bad / "config.json").write_text("{not json", encoding="utf-8")
@@ -1770,7 +1651,6 @@ def case_16_v014() -> None:
             src = root / "ship"
             src.mkdir()
 
-            # An inline key always resolves.
             proj_ok = make(root, "inline", {"base_url": "http://a/v1",
                                             "model": "m0", "api_key": "sk-x"})
             out_ok = v014.migrate(proj_ok, src)
@@ -1782,8 +1662,6 @@ def case_16_v014() -> None:
             check("16c v014: idempotent",
                   v014.migrate(proj_ok, src) == out_ok, "second run differs")
 
-            # An unset api_key_env is a warn, not a fail: the operator's real
-            # shell may well have it.
             proj_env = make(root, "env", {"base_url": "http://a/v1",
                                           "model": "m0", "api_key_env": env})
             out_env = v014.migrate(proj_env, src)
@@ -1793,7 +1671,6 @@ def case_16_v014() -> None:
                   and not any(line.startswith("[FAIL]") for line in out_env),
                   f"out={out_env}")
 
-            # The same block once the variable IS set.
             _os.environ[env] = "sk-live"
             out_set = v014.migrate(proj_env, src)
             check("16e v014: the same block reports [ok] once the env var is set",
@@ -1801,7 +1678,6 @@ def case_16_v014() -> None:
                   f"out={out_set}")
             _os.environ.pop(env, None)
 
-            # No credential source at all: only editing the file fixes it.
             proj_bad = make(root, "none", {"base_url": "http://a/v1",
                                            "model": "m0"})
             out_bad = v014.migrate(proj_bad, src)
@@ -1810,9 +1686,6 @@ def case_16_v014() -> None:
                       and "api_key_env" in line for line in out_bad),
                   f"out={out_bad}")
 
-            # An omitted job inherits the translator's array at load time, so
-            # the translator's credential covers it -- reporting it would be a
-            # false positive on every project that does not spell out `glossary`.
             proj_inherit = make(root, "inherit", {"base_url": "http://a/v1",
                                                   "model": "m0"})
             out_inherit = v014.migrate(proj_inherit, src)
@@ -1820,7 +1693,6 @@ def case_16_v014() -> None:
                   not any("providers.glossary" in line for line in out_inherit),
                   f"out={out_inherit}")
 
-            # A legacy single-dict job block must not raise.
             proj_legacy = root / "legacy"
             proj_legacy.mkdir()
             (proj_legacy / "config.json").write_text(_json.dumps({
@@ -1875,8 +1747,6 @@ def case_17_v015() -> None:
         src = root / "ship"
         src.mkdir()
 
-        # A two-model translator: every other job inherits that array, so every
-        # other job fans out too -- all merging through the global arbitrator.
         proj = make(root, "global", {"translator": two,
                                      "consensus": {"base_url": "http://a/v1",
                                                    "model": "global-arb"}})
@@ -1896,16 +1766,11 @@ def case_17_v015() -> None:
         check("17d v015: idempotent -- a second run reports the same thing",
               v015.migrate(proj, src) == out, f"second run differs: {out!r}")
 
-        # The inheritance half: `glossary` is never named in this file, but it
-        # inherits the translator's array, so it really does merge -- and it
-        # merges through the global arbitrator.
         check("17e v015: an unnamed job that inherits the translator's array is "
               "reported as fanning out (it really does merge) -- all six here",
               "glossary" in report and "6 fan-out job(s)" in report,
               f"report={report}")
 
-        # A dedicated arbitrator is named as such, and the others are not
-        # silently folded in with it.
         proj_ded = make(root, "dedicated", {
             "translator": two,
             "annotator": two,
@@ -1925,8 +1790,6 @@ def case_17_v015() -> None:
               == {"base_url": "http://c/v1", "model": "translator-arb"},
               "config.json was rewritten")
 
-        # A single-model translator never fans out, so no arbitrator is needed
-        # and none is reported.
         proj_single = make(root, "single", {
             "translator": [{"base_url": "http://a/v1", "model": "m1"}]})
         out_single = v015.migrate(proj_single, src)
@@ -1937,9 +1800,6 @@ def case_17_v015() -> None:
               and not any(line.startswith("[warn]") for line in out_single),
               f"out={out_single}")
 
-        # v013's cap check, aimed at the arbitrator that will actually be used:
-        # with a dedicated translator arbitrator, it is THAT block that matters,
-        # not the global one it inherits from.
         proj_cap = make(root, "cap", {
             "translator": two,
             "consensus": {"base_url": "http://a/v1", "model": "g",
@@ -1959,12 +1819,6 @@ def case_17_v015() -> None:
               not any("providers.consensus will be sent" in line
                       for line in out_cap), f"out={out_cap}")
 
-        # The BLOCKING condition: a fan-out with no authored `consensus` is
-        # refused at load from v015, so the migration predicts a run that will
-        # not start. It is a [FAIL] for that reason -- an [info] or [ok] here
-        # would understate a hard stop. It must NOT rewrite: auto-writing a
-        # consensus block from translator[0] would re-create on disk the exact
-        # inference the rule forbids.
         proj_blocked = make(root, "blocked", {"translator": two})
         before_blocked = (proj_blocked / "config.json").read_text(encoding="utf-8")
         out_blocked = v015.migrate(proj_blocked, src)
@@ -1991,8 +1845,6 @@ def case_17_v015() -> None:
                       encoding="utf-8"))["providers"],
               "config.json was rewritten")
 
-        # A single-model translator fans nothing out, so no arbitrator is needed
-        # and the blocking [FAIL] must not fire.
         proj_ok_block = make(root, "okblock", {
             "translator": [{"base_url": "http://a/v1", "model": "m0"}]})
         out_ok_block = v015.migrate(proj_ok_block, src)
@@ -2002,7 +1854,6 @@ def case_17_v015() -> None:
               and any(line.startswith("[ok]") for line in out_ok_block),
               f"out={out_ok_block}")
 
-        # A legacy bare-dict provider block must not raise.
         proj_legacy = make(root, "legacy",
                            {"translator": {"base_url": "http://a/v1",
                                            "model": "m0"},
@@ -2014,7 +1865,6 @@ def case_17_v015() -> None:
               any(line.startswith("[ok]") for line in out_legacy),
               f"out={out_legacy}")
 
-        # A corrupt config is v001's business: report the skip, do not raise.
         proj_bad = root / "bad"
         proj_bad.mkdir()
         (proj_bad / "config.json").write_text("{not json", encoding="utf-8")
@@ -2025,7 +1875,6 @@ def case_17_v015() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

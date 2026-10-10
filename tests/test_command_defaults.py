@@ -53,13 +53,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# scripts/ (and therefore lib/) lives at novel-translator/scripts relative
-# to this file (CWD-independent); translate.py puts it on sys.path itself.
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import translate  # noqa: E402
-from lib import config, glossary, review  # noqa: E402
+import translate
+from lib import config, glossary, review
 
 PASSED = 0
 FAILED: list[str] = []
@@ -96,7 +94,7 @@ def run_cli(fn, ns: argparse.Namespace, project_dir: Path):
     try:
         with contextlib.redirect_stdout(buf):
             code = fn(ns, project_dir)
-    except Exception as caught:  # noqa: BLE001 - the caller asserts on it
+    except Exception as caught:
         exc = caught
     return code, buf.getvalue(), exc
 
@@ -126,8 +124,6 @@ def make_project(root: Path, name: str, cfg_extra: dict | None = None,
     return proj
 
 
-# Minimal result dict cmd_review consumes (same keys as the real
-# review.review_glossary return; empty findings keep the console loop quiet).
 FAKE_RESULT = {"batches": 1, "findings": [], "entries": 1, "batch_errors": []}
 
 
@@ -175,7 +171,7 @@ def case_2_review_batch_size() -> None:
         cli7 = make_project(root, "cli7", {"review_batch_size": 5})
         nocfg = make_project(root, "nocfg")
         zero = make_project(root, "zero", {"review_batch_size": 0})
-        ns = lambda bs: argparse.Namespace(  # noqa: E731 - tiny ns factory
+        ns = lambda bs: argparse.Namespace(
             subject="glossary", fix=False, batch_size=bs, glossary=None,
             chapters=None, dry_run=False, exit_on_error=False)
 
@@ -217,8 +213,6 @@ def case_3_search_distance() -> None:
         calls.append(max_distance)
         return {"matches": [], "retired": []}
 
-    # Fixture entry shape from tests/test_glossary_search.py: the probe
-    # 'grand-elder' sits 1 edit from 'Grand Elder'.
     entries = [{"source": "大长老", "translation": "Grand Elder"}]
 
     with tempfile.TemporaryDirectory() as td:
@@ -226,7 +220,7 @@ def case_3_search_distance() -> None:
         zero = make_project(root, "zero", {"fuzzy_max_distance": 0}, entries)
         nocfg = make_project(root, "nocfg", entries=entries)
         neg = make_project(root, "neg", {"fuzzy_max_distance": -1}, entries)
-        ns = lambda md: argparse.Namespace(  # noqa: E731 - tiny ns factory
+        ns = lambda md: argparse.Namespace(
             max_distance=md, term="grand-elder")
 
         with swapped(glossary, "search", fake_search):
@@ -307,9 +301,6 @@ def case_4_report_path() -> None:
               "default name missing from Next steps")
 
 
-# Minimal legacy-format report (test_fix_guard.py case_6 fixture verbatim):
-# zero - Command: bullets -> fix.parse_report synthesizes the retire command
-# from the finding block.
 LEGACY_REPORT = (
     "# Glossary Review Report\n"
     "\n"
@@ -345,8 +336,6 @@ def case_5_fix_reads_config() -> None:
         ]})
         (proj / "custom-report.md").write_text(
             LEGACY_REPORT, encoding="utf-8")
-        # Decoy at the default name: only custom-report.md may be read
-        # while the config points at the custom name.
         (proj / "review-report.md").write_text(
             LEGACY_REPORT.replace("灵根", "石头"), encoding="utf-8")
 
@@ -370,8 +359,6 @@ def case_5_fix_reads_config() -> None:
               isinstance(exc, translate.CliError) and "not found" in str(exc),
               f"exc={exc!r}")
 
-    # No config.json at all: _load_config_lenient -> None -> the DEFAULTS
-    # report name is read anyway (util/fix must run without a config).
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         bare = root / "bare"
@@ -408,7 +395,6 @@ def case_6_review_flag_matrix() -> None:
         return argparse.Namespace(**attrs)
 
     cells = [
-        # (subject, flag attrs that were given) -> exact rejection message
         ("glossary", {"chapters": "1-2"},
          "--chapters does not apply to 'review glossary'"),
         ("glossary", {"glossary": "r.md"},
@@ -429,7 +415,7 @@ def case_6_review_flag_matrix() -> None:
          "--batch-size does not apply to 'review fix'"),
     ]
     with tempfile.TemporaryDirectory() as td:
-        proj = Path(td)  # every cell raises before the project is touched
+        proj = Path(td)
         for i, (subject, overrides, message) in enumerate(cells):
             name = f"6{chr(ord('a') + i)} matrix: '{subject}' rejects {message.split()[0]}"
             try:
@@ -441,7 +427,6 @@ def case_6_review_flag_matrix() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

@@ -50,36 +50,18 @@ from lib import logger, project
 REPORT_NAME = "report.html"
 INDEX_NAME = "index.jsonl"
 
-# There is deliberately no body cap. The old IO_BYTE_CAP = 200_000 was pure
-# loss: embedding every body of every chapter's latest run costs ~36 ms against
-# a 981 s chapter, while the cap dropped 84 of 131 bodies -- and because it
-# accumulated in ascending file order it dropped the OLDEST runs first, so the
-# page kept ancient chapters and lost recent ones.
 
-# project.CHAPTER_RE, deliberately case-SENSITIVE (project.py:32). Re-derived
-# here rather than imported so a pre-v010 bucket directory still sorts instead
-# of vanishing -- see _sort_key.
 _NUM_RE = re.compile(r"^CHAPTER_([0-9]{4})$")
 
-# autobuild.py:138 -- "=== epub build after <file> | <iso ts> ==="
 _EPUB_HEAD_RE = re.compile(
     r"^=== epub build after (?P<file>.+?) \| (?P<ts>.+?) ===\s*$")
 
-# A [warn] line from the epub builder carries the absolute path of the export
-# target, which republishes the maintainer's home directory and project name in
-# a file designed to be opened and shared. Redact the path, keep the message.
 _PATH_RE = re.compile(r"(?:[A-Za-z]:)?[/\\](?:[\w.\-]+[/\\])+[\w.\-]*")
 
-# Outcome -> the single semantic colour slot. Everything else is neutral, so a
-# red row always means a real problem and never "this chapter uses stage 3".
 _OUTCOME_OK = {"translated", "completed", "ok"}
 _OUTCOME_WARN = {"needs-review", "findings", "degraded"}
 _OUTCOME_BAD = {"crashed", "failed", "error"}
 
-
-# ---------------------------------------------------------------------------
-# reading
-# ---------------------------------------------------------------------------
 
 def _rows(path: Path) -> Iterator[dict]:
     """Every parseable line of one JSONL file.
@@ -363,17 +345,11 @@ def _parse_body(body: Any) -> tuple[Any, str]:
         for required, shape in _SHAPE_REGISTRY:
             if required <= keys:
                 return parsed, shape
-        # MERGE_SCHEMA forbids additional properties, so its exact key set is
-        # unique; every other entry above is a superset test and would swallow
-        # this one if it were listed first.
         if keys == _MERGE_KEYS:
             return parsed, "merge"
     return parsed, "generic"
 
 
-# Superset tests, MOST SPECIFIC FIRST. Order is load-bearing: a {terms, extra}
-# body must reach "terms", and every entry must be tested before the generic
-# object path or the named renderers become dead code.
 _SHAPE_REGISTRY: tuple[tuple[frozenset[str], str], ...] = (
     (frozenset({"title", "lines"}), "lines"),
     (frozenset({"terms"}), "terms"),
@@ -481,19 +457,7 @@ def _collect_calls(project_dir: Path, chapters: list[dict]
                 if isinstance(raw_id, str) and raw_id:
                     call_id = raw_id
                 else:
-                    # A legacy or hand-written log may carry a response with
-                    # no call_id. It cannot be JOINED, but it is still a real
-                    # call and dropping it would silently lose a body and its
-                    # tokens -- so it gets a stable synthetic key and is
-                    # marked unpaired rather than discarded.
                     call_id = f"~{event}:{row.get('ts') or ''}:{len(order)}"
-                # Store BOTH directions always; `seen` gates only the ORDER.
-                # Deduping per-dict instead appends every paired call twice --
-                # once when the request is seen and again when its response
-                # arrives -- which silently doubles the ledger (measured 16
-                # records for 8 calls) and doubles every token total with it.
-                # Gating the store as well drops the response, so every call
-                # reads as unpaired with no body. Both sides, one order.
                 if event == "llm_request":
                     requests[call_id] = row
                 else:
@@ -514,8 +478,6 @@ def _collect_calls(project_dir: Path, chapters: list[dict]
         for call_id in order:
             req = requests.get(call_id)
             resp = responses.get(call_id)
-            # Response-side fields win where both have it: it is the side that
-            # carries usage, elapsed_s, finish_reason and error.
             src = resp if resp is not None else req
             if src is None:
                 continue
@@ -718,9 +680,6 @@ def collect(project_dir: Path) -> dict:
     try:
         manifest = project.load_manifest(project_dir)
     except (OSError, ValueError, TypeError):
-        # A malformed chapters.json is the user's problem, not a reason to lose
-        # the dashboard -- fall back to "no manifest", which only downgrades the
-        # in-manifest marking.
         manifest = []
     if not isinstance(manifest, list):
         manifest = []
@@ -755,10 +714,6 @@ def collect(project_dir: Path) -> dict:
         }
         chapters.append(entry)
 
-    # One pass over the LATEST run of every chapter yields the authoritative
-    # call records. Tier 2 buckets are chapter-scoped by construction, so no
-    # filtering is needed; a chapter whose bucket has no run file falls back to
-    # tier 1's llm_call summaries, which carry the same fields minus the body.
     calls, unpaired_events, call_warnings = _collect_calls(project_dir, chapters)
     used_tier1_calls = False
     by_chapter: dict[str, list[dict]] = {}
@@ -767,28 +722,17 @@ def collect(project_dir: Path) -> dict:
     for chapter in chapters:
         own = by_chapter.get(chapter["stem"])
         if own:
-            # This chapter's OWN tier-2 calls, for its expanded row. The
-            # roll-ups below still iterate `calls` rather than this field, so
-            # nothing is counted twice.
             chapter["calls_detail"] = own
         else:
             tier1_rows = _calls(tier1, chapter["stem"])
             chapter["calls_detail"] = tier1_rows
             used_tier1_calls = used_tier1_calls or bool(tier1_rows)
 
-    # Two roll-ups that measure the SAME calls, from two sources. They are
-    # NEVER summed together -- adding them would count every call twice. The
-    # page names which one it used, because "where the tokens went" must never
-    # silently change meaning between renders.
     call_tokens_by_job: dict[str, int] = {}
     tokens_by_model: dict[str, dict[str, int]] = {}
     calls_by_job: dict[str, int] = {}
     call_tokens = 0
     call_count = 0
-    # Roll up over the SAME rows the ledger renders. Iterating calls_detail
-    # instead finds it empty for every tier-2 chapter (those rows live in
-    # `calls`), silently falls through to the index totals, and still labels
-    # the source "per-call rows (tier 2)" -- a number wearing the wrong label.
     rows_to_roll = calls or [c for ch in chapters
                              for c in ch["calls_detail"]]
     for call in rows_to_roll:
@@ -826,14 +770,6 @@ def collect(project_dir: Path) -> dict:
                    else "per-call rows (tier 1)" if used_tier1_calls
                    else "index close lines")
 
-    # Chapter-less spend (profile, review, tn) is written ONLY to the
-    # orchestration tier's run_end event -- the project index close line
-    # carries outcome alone (translate.py:106), so no index anywhere records
-    # those calls. run_end totals the whole invocation, so the difference
-    # against the chapter close lines IS the chapter-less spend. Reported as a
-    # separate labelled figure, never folded into the per-job bars: on a
-    # project where the tier has aged out the true figure is simply unknown,
-    # and an unknown must not be rendered as a zero.
     run_end_tokens = 0
     for row in tier1:
         if row.get("event") != "run_end":
@@ -855,10 +791,6 @@ def collect(project_dir: Path) -> dict:
             if not run["closed"] and run["run_id"] not in seen_unclosed:
                 seen_unclosed.add(run["run_id"])
                 unclosed.append(f"{chapter['stem']} / {run['run_id']}")
-    # A run that died mid-chapter is unclosed in BOTH the chapter index and the
-    # project index. Listing it twice reads as two problems, so the chapter
-    # form wins and the project-level entry only appears when no chapter
-    # represents it -- i.e. an invocation that died outside any chapter.
     for run in _project_runs(project_dir):
         if not run["closed"] and run["run_id"] not in seen_unclosed:
             seen_unclosed.add(run["run_id"])
@@ -921,31 +853,13 @@ def collect(project_dir: Path) -> dict:
         "unclosed": unclosed,
         "chapterless_tokens": chapterless_tokens,
         "gaps": gaps + call_warnings,
-        # Every call of every chapter's latest run, bodies included. There is
-        # no cap and no second mode: embedding costs ~36 ms against a 981 s
-        # chapter, so capping bought nothing and the old cap dropped 84 of 131
-        # bodies -- oldest run first, because it accumulated in ascending file
-        # order, which is precisely what made the page look incomplete.
         "calls": calls,
-        # result / chunk rows carry no call_id and are not calls.
         "unpaired_events": unpaired_events,
-        # How many stored bodies exist, counted from the same pass that reads
-        # them, so the page can never claim a body is absent while holding it.
         "bodies_available": sum(1 for c in calls if c["body"]),
         "has_tier1": bool(tier1),
     }
 
 
-# ---------------------------------------------------------------------------
-# design tokens
-# ---------------------------------------------------------------------------
-
-# The subject is a BATCH LEDGER, so the page is a ruled instrument: one
-# proportional bar per chapter, the rest of the surface kept quiet. Warm ink
-# on a cool blue-slate ground -- not black, not paper -- so a long session on
-# it does not glare. Outcome owns THREE semantic slots and nothing else may
-# use them, which is what makes a red row mean a real problem and never "this
-# chapter happens to use stage 3".
 _CSS = """
 :root{
   --ground:#151a24; --surface:#1b2230; --surface-2:#222b3b; --rule:#2c3648;
@@ -1173,9 +1087,6 @@ footer{margin-top:2.5rem;color:var(--ink-faint);font-family:var(--mono);
 }
 """
 
-# Stage hue ramp: a cool-to-warm walk (steel -> periwinkle -> teal -> sage ->
-# moss -> ochre -> mauve). Hue says WHICH stage; the outcome stamp carries
-# whether it went well. Two channels, so neither has to do both jobs.
 _STAGE_COLOURS = ("#5b7fb9", "#7b8fd4", "#6ba3b8", "#7fb89b",
                   "#a8c48a", "#c9a86b", "#b08aa0")
 
@@ -1199,10 +1110,6 @@ def _stage_colours(stage_names: list[str]) -> dict[str, str]:
     return {name: _STAGE_COLOURS[i % len(_STAGE_COLOURS)]
             for i, name in enumerate(stage_names)}
 
-
-# ---------------------------------------------------------------------------
-# render
-# ---------------------------------------------------------------------------
 
 def _figure(key: str, value: str, note: str = "") -> str:
     note_html = f'<p class="figure-n">{_esc(note)}</p>' if note else ""
@@ -1248,10 +1155,6 @@ def _ledger(data: dict) -> str:
         return ('<p class="empty">No chapter buckets under '
                 '<code>logs/chapters/</code> yet.</p>')
     scale = data.get("elapsed_max")
-    # Colour stages in the order they FIRST APPEAR in the logs, which is
-    # pipeline order (FAITH -> GLOSSARY_EXPAND -> TN_GENERATE -> ...) -- not
-    # alphabetical, which would hand the first bar segment to whatever stage
-    # happens to sort first and make the ramp unreadable as a sequence.
     names: list[str] = []
     for chapter in chapters:
         for span in chapter["stage_spans"]:
@@ -1261,11 +1164,6 @@ def _ledger(data: dict) -> str:
 
     rows: list[str] = []
     for chapter in chapters:
-        # A chapter can have SEVERAL runs (CHAPTER_0004 in the sample crashed
-        # at 22:01 then translated at 22:32). The LATEST run drives the bar,
-        # the figures and the tint -- a chapter that recovered must not read
-        # red -- and the earlier ones are summarised as a count on the row and
-        # listed in full in the expanded body.
         cls, label = _stamp(chapter.get("outcome"),
                             chapter.get("closed", False))
         stem = chapter["stem"]
@@ -1403,13 +1301,6 @@ def _ledger_body(chapter: dict) -> str:
         parts.append(f'<h4>Model calls ({len(calls)})</h4>'
                      f'<ul class="kv">{rows}</ul>')
     else:
-        # Do NOT name a cause here. An earlier version said "no tier-1 run
-        # retained for this chapter", which is a guess: this panel is empty
-        # for two unrelated reasons -- no per-call record was kept at all
-        # (log_llm was off), or this chapter's retention window has emptied
-        # every bucket it was written to. Naming one made every modern chapter
-        # claim a tier-1 gap it did not have. The call ledger below already
-        # distinguishes the real cases.
         parts.append('<h4>Model calls</h4><ul class="kv"><li><b>calls</b>'
                      '<span>not recorded &mdash; no per-call log retained for '
                      'this chapter (log_llm off when it ran, or its retention '
@@ -1675,18 +1566,10 @@ def _call_ledger(data: dict) -> str:
     for idx, call in enumerate(calls):
         job = str(call.get("job") or "?")
         model = str(call.get("model") or "?")
-        # candidate is a POSITION in this job's fan-out, not a model identity,
-        # and the same position is a different model for a different job. Every
-        # model name shown comes from the call's own record.
         tag = ""
         if isinstance(call.get("candidate"), int):
             tag = f'{call["candidate"]}/{call.get("candidates")}'
         elif call.get("consensus_for"):
-            # A literal arrow, NOT an &rarr; entity: `tag` goes through _esc()
-            # below, which escapes the ampersand and turns the entity into
-            # visible "&amp;rarr;" text. Same class of mistake as html.escape
-            # on the blob -- an entity is markup, and _esc() only preserves
-            # markup passed AROUND it.
             tag = f'consensus → {call["consensus_for"]}'
         reasoning = call.get("reasoning_tok")
         reasoning_cell = (f'{_esc(_fmt_count(reasoning))}'
@@ -1701,10 +1584,6 @@ def _call_ledger(data: dict) -> str:
         flag_html = "".join(
             f'<span class="flag flag-bad">{_esc(f)}</span>' for f in flags)
         shape = str(call.get("shape") or "text")
-        # The endpoint, not the operation: every row's url ends in
-        # /chat/completions, so a column of identical full paths hides the one
-        # thing it is for -- WHICH provider served the call. `model` alone
-        # cannot answer that, since two providers can serve one model name.
         endpoint = str(call.get("url") or "")
         for suffix in ("/chat/completions", "/completions"):
             if endpoint.endswith(suffix):
@@ -2261,10 +2140,6 @@ document.querySelectorAll('.chip[data-filter]').forEach(function(b){{
 """
 
 
-# ---------------------------------------------------------------------------
-# writers
-# ---------------------------------------------------------------------------
-
 def _write_page(path: Path, text: str) -> None:
     """Atomic replace with a SHORT retry, on purpose diverging from
     project.atomic_write_text.
@@ -2314,7 +2189,7 @@ def write_dashboard(project_dir: Path) -> Path | None:
         path = Path(project_dir) / "logs" / REPORT_NAME
         _write_page(path, render(data))
         return path
-    except Exception as exc:  # noqa: BLE001 - reporting must never raise out
+    except Exception as exc:
         print(f"[warn] html dashboard not written: {type(exc).__name__}: {exc}")
         return None
 

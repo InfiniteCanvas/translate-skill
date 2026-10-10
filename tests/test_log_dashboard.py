@@ -56,7 +56,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import logger, logdashboard  # noqa: E402
+from lib import logger, logdashboard
 
 PASSED = 0
 FAILED: list[str] = []
@@ -135,7 +135,6 @@ def seed_tier1(root: Path, stem: str = "CHAPTER_0001", *,
          "attempt": 1, "elapsed_s": 20.0},
     ]
     if retry_stage:
-        # A second attempt of the same stage: the bar must count BOTH.
         stages += [
             {"ts": "2026-01-01T00:00:53.000+00:00", "run_id": RID,
              "event": "stage", "chapter": f"{stem}.md", "stage": "TRANSLATE",
@@ -162,7 +161,6 @@ def seed_tier1(root: Path, stem: str = "CHAPTER_0001", *,
          "model": "model-b", "candidate": 1, "candidates": 2,
          "usage": {"prompt_tokens": 300, "completion_tokens": 200},
          "elapsed_s": 15.0, "finish_reason": "stop"},
-        # usage null -> zero tokens, never a guess.
         {"ts": "2026-01-01T00:01:37.000+00:00", "run_id": RID,
          "event": "llm_call", "chapter": f"{stem}.md", "job": "reviewer",
          "model": "model-b", "candidate": 2, "candidates": 2, "usage": None,
@@ -267,8 +265,6 @@ def cli(root: Path, *args: str) -> subprocess.CompletedProcess:
         capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
-# ---------------------------------------------------------------------------
-
 def case_1_primary_path() -> None:
     """THE NORMAL CASE. With tier-1 present the page must render stage spans,
     gate verdicts, the per-call table and the per-model roster."""
@@ -340,9 +336,6 @@ def case_2_escaping() -> None:
         start = text.index('id="dl-bodies">') + len('id="dl-bodies">')
         end = text.index("</" + "script", start)
         blob_text = text[start:end]
-        # Scoped to the blob. HTML ATTRIBUTES elsewhere legitimately carry
-        # &quot; from _esc(quote=True); only the blob must be entity-free,
-        # because nothing decodes entities inside a rawtext element.
         check("2c blob: the blob itself contains no entity escape",
               "&quot;" not in blob_text and "&amp;" not in blob_text, "")
 
@@ -356,8 +349,6 @@ def case_2_escaping() -> None:
               next((r for r in records if r["i"] == "nasty02"), {})
               .get("parsed") == {"verdict": "SUCCESS", "reasons": []}, "")
 
-        # The encoded form is exactly the documented transform -- this is the
-        # assertion that would have caught the html.escape version.
         expected = json.dumps(logdashboard._ledger_blob(
             logdashboard.collect(root)), ensure_ascii=False,
             default=str).replace("<", "\\u003c")
@@ -408,8 +399,6 @@ def case_4_no_invented_numbers() -> None:
         data = logdashboard.collect(root)
         check("4a numbers: the failed call still counts as a call",
               data["total_calls"] == 3, f"{data['total_calls']}")
-        # 1000+500 from the index close line; per-call rows total 600+400 +
-        # 300+200 + nothing = 1500. The page uses per-call rows and says so.
         check("4b numbers: the source of the total is named",
               data["token_source"] in ("per-call rows (tier 1)",
                                        "per-call rows (tier 2)",
@@ -515,7 +504,6 @@ def case_8_unclosed_and_multi_run() -> None:
              "stages": 8, "calls": 11, "tokens": {"translator": 900},
              "elapsed_s": 1184.0},
         ])
-        # A chapter whose LAST run died mid-flight is genuinely unresolved.
         write_lines(root / "logs" / "chapters" / "CHAPTER_0009" / "index.jsonl", [
             {"ts": "2026-01-01T00:30:00.000+00:00", "run_id": "20260103-x",
              "phase": "open", "command": "translate", "file": "CHAPTER_0009.md",
@@ -588,7 +576,7 @@ def case_10_epub_join() -> None:
     background build appends concurrently."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        seed_tier1(root, stem="Chapter_0001")  # legacy-cased bucket
+        seed_tier1(root, stem="Chapter_0001")
         log = root / "logs" / "epub-build.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(
@@ -621,7 +609,7 @@ def case_11_torn_tail() -> None:
             "[ok] epub: /home/x/b.epub\n"
             "=== epub build after CHAPTER_0001.md | 2026-01-01T01:00:00 ===\n"
             "[ok] epub: /home/x/b.epub\n"
-            "=== epub build after CHAPTER_0",  # no newline: mid-write
+            "=== epub build after CHAPTER_0",
             encoding="utf-8")
         data = logdashboard.collect(root)
         check("11a torn: the page still renders",
@@ -641,7 +629,6 @@ def case_12_never_raises() -> None:
         check("12a never-raises: a healthy write returns the path",
               good == target and target.is_file(), f"{good}")
 
-        # An unreadable bucket must not stop the render.
         bucket = root / "logs" / "chapters" / "CHAPTER_0001"
         original = os.stat(bucket / "index.jsonl")
         try:
@@ -652,14 +639,12 @@ def case_12_never_raises() -> None:
               logdashboard.write_dashboard(root) is not None, "")
         os.chmod(bucket / "index.jsonl", original.st_mode)
 
-        # A directory where the page belongs: the write fails, nothing raises.
         target.unlink()
         target.mkdir()
         check("12c never-raises: an unwritable destination returns None",
               logdashboard.write_dashboard(root) is None, "")
         target.rmdir()
 
-        # refresh() is the _run_end path: it must swallow everything.
         logdashboard.refresh(root)
         check("12d never-raises: refresh never raises", True, "")
 
@@ -718,8 +703,6 @@ def case_14_bodies_always_embedded() -> None:
         check("14d bodies: --html-io is gone from the help",
               "--html-io" not in result.stdout, result.stdout[-200:])
 
-        # A project whose only per-call record is the orchestration tier says
-        # so once, without blaming a config flag that is already correct.
         empty = Path(td) / "nobodies"
         seed_tier1(empty)
         text_empty = html_of(empty)
@@ -738,7 +721,7 @@ def case_15_run_end_refreshes() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         seed_tier1(root)
-        logger._run_path = None  # documented reset contract
+        logger._run_path = None
         logger._paths.clear()
         translate._run_end(root, "translate", "completed",
                            {"translated": ["CHAPTER_0001.md"]})
@@ -750,9 +733,6 @@ def case_15_run_end_refreshes() -> None:
         check("15c auto: and it is complete, not metadata-only",
               "Model exchanges" not in text, "")
 
-        # A refresh over a project that does not exist must not raise: _run_end
-        # runs on every command, including ones whose project dir has since
-        # been deleted.
         translate._run_end(Path(td) / "gone", "translate", "failed", None)
         check("15d auto: a missing project does not raise", True, "")
         logger._run_path = None
@@ -770,7 +750,7 @@ def case_16_tier2_is_the_call_source() -> None:
     """
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        bucket = seed_tier1(root)  # tier 1 present, no tier-2 file
+        bucket = seed_tier1(root)
         write_lines(bucket / f"run-{RID}.jsonl", [
             {"ts": "2026-01-01T00:03:00.000+00:00", "run_id": RID,
              "event": "llm_response", "chapter": "CHAPTER_0001.md",
@@ -818,7 +798,6 @@ def case_16_tier2_is_the_call_source() -> None:
         check("16h tier2: the index table carries them",
               "model-t2" in logdashboard.render(data), "")
 
-        # log_llm off: no tier-2 call lines, so tier 1 must still answer.
         no_llm = Path(td) / "off"
         seed_tier1(no_llm)
         data_off = logdashboard.collect(no_llm)
@@ -866,7 +845,6 @@ def case_17_shape_dispatch() -> None:
         ("generic", json.dumps(["x", "y"]), "glossary", 1),
         ("generic", json.dumps("plain scalar"), "glossary", 1),
         ("text", "not json at all", "glossary", 1),
-        # A fenced block MUST reach the fenced shape, not degrade to text.
         ("verdict", "```json\n{\"verdict\": \"SUCCESS\", \"reasons\": []}\n```",
          "reviewer", 1),
     ]
@@ -1014,7 +992,6 @@ def case_19_fallback_and_unpaired() -> None:
         check("19f unpaired: stage events are labelled as non-calls",
               "not part of the call ledger" in text, "")
 
-        # The bucket exists but its index names a run with no file.
         gone = Path(td) / "gone"
         seed_config(gone)
         b2 = gone / "logs" / "chapters" / "CHAPTER_0002"
@@ -1090,8 +1067,6 @@ def case_20_fanout_width() -> None:
         check("20x fanout: the group key is the arbitrated task, not the job",
               "task" in text and "consensus_for" in text, "")
 
-        # Reversed order across jobs on one chapter: columns must follow each
-        # call's model, so a shared position index is never the identity.
         rev = Path(td) / "rev"
         seed_calls(rev, "CHAPTER_0003", RID, [
             {"call_id": "rev-t1", "job": "translator", "model": "AAA",
@@ -1128,7 +1103,6 @@ def case_21_side_by_side_source() -> None:
           got is not None and len(got) == 2, f"{got}")
     check("21b sbs: the bracket text survives intact",
           got and got[0]["t"] == tricky, "")
-    # The shape a naive regex gets wrong: a } closing the object early.
     naive = '[{"i": 1, "t": "a}b"}'
     check("21c sbs: the naive bracket regex pattern is not used",
           logdashboard._json_array_of_i_t(naive) is None,
@@ -1160,7 +1134,6 @@ def case_22_script_selectors_match_the_markup() -> None:
              "body": json.dumps({"verdict": "SUCCESS", "reasons": []})},
         ])
         text = html_of(root)
-        # (tag name used by the markup, the selector the JS applies to it)
         guarded = [
             ("lrow", ".lrow"),
             ("callrow", "tr.callrow"),
@@ -1211,8 +1184,6 @@ def case_23_no_chapter_claims_a_cause_it_cannot_know() -> None:
         check("23b honesty: the panel lists the chapter's own call",
               "model-a" in text, "")
 
-        # Genuinely empty: a bucket with an index but no run file and no
-        # tier-1 llm_call row -- the log_llm-off / retention-emptied shape.
         bare = Path(td) / "bare"
         seed_tier1(bare)
         write_lines(bare / "logs" / "chapters" / "CHAPTER_0002" / "index.jsonl", [
@@ -1229,10 +1200,6 @@ def case_23_no_chapter_claims_a_cause_it_cannot_know() -> None:
         check("23c0 honesty: the fixture really is call-less",
               empty_ch and empty_ch[0]["calls_detail"] == [], "")
         text_bare = logdashboard.render(data_bare)
-        # Scope to the Model calls panel. The row TOOLTIP legitimately says
-        # "stage detail unavailable (no tier-1 run retained)" when a chapter has
-        # no stage spans -- that is a different panel making a different,
-        # provable claim.
         m = re.search(r"<h4>Model calls</h4>(.*?)(?=<h4|<div class=\"tip|</ul>)",
                       text_bare, re.S)
         panel = m.group(1) if m else ""
@@ -1350,8 +1317,6 @@ def case_26_ledger_shows_the_provider() -> None:
              "phase": "open", "command": "translate", "file": "CHAPTER_0001.md",
              "number": 1},
         ])
-        # Two calls to the SAME model on DIFFERENT endpoints -- the case model
-        # alone cannot distinguish, and the reason the column exists.
         write_lines(bucket / f"run-{rid}.jsonl", [
             {"ts": "2026-01-01T04:01:00.000+00:00", "run_id": rid, "chapter":
              "CHAPTER_0001.md", "event": "llm_request", "call_id": "EP1",
@@ -1395,8 +1360,6 @@ def case_26_ledger_shows_the_provider() -> None:
         check("26f endpoint: the consensus row still groups under the task it "
               "arbitrates, so the endpoint shows on the right row",
               text.count('data-endpoint=') == 2, "")
-        # The body row must still span the widened table, or the expandable
-        # detail breaks on the last column.
         check("26g endpoint: the expandable body spans all nine columns",
               text.count('colspan="9"') == 2, "")
 

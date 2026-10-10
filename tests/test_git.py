@@ -87,15 +87,12 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-# scripts/ (and therefore lib/ and migrations/) lives at
-# novel-translator/scripts relative to this file (CWD-independent);
-# translate.py puts it on sys.path itself as well.
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import translate  # noqa: E402
-from lib import config, vcs  # noqa: E402
-from migrations import v003  # noqa: E402
+import translate
+from lib import config, vcs
+from migrations import v003
 
 PASSED = 0
 FAILED: list[str] = []
@@ -120,9 +117,6 @@ def git_log_subjects(proj: Path) -> tuple[int, list[str]]:
         encoding="utf-8", errors="replace", check=False,
     )
     return proc.returncode, proc.stdout.splitlines()
-
-
-# ---------------------------------------------------------------------- cases
 
 
 def case_1_ensure_repo() -> None:
@@ -198,8 +192,6 @@ def case_2_commit() -> None:
                   sha3 is None and buf.getvalue() == "",
                   f"sha={sha3!r} out={buf.getvalue()!r}")
 
-    # Non-repository directory: a silent None no-op even with files present
-    # (the is_repo gate -- true with or without a git binary on PATH).
     with tempfile.TemporaryDirectory() as td:
         bare = Path(td)
         (bare / "x.txt").write_text("present\n", encoding="utf-8", newline="\n")
@@ -238,8 +230,6 @@ def case_3_cmd_init() -> None:
             "第二章 筑基\n正文第一行\n", encoding="utf-8", newline="\n")
 
     def init_argv(proj: Path, *extra: str) -> list[str]:
-        # Only --title/--author are required; --style auto --skip-profile
-        # keeps init off the network (no style LLM call).
         return ["init", "--project", str(proj), "--title", "T", "--author", "A",
                 "--style", "auto", "--skip-profile", *extra]
 
@@ -267,9 +257,6 @@ def case_3_cmd_init() -> None:
         check("3f init: config.DEFAULTS has the git_commits default",
               config.DEFAULTS.get("git_commits") is True)
 
-        # --force reinitialize: same project, same repo, history kept and
-        # the rewrite labeled as its own commit. A planted story_state.json
-        # must not survive -- the reset wipes it with glossary/history.
         (proj / "story_state.json").write_text(
             '{"chapters": {"CHAPTER_001": {"recap": "stale recap"}}}\n',
             encoding="utf-8", newline="\n")
@@ -287,13 +274,6 @@ def case_3_cmd_init() -> None:
         check("3h init: --force deletes story_state.json",
               not (proj / "story_state.json").exists(), "")
 
-        # The re-init above landed only ONE new commit: after the reinit
-        # commit nothing tracked changes (the chapters are already
-        # backfilled and re-seeding restores the same glossary bytes), so
-        # the trailing reseed commit is a silent no-op. Make the trailing
-        # diff REAL by re-scraping a chapter bare -- its backfill lands
-        # under the distinct 'init: reseed after reinitialize' subject,
-        # keeping the two re-init commits from sharing one subject.
         (proj / "source" / "CHAPTER_0001.md").write_text(
             "第一章 灵根\n正文第一行\n", encoding="utf-8", newline="\n")
         ns_force2 = translate._build_parser().parse_args(init_argv(proj, "--force"))
@@ -323,16 +303,13 @@ def case_4_v003_direct() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         src = root / "ship"
-        src.mkdir()  # no shipped *.md: sync_templates stays silent
+        src.mkdir()
         proj = root / "proj"
         proj.mkdir()
         (proj / "config.json").write_text(
             json.dumps({"version": 2, "providers": {}}, indent=2) + "\n",
             encoding="utf-8", newline="\n")
 
-        # v003.migrate takes templates_src as a parameter, but the swap
-        # mirrors test_migrate: no code path may silently depend on the
-        # real skill assets.
         orig_tpl = translate.TEMPLATES_SRC_DIR
         translate.TEMPLATES_SRC_DIR = src
         try:
@@ -350,8 +327,6 @@ def case_4_v003_direct() -> None:
         check("4d v003: the step itself never stamps the version",
               disk.get("version") == 2, f"version={disk.get('version')!r}")
 
-        # cmd_migrate commits after stamping each step; the repo it leaves
-        # behind must accept that commit (here fired directly).
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             sha = vcs.commit(proj, "migrate: v003 git history")
@@ -411,9 +386,6 @@ def case_6_never_raises() -> None:
 
     orig_run = vcs._run
     try:
-        # The repo must exist before the swap: with the raiser active
-        # ensure_repo would only report the failure (6c's check) and the
-        # commit gates would stop the raise before the guarded body.
         with tempfile.TemporaryDirectory() as td:
             proj = Path(td)
             vcs.ensure_repo(proj)
@@ -520,8 +492,6 @@ def case_7_foreign_repo() -> None:
               status.returncode == 0 and "?? pending.txt" in status.stdout,
               f"rc={status.returncode} out={status.stdout!r}")
 
-    # A .gitignore with DIFFERENT content and no marker is still foreign:
-    # the guard compares content, it does not settle for any .gitignore.
     with tempfile.TemporaryDirectory() as td:
         mixed = Path(td)
         if not init_plain(mixed):
@@ -550,8 +520,6 @@ def case_7_foreign_repo() -> None:
         check("7i mixed: nothing ever committed", subjects == [],
               f"subjects={subjects!r}")
 
-    # Legacy skill repo: .gitignore byte-equal GITIGNORE, no marker (repos
-    # created before the marker existed) -> managed, commits land.
     with tempfile.TemporaryDirectory() as td:
         legacy = Path(td)
         if not init_plain(legacy):
@@ -575,11 +543,6 @@ def case_7_foreign_repo() -> None:
               (legacy / ".gitignore").read_text(encoding="utf-8") == vcs.GITIGNORE,
               "")
 
-    # A repo created by an OLDER version carries the .gitignore that version
-    # wrote: every rule it had, but not the ones added since (covers/). The
-    # legacy test is a SUBSET check for exactly this shape -- an equality
-    # test would read every pre-marker project as a stranger's repository
-    # and silently end its history.
     with tempfile.TemporaryDirectory() as td:
         older = Path(td)
         if not init_plain(older):
@@ -604,10 +567,6 @@ def case_7_foreign_repo() -> None:
               (older / ".gitignore").read_text(encoding="utf-8") == historical,
               "")
 
-    # Strict SUBSET of the skill rules DROPPING core entries (only logs/):
-    # the legacy test requires the whole core -- containment in ours alone
-    # must not read a stranger's minimal .gitignore as skill-managed, or
-    # `git add -A` would sweep their repository into a skill commit.
     with tempfile.TemporaryDirectory() as td:
         subset = Path(td)
         if not init_plain(subset):
@@ -638,8 +597,6 @@ def case_7_foreign_repo() -> None:
         check("7t subset: nothing ever committed", subjects == [],
               f"subjects={subjects!r}")
 
-    # Marker wins: a repo ensure_repo() created carries the marker even when
-    # the user later replaced .gitignore with their own content.
     with tempfile.TemporaryDirectory() as td:
         marked = Path(td)
         if not init_plain(marked):
@@ -676,8 +633,6 @@ def case_8_foreign_warn_casing() -> None:
     with tempfile.TemporaryDirectory() as td:
         foreign = Path(td) / "ForeignCase"
         foreign.mkdir()
-        # git init DIRECTLY: ensure_repo() would write the skill .gitignore
-        # and turn the directory into a skill-managed repo.
         init = subprocess.run(
             ["git", "init"], cwd=str(foreign), capture_output=True,
             encoding="utf-8", errors="replace", check=False,
@@ -691,9 +646,6 @@ def case_8_foreign_warn_casing() -> None:
 
         alt = foreign.with_name(foreign.name.swapcase())
         if str(alt) == str(foreign) or not (alt / ".git").exists():
-            # Case-sensitive filesystem (or an all-digit temp name): the
-            # two casings are different directories, so the normcase dedup
-            # cannot be observed here.
             print("note: filesystem is case-sensitive; "
                   "skipping the warn-casing checks")
             return
@@ -771,7 +723,7 @@ def case_9_run_timeout() -> None:
         return
     with tempfile.TemporaryDirectory() as td:
         proj = Path(td)
-        vcs.ensure_repo(proj)  # before the swap: creates repo, marker, config
+        vcs.ensure_repo(proj)
         (proj / "hello.txt").write_text("alpha\n", encoding="utf-8", newline="\n")
         swap()
         try:
@@ -789,7 +741,6 @@ def case_9_run_timeout() -> None:
 
 
 def main() -> int:
-    # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

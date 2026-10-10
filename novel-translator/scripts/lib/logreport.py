@@ -315,13 +315,11 @@ def write_run_report(project_dir: Path, file: str, number: Any,
     """The metadata-only report chapter_end writes. Never raises."""
     try:
         stem = Path(file).stem
-        # The chapter may be addressed either way: the pipeline passes the
-        # filename, but a caller holding only the stem must work too.
         rows, covered = tier1_rows(project_dir, stem, run_id or None)
         project.atomic_write_text(
             logger.bucket_dir(project_dir, stem) / REPORT_NAME,
             _render(stem, number, rows, covered, [], False), "\n")
-    except Exception as exc:  # noqa: BLE001 - reporting must never break a run
+    except Exception as exc:
         print(f"[warn] report for {file} not written: {type(exc).__name__}: {exc}")
 
 
@@ -345,6 +343,6 @@ def write_full_report(project_dir: Path, stem: str, number: Any = None,
         path = logger.bucket_dir(project_dir, stem) / REPORT_NAME
         project.atomic_write_text(path, text, "\n")
         return path
-    except Exception as exc:  # noqa: BLE001 - reporting must never raise out
+    except Exception as exc:
         print(f"[warn] report for {stem} not written: {type(exc).__name__}: {exc}")
         return None

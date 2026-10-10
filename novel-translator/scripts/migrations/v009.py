@@ -37,7 +37,6 @@ DESCRIPTION = ("raise the translation output budget to 64k "
                 "(translate_max_output_tokens 8192->65536 and provider "
                 "max_tokens 16384->65536, together)")
 
-# The pair as it stood at v8. Both are rewritten when they match exactly.
 OLD_TRANSLATE_CAP = 8192
 OLD_MAX_TOKENS = 16384
 
@@ -45,9 +44,6 @@ OLD_MAX_TOKENS = 16384
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    # Rewrite the raw file, not load_config's merged form: load_config would
-    # deep-merge the NEW defaults underneath and report the change as
-    # "provider blocks normalized", hiding which numbers actually moved.
     cfg_path = Path(project_dir) / "config.json"
     raw = _read(cfg_path)
     lines: list[str] = []
@@ -58,14 +54,12 @@ def migrate(project_dir: Path, templates_src: Path,
                      f"{OLD_TRANSLATE_CAP} -> 65536 (64k headroom for "
                      "reasoning models; raise your own max_tokens to match)")
     elif raw.get("translate_max_output_tokens") == 65536:
-        pass  # already migrated
+        pass
 
     blocks_changed: list[str] = []
     providers = raw.get("providers")
     if isinstance(providers, dict):
         for job, blocks in sorted(providers.items()):
-            # v8 normalized every job to an array of blocks; tolerate the
-            # legacy single-dict shape so an un-migrated fixture cannot raise.
             items = blocks if isinstance(blocks, list) else [blocks]
             if not all(isinstance(b, dict) for b in items):
                 continue
@@ -84,8 +78,6 @@ def migrate(project_dir: Path, templates_src: Path,
     if lines and not dry_run:
         _save(cfg_path, raw)
 
-    # Templates are untouched by this step; delegating keeps the shared
-    # report shape and stays silent when nothing drifted.
     return lines + common.sync_templates(
         project_dir, templates_src, dry_run, force, confirm)
 
