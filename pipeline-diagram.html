@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>novel-translator — how a chapter gets through the pipeline</title>
+<meta name="description" content="The staged, resumable translation pipeline in novel-translator: eight stages, two gates, an attempt loop, and the cross-chapter stores that keep a whole novel consistent.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Darker+Grotesque:wght@500;700;900&family=Instrument+Sans:ital,wght@0,400..700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#DCE3E4;
+  --paper-sunk:#CFD8DA;
+  --paper-lift:#E7ECEC;
+  --ink:#14232A;
+  --ink-2:#3D525C;
+  --ink-3:#6B7F88;
+  --rule:#A9B8BD;
+  --rule-soft:#BCC9CD;
+  --fail:#A83A2C;
+  --pass:#2C6A5C;
+  --advise:#8F6A15;
+  --spine:#1F5A6B;
+
+  --display:'Darker Grotesque','Archivo Narrow',Impact,'Haettenschweiler',sans-serif;
+  --body:'Instrument Sans','Segoe UI',system-ui,sans-serif;
+  --mono:'JetBrains Mono','Cascadia Mono',Consolas,monospace;
+
+  --s1:clamp(2.6rem,7.5vw,5.4rem);
+  --s2:clamp(1.75rem,4vw,2.9rem);
+  --s3:clamp(1.15rem,1.9vw,1.4rem);
+  --gut:clamp(1.1rem,4vw,4rem);
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--body);
+  font-size:clamp(.98rem,.35vw + .9rem,1.06rem);
+  line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+/* drafting grid — the sheet, not decoration: it reads as "working drawing" */
+body::before{
+  content:"";
+  position:fixed; inset:0;
+  background-image:
+    linear-gradient(to right,color-mix(in srgb,var(--rule) 26%,transparent) 1px,transparent 1px),
+    linear-gradient(to bottom,color-mix(in srgb,var(--rule) 22%,transparent) 1px,transparent 1px);
+  background-size:96px 96px;
+  pointer-events:none; z-index:0;
+}
+.wrap{position:relative; z-index:1; max-width:1180px; margin:0 auto; padding:0 var(--gut)}
+
+h1,h2,h3{font-family:var(--display); font-weight:700; letter-spacing:-.015em; margin:0; text-wrap:balance}
+p{margin:0 0 1em; max-width:64ch}
+a{color:var(--spine)}
+code,kbd,.m{font-family:var(--mono)}
+code{font-size:.88em; background:color-mix(in srgb,var(--rule-soft) 40%,transparent); padding:.08em .34em; border-radius:2px}
+strong{font-weight:600}
+:focus-visible{outline:2.5px solid var(--spine); outline-offset:3px; border-radius:2px}
+
+/* ---------- masthead ---------- */
+.masthead{
+  border-bottom:1px solid var(--ink);
+  padding:1.1rem 0; margin-bottom:clamp(2.5rem,6vw,4.5rem);
+  display:flex; flex-wrap:wrap; gap:.6rem 1.6rem; align-items:baseline; justify-content:space-between;
+}
+.masthead .wordmark{font-family:var(--display); font-weight:900; font-size:1.05rem; letter-spacing:.02em}
+.masthead .meta{font-family:var(--mono); font-size:.7rem; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-2)}
+
+/* ---------- hero ---------- */
+.hero{padding-bottom:clamp(3rem,7vw,5.5rem)}
+.eyebrow{
+  font-family:var(--mono); font-size:.7rem; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--spine); display:flex; align-items:center; gap:.7rem; margin-bottom:1.4rem;
+}
+.eyebrow::after{content:""; height:1px; flex:1; background:color-mix(in srgb,var(--rule) 70%,transparent)}
+.hero h1{font-size:var(--s1); line-height:.93; font-weight:900; max-width:15ch}
+.hero h1 em{font-style:normal; color:var(--spine)}
+.hero .lede{font-size:clamp(1.05rem,.5vw + .95rem,1.3rem); color:var(--ink-2); max-width:56ch; margin-top:1.5rem}
+
+/* ---------- SIGNATURE: the numbered-line contract ---------- */
+.proof{
+  margin-top:clamp(2.5rem,5vw,3.5rem);
+  border:1.5px solid var(--ink);
+  background:var(--paper-lift);
+  box-shadow:6px 6px 0 color-mix(in srgb,var(--ink) 12%,transparent);
+}
+.proof-head{
+  display:flex; flex-wrap:wrap; gap:.5rem 1.2rem; justify-content:space-between; align-items:center;
+  padding:.7rem 1rem; border-bottom:1.5px solid var(--ink);
+  font-family:var(--mono); font-size:.7rem; letter-spacing:.1em; text-transform:uppercase;
+}
+.proof-grid{display:grid; grid-template-columns:auto 1fr 1fr; align-items:stretch}
+.proof-col-head{
+  grid-row:1; padding:.5rem .8rem; border-bottom:1px solid var(--rule);
+  font-family:var(--mono); font-size:.66rem; letter-spacing:.11em; text-transform:uppercase; color:var(--ink-3);
+}
+.proof-col-head:nth-child(1){border-right:1px solid var(--rule-soft); width:3.4rem}
+.proof-col-head:nth-child(2){border-right:1px solid var(--rule-soft)}
+.pr{
+  grid-column:1 / -1;
+  display:grid; grid-template-columns:3.4rem 1fr 1fr;
+  border-bottom:1px solid var(--rule-soft);
+  font-family:var(--mono); font-size:.8rem; line-height:1.5;
+}
+.pr:last-child{border-bottom:0}
+.pr .idx{
+  border-right:1px solid var(--rule-soft); padding:.5rem .5rem; color:var(--ink-3);
+  font-weight:500; font-variant-numeric:tabular-nums;
+}
+.pr .src{padding:.5rem .8rem; border-right:1px solid var(--rule-soft); overflow-wrap:anywhere}
+.pr .tgt{padding:.5rem .8rem; overflow-wrap:anywhere; font-size:.9rem}
+.pr.is-merged{background:color-mix(in srgb,var(--fail) 7%,transparent)}
+.pr.is-merged .tgt{color:var(--fail)}
+.proof-note{
+  border-top:1.5px solid var(--ink); padding:.85rem 1rem;
+  font-size:.92rem; color:var(--ink-2); background:var(--paper-sunk);
+}
+.proof-note b{color:var(--ink)}
+.cjk{font-family:'Noto Sans SC','Microsoft YaHei','Hiragino Sans GB',var(--mono)}
+
+/* ---------- section furniture ---------- */
+section.band{padding:clamp(3rem,6.5vw,5rem) 0; border-top:1px solid var(--ink)}
+.sec-head{display:flex; flex-wrap:wrap; align-items:baseline; gap:.5rem 1.4rem; margin-bottom:.9rem}
+.sec-head h2{font-size:var(--s2); font-weight:900; line-height:1}
+.sec-sub{color:var(--ink-2); max-width:62ch; margin-bottom:2.2rem}
+
+/* ---------- legend ---------- */
+.legend{display:flex; flex-wrap:wrap; gap:.55rem 1.7rem; padding:.9rem 0 0; font-family:var(--mono); font-size:.72rem; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-2)}
+.legend span{display:flex; align-items:center; gap:.5rem}
+.legend i{width:.9rem; height:.9rem; border:1.5px solid var(--ink); display:inline-block; flex:none}
+.lg-model{background:var(--spine); border-color:var(--spine)}
+.lg-gate{background:var(--paper); border-color:var(--fail); border-style:double; border-width:3.5px}
+.lg-code{background:var(--paper); border-color:var(--ink-3); border-style:dashed}
+
+/* ---------- SIGNATURE 2: the stage rail ---------- */
+.rail{margin-top:1.6rem; overflow-x:auto; padding-bottom:.5rem}
+.rail-track{display:grid; grid-template-columns:repeat(8,minmax(120px,1fr)); gap:.55rem; min-width:820px}
+.node{
+  position:relative; border:1.5px solid var(--ink); background:var(--paper-lift);
+  padding:.75rem .7rem .7rem; min-height:116px; display:flex; flex-direction:column; gap:.35rem;
+}
+.node::after{ /* connector to the next stage */
+  content:""; position:absolute; top:50%; right:-.75rem; width:.5rem; height:1.5px;
+  background:var(--ink);
+}
+.node:last-child::after{display:none}
+.node .n-idx{font-family:var(--mono); font-size:.68rem; color:var(--ink-3); letter-spacing:.1em}
+.node .n-name{font-family:var(--display); font-weight:700; font-size:1.06rem; line-height:1.04; letter-spacing:-.005em}
+.node .n-kind{margin-top:auto; padding-top:.35rem; font-family:var(--mono); font-size:.6rem; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3)}
+.node[data-kind=model]{border-color:var(--spine); background:color-mix(in srgb,var(--spine) 8%,var(--paper-lift))}
+.node[data-kind=model] .n-kind{color:var(--spine)}
+.node[data-kind=gate]{border:3.5px double var(--fail); background:color-mix(in srgb,var(--fail) 5%,var(--paper-lift))}
+.node[data-kind=gate] .n-kind{color:var(--fail)}
+.node[data-kind=code]{border-style:dashed; border-color:var(--ink-3)}
+/* a gate is the only thing that can drop back out of the rail: draw the tick */
+.node[data-kind=gate]::before{
+  content:""; position:absolute; left:50%; top:100%; margin-left:-.75rem;
+  width:1.5px; height:2.3rem; background:var(--fail);
+}
+
+/* the loop-back: gates return to TRANSLATE, never forward.
+   The run stops at the last gate -- nothing after FAITH can fail. */
+.rail-return{position:relative; margin-top:2.3rem; padding:1.15rem 0 0 1.9rem; min-width:820px}
+.rail-return::before{content:""; position:absolute; left:0; top:0; width:50%; height:1.5px; background:var(--fail)}
+.rail-return::after{content:""; position:absolute; left:0; top:-2.3rem; width:1.5px; height:2.3rem; background:var(--fail)}
+.rr-tip{
+  position:absolute; left:-.44rem; top:-3.2rem; width:0; height:0;
+  border:.44rem solid transparent; border-bottom-color:var(--fail); border-top:0;
+}
+.rail-return .rr-label{text-align:left; font-size:.95rem; color:var(--ink-2); max-width:70ch}
+.rail-return .rr-label b{font-weight:600; color:var(--fail)}
+.rr-go{
+  font-family:var(--mono); font-size:.62rem; letter-spacing:.1em; text-transform:uppercase;
+  background:var(--fail); color:var(--paper); padding:.16rem .42rem; margin-right:.6rem; white-space:nowrap;
+}
+
+/* attempt loop + terminal state */
+.attempt-wrap{display:grid; grid-template-columns:1fr 1fr; gap:1.4rem; margin-top:2.2rem}
+.panel{border:1px solid var(--ink-2); background:var(--paper-lift); padding:1.1rem 1.2rem}
+.panel h3{font-size:1.1rem; margin-bottom:.5rem}
+.panel .p-tag{font-family:var(--mono); font-size:.63rem; letter-spacing:.11em; text-transform:uppercase; color:var(--ink-3); display:block; margin-bottom:.5rem}
+.panel-stop{border:1px solid var(--fail); border-left:5px solid var(--fail); background:color-mix(in srgb,var(--fail) 6%,var(--paper-lift))}
+.panel-stop .p-tag{color:var(--fail)}
+
+/* ---------- stage reference ---------- */
+.stages{display:grid; gap:1px; background:var(--rule); border:1.5px solid var(--ink)}
+.stage-row{background:var(--paper-lift); display:grid; grid-template-columns:4.2rem 12.5rem 1fr; align-items:start}
+.stage-row .s-idx{
+  font-family:var(--mono); font-size:.8rem; font-weight:700; color:var(--ink-3);
+  padding:1rem .6rem; border-right:1px solid var(--rule-soft); text-align:right; font-variant-numeric:tabular-nums;
+  align-self:stretch; padding-top:1.15rem;
+}
+.stage-row .s-id{padding:1rem 1rem 1rem 1.1rem; border-right:1px solid var(--rule-soft)}
+.stage-row .s-id h3{font-size:1.02rem; line-height:1.1}
+.stage-row .s-id .kind{
+  display:inline-block; margin-top:.5rem; font-family:var(--mono); font-size:.58rem;
+  letter-spacing:.09em; text-transform:uppercase; padding:.14rem .4rem;
+  border:1px solid currentColor; color:var(--ink-3);
+}
+.stage-row[data-kind=model] .kind{color:var(--spine)}
+.stage-row[data-kind=gate] .kind{color:var(--fail)}
+.stage-row .s-body{padding:1rem 1.1rem; font-size:.95rem; color:var(--ink-2)}
+.stage-row .s-body p{margin:0 0 .6em; max-width:none}
+.stage-row .s-body p:last-child{margin-bottom:0}
+
+/* ---------- context feeds ---------- */
+.feeds{display:grid; grid-template-columns:repeat(2,1fr); gap:1.4rem}
+.feed{border:1px solid var(--ink-2); background:var(--paper-lift); padding:1.1rem 1.2rem; position:relative}
+.feed h3{font-size:1.08rem; margin-bottom:.45rem; display:flex; align-items:baseline; gap:.6rem}
+.feed h3 .f-file{font-family:var(--mono); font-size:.66rem; letter-spacing:.06em; color:var(--spine); font-weight:500}
+.feed p{font-size:.94rem; color:var(--ink-2); margin-bottom:0}
+.feed-in{border-left:5px solid var(--spine)}
+.feed-out{border-left:5px solid var(--pass)}
+.store-list{margin:0; padding:0; list-style:none; font-size:.94rem}
+.store-list li{display:flex; gap:.7rem; padding:.5rem 0; border-bottom:1px solid var(--rule-soft)}
+.store-list li:last-child{border-bottom:0}
+.store-list .s-name{font-family:var(--mono); font-size:.78rem; color:var(--spine); flex:none; min-width:9.5rem}
+.store-list .s-desc{color:var(--ink-2)}
+
+/* ---------- fan-out ---------- */
+.fanout{display:grid; grid-template-columns:1fr 1fr; gap:1.4rem; align-items:start}
+.fan-fig{border:1px solid var(--ink-2); background:var(--paper-lift); padding:1.2rem; font-family:var(--mono); font-size:.74rem; line-height:1.55}
+.fan-fig .frow{display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; padding:.3rem 0}
+.fan-fig .box{border:1.5px solid var(--ink); padding:.24rem .5rem; background:var(--paper)}
+.fan-fig .box.alt{border-color:var(--spine); background:color-mix(in srgb,var(--spine) 10%,var(--paper))}
+.fan-fig .box.arb{border-color:var(--pass); background:color-mix(in srgb,var(--pass) 10%,var(--paper))}
+.fan-fig .arrow{color:var(--ink-3)}
+.fan-fig .fan-label{font-size:.62rem; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); margin-bottom:.5rem; display:block}
+.fan-fig .out{border-top:1.5px solid var(--ink); margin-top:.6rem; padding-top:.6rem; color:var(--ink-2)}
+
+/* ---------- terminal notes ---------- */
+.callout{border:1.5px solid var(--ink); border-left:6px solid var(--advise); background:var(--paper-lift); padding:1.1rem 1.2rem; margin-top:2rem}
+.callout .p-tag{color:var(--advise)}
+.callout p{margin-bottom:0; color:var(--ink-2)}
+
+footer{border-top:1px solid var(--ink); padding:2rem 0 3rem; color:var(--ink-3); font-family:var(--mono); font-size:.7rem; letter-spacing:.06em}
+footer a{color:var(--ink-2)}
+
+/* ---------- responsive ---------- */
+@media (max-width:900px){
+  .attempt-wrap,.feeds,.fanout{grid-template-columns:1fr}
+  /* the rail scrolls; the explanatory line below it must stay readable,
+     so it drops the track-width anchor rather than truncating mid-word */
+  .rail-return{min-width:0}
+  .rail-return .rr-label{max-width:none}
+  .stage-row{grid-template-columns:3.4rem 1fr; }
+  .stage-row .s-id{border-right:0; border-bottom:1px solid var(--rule-soft)}
+  .stage-row .s-idx{grid-row:1 / span 2; padding-top:1.15rem}
+  .stage-row .s-body{grid-column:2}
+  .stage-row .s-id .kind{margin-top:.45rem}
+}
+@media (max-width:560px){
+  .proof-grid{display:block}
+  .pr{grid-template-columns:2.8rem 1fr; font-size:.74rem}
+  .pr .src{grid-column:2; border-right:0; border-bottom:1px dashed var(--rule-soft)}
+  .pr .tgt{grid-column:2; font-size:.8rem}
+  .pr .idx{border-right:1px solid var(--rule-soft)}
+  .proof-col-head{display:none}
+  .store-list li{flex-direction:column; gap:.15rem}
+  .store-list .s-name{min-width:0}
+}
+@media (prefers-reduced-motion:no-preference){
+  .proof .pr{animation:ink-in .5s ease-out both}
+  .proof .pr:nth-child(2){animation-delay:.08s}
+  .proof .pr:nth-child(3){animation-delay:.16s}
+  .proof .pr:nth-child(4){animation-delay:.24s}
+  .proof .pr:nth-child(5){animation-delay:.32s}
+  @keyframes ink-in{from{opacity:0; transform:translateY(4px)}to{opacity:1; transform:none}}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms !important; transition-duration:.001ms !important}
+}
+@media print{
+  body::before{display:none}
+  body{background:#fff}
+  .rail{min-width:0}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <span class="wordmark">novel-translator</span>
+    <span class="meta">scripts/lib/pipeline.py &middot; eight stages, two gates</span>
+  </header>
+
+  <!-- ================= HERO ================= -->
+  <section class="hero">
+    <p class="eyebrow">How a chapter gets translated</p>
+    <h1>Every line keeps <em>its number</em> from source to ebook.</h1>
+    <p class="lede">
+      A chapter enters an eight-stage state machine. Two of those stages can stop it, and when
+      one does, the model gets its own rejected text handed back and asked to fix it. Everything
+      else &mdash; the glossary, the note history, the plot recap &mdash; accumulates across the
+      whole book so chapter 200 is more consistent than chapter 1.
+    </p>
+
+    <!-- SIGNATURE ELEMENT: the numbered-line contract -->
+    <div class="proof">
+      <div class="proof-head">
+        <span>The numbered-line contract</span>
+        <span class="m">translation.md &rarr; TRANSLATION_SCHEMA</span>
+      </div>
+      <div class="proof-grid">
+        <div class="proof-col-head">#</div>
+        <div class="proof-col-head">source/CHAPTER_0007.md</div>
+        <div class="proof-col-head">model returns</div>
+
+        <div class="pr">
+          <span class="idx">001</span>
+          <span class="src cjk">韩立站在山崖边，看着远方的云海。</span>
+          <span class="tgt">Han Li stood at the cliff's edge, watching the sea of clouds.</span>
+        </div>
+        <div class="pr is-merged">
+          <span class="idx">002</span>
+          <span class="src cjk">他的手微微发抖。<br>鲜血顺着指尖滴落。</span>
+          <span class="tgt">002 &nbsp;&larr;&nbsp; both source lines collapsed into this one</span>
+        </div>
+        <div class="pr">
+          <span class="idx">003</span>
+          <span class="src cjk">“你不该来的。”他低声说。</span>
+          <span class="tgt">“You shouldn't have come,” he said quietly.</span>
+        </div>
+        <div class="pr">
+          <span class="idx">004</span>
+          <span class="src cjk">远处的钟声敲响了第三下。</span>
+          <span class="tgt">Distant, a bell tolled for the third time.</span>
+        </div>
+      </div>
+      <p class="proof-note">
+        <b>Four lines went in. Three came out.</b> A plain line-count check says the shape is
+        close enough; the echoed index says exactly where 002 and 003 went. That is the whole reason
+        the protocol exists — dropped and merged lines become <i>structurally detectable</i> instead
+        of off-by-one guesswork.
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= STAGE RAIL ================= -->
+  <section class="band">
+    <div class="sec-head">
+      <h2>The stage rail</h2>
+    </div>
+    <p class="sec-sub">
+      Chapters run in order, never in parallel — the glossary is meant to grow as you go, so later
+      chapters translate more consistently than earlier ones. Every step below falls into exactly one
+      of three kinds, and the distinction is the thing worth holding onto: a model call costs money
+      and can be wrong, a gate can only stop you, and pure code does neither.
+    </p>
+
+    <div class="legend">
+      <span><i class="lg-model"></i> model call</span>
+      <span><i class="lg-gate"></i> gate — can fail the attempt</span>
+      <span><i class="lg-code"></i> pure code — no model call</span>
+    </div>
+
+    <div class="rail">
+      <div class="rail-track">
+        <div class="node" data-kind="model">
+          <span class="n-idx">01</span><span class="n-name">Translate</span><span class="n-kind">model</span>
+        </div>
+        <div class="node" data-kind="gate">
+          <span class="n-idx">02</span><span class="n-name">Validate</span><span class="n-kind">gate</span>
+        </div>
+        <div class="node" data-kind="code">
+          <span class="n-idx">03</span><span class="n-name">Balance</span><span class="n-kind">code</span>
+        </div>
+        <div class="node" data-kind="gate">
+          <span class="n-idx">04</span><span class="n-name">Faith</span><span class="n-kind">gate</span>
+        </div>
+        <div class="node" data-kind="model">
+          <span class="n-idx">05</span><span class="n-name">Glossary expand</span><span class="n-kind">model</span>
+        </div>
+        <div class="node" data-kind="model">
+          <span class="n-idx">06</span><span class="n-name">Notes generate</span><span class="n-kind">model</span>
+        </div>
+        <div class="node" data-kind="code">
+          <span class="n-idx">07</span><span class="n-name">Notes dedup</span><span class="n-kind">code</span>
+        </div>
+        <div class="node" data-kind="code">
+          <span class="n-idx">08</span><span class="n-name">Assemble</span><span class="n-kind">write</span>
+        </div>
+      </div>
+
+      <div class="rail-return">
+        <i class="rr-tip" aria-hidden="true"></i>
+        <p class="rr-label">
+          <span class="rr-go">returns to 01</span>
+          <b>A gate says no.</b> Its reasons join the accumulated feedback, and TRANSLATE runs again
+          from the top &mdash; carrying that feedback <i>and</i> the translation it just rejected, in the
+          same numbered-line format, so the model repairs its own attempt instead of starting cold.
+        </p>
+      </div>
+    </div>
+
+    <div class="attempt-wrap">
+      <div class="panel">
+        <span class="p-tag">The attempt loop</span>
+        <h3>Three tries, then stop</h3>
+        <p style="margin:0;font-size:.95rem;color:var(--ink-2)">
+          <code>max_attempts</code> defaults to 3. Each retry re-reads the glossary as it stands
+          <i>now</i>, so attempt two benefits from anything attempt one taught the book. Between
+          attempts the contextual glossary is rebuilt from scratch.
+        </p>
+      </div>
+      <div class="panel panel-stop">
+        <span class="p-tag">Terminal state</span>
+        <h3>needs-review</h3>
+        <p style="margin:0;font-size:.95rem;color:var(--ink-2)">
+          After the last attempt the chapter stops and waits for you — it never guesses past its
+          budget. <code>status --why</code> prints why it is stuck, <code>retry</code> sends it back
+          after you fix the cause, and <code>mark</code> accepts a chapter you wrote by hand.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= STAGE REFERENCE ================= -->
+  <section class="band">
+    <div class="sec-head">
+      <h2>What each stage actually does</h2>
+    </div>
+    <p class="sec-sub">The order matters more than it looks: glossary expansion runs <i>after</i>
+      the faithfulness gate accepts, so terms learned from a bad translation never enter the book.</p>
+
+    <div class="stages">
+      <article class="stage-row" data-kind="model">
+        <div class="s-idx">01</div>
+        <div class="s-id"><h3>Translate</h3><span class="kind">model call</span></div>
+        <div class="s-body">
+          <p>The whole chapter in one call while its expected output fits the packing budget.
+          Longer chapters split into token-budget-packed parts, each still carrying the style guide,
+          the novel background and the previous part's tail as input context.</p>
+          <p>A part whose response looks truncated retries once at a higher cap. Each validated part
+          is saved as it lands, so a crash or a Ctrl-C costs at most the part in flight. A single
+          source line too long for even the escalated cap fails immediately, with no model call spent.</p>
+        </div>
+      </article>
+
+      <article class="stage-row" data-kind="gate">
+        <div class="s-idx">02</div>
+        <div class="s-id"><h3>Validate</h3><span class="kind">gate</span></div>
+        <div class="s-body">
+          <p>Line count must match the source exactly, and a line that was empty stays empty.
+          Structural violations become feedback rather than a crash, so the retry is a normal
+          attempt and not an error path.</p>
+        </div>
+      </article>
+
+      <article class="stage-row" data-kind="code">
+        <div class="s-idx">03</div>
+        <div class="s-id"><h3>Balance</h3><span class="kind">pure code</span></div>
+        <div class="s-body">
+          <p>Counts every contextual glossary term in the source against the translation, with
+          enough tolerance to forgive hyphenation, inflection and a small edit distance &mdash; then
+          reports drift. Fully advisory: nothing fails here.</p>
+          <p>Drift signals run one cleanup judgment, keeping named entities and named actions while
+          marking class nouns for retirement. <b>That retirement is deferred</b> until the translation
+          is accepted, because a bad translation is exactly what invents false drift.</p>
+        </div>
+      </article>
+
+      <article class="stage-row" data-kind="gate">
+        <div class="s-idx">04</div>
+        <div class="s-id"><h3>Faith</h3><span class="kind">gate</span></div>
+        <div class="s-body">
+          <p>A reviewer model judges faithfulness line by line and answers with a verdict and its
+          reasons. It also receives the drift signals Balance kept, as term-consistency hints &mdash;
+          and it, not the counter, makes the final call on which signals were real.</p>
+          <p>Failure reasons become the feedback the next attempt is handed.</p>
+        </div>
+      </article>
+
+      <article class="stage-row" data-kind="model">
+        <div class="s-idx">05</div>
+        <div class="s-id"><h3>Glossary expand</h3><span class="kind">model call</span></div>
+        <div class="s-body">
+          <p>Proposes new named entities, named actions, and titles bound to a name. A proposal has to
+          earn its place: it is counted across the whole source corpus and added only at or above
+          <code>min_term_occurrences</code>, default 3. New variants ride the same gate.</p>
+          <p>This is also where Balance's deferred retirements are applied &mdash; both happen on the
+          attempt Faith just accepted, and nowhere else.</p>
+        </div>
+      </article>
+
+      <article class="stage-row" data-kind="model">
+        <div class="s-idx">06</div>
+        <div class="s-id"><h3>Notes generate</h3><span class="kind">model call</span></div>
+        <div class="s-body">
+          <p>Proposes translator's notes against line indices, aware of the glossary's deliberate
+          renderings so a transliterated or nuance-dropping choice gets a note explaining what the
+          source term literally carries. Notes are tagged cultural, idiom, wordplay, honorific, unit
+          or other; anything self-assessed as low confidence is dropped unless you keep those.</p>
+        </div>
+      </article>
+
+      <article class="stage-row" data-kind="code">
+        <div class="s-idx">07</div>
+        <div class="s-id"><h3>Notes dedup</h3><span class="kind">pure code</span></div>
+        <div class="s-body">
+          <p>A note survives only if its term hasn't been annotated within the last
+          <code>tn_gap_chapters</code>, default 10. The per-chapter cap is applied after that, in code
+          &mdash; the prompt asks for severity-ordered notes, so what gets trimmed is the least
+          valuable context, not an arbitrary slice.</p>
+          <p>Every drop is written to a sidecar you can read, so you can see what didn't make it.</p>
+        </div>
+      </article>
+
+      <article class="stage-row" data-kind="code">
+        <div class="s-idx">08</div>
+        <div class="s-id"><h3>Assemble</h3><span class="kind">write</span></div>
+        <div class="s-body">
+          <p>Writes <code>translated/CHAPTER_NNNN.md</code> as clean markdown &mdash; no footnote
+          markers, no notes section &mdash; alongside a notes sidecar, and promotes the chapter's
+          status to <code>translated</code>. Past this point the file is yours to hand-edit; the epub
+          builds from it as-is.</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ================= CONTEXT ================= -->
+  <section class="band">
+    <div class="sec-head">
+      <h2>What goes in, and what stays behind</h2>
+    </div>
+    <p class="sec-sub">
+      The per-chapter machine above is stateless in the useful sense &mdash; it can be read top to
+      bottom and understood. What makes chapter 200 better than chapter 1 is everything on this
+      side of the diagram.
+    </p>
+
+    <div class="feeds">
+      <div class="feed feed-in">
+        <h3>Style <span class="f-file">style.md</span></h3>
+        <p>A preset copied in at init &mdash; measured literary English, modern voice, elevated epic
+        register &mdash; and hand-editable. Your edits apply on the next translate, with no re-init.</p>
+      </div>
+      <div class="feed feed-in">
+        <h3>Background <span class="f-file">novel_info.json</span></h3>
+        <p>Two to four sentences of novel context from the synopsis. It rides along in the
+        <code>[Background Information]</code> frame of every prompt that cares about the wider story.</p>
+      </div>
+      <div class="feed feed-in">
+        <h3>Story recap <span class="f-file">story_state.json</span></h3>
+        <p>One cheap call per chapter folds the previous recap plus the finished chapter into 120 words
+        or fewer, so the model translating chapter N knows what happened in 1&ndash;N&minus;1. Advisory
+        only: a recap failure warns and the chapter proceeds without it.</p>
+      </div>
+      <div class="feed feed-in">
+        <h3>Contextual glossary <span class="f-file">glossary.json</span></h3>
+        <p>Not the whole glossary &mdash; only the terms that actually appear in <i>this</i> chapter,
+        capped and ordered by frequency, rebuilt at the start of every attempt so a retry benefits
+        from what the failed attempt taught the book.</p>
+      </div>
+
+      <div class="feed feed-out">
+        <h3>Glossary growth <span class="f-file">glossary.json</span></h3>
+        <p>Seeded from the shipped catalogues at init, then grown by accepted chapters only. Retired
+        terms never come back &mdash; not from re-seeding, not from expansion.</p>
+      </div>
+      <div class="feed feed-out">
+        <h3>Note history <span class="f-file">tn_history.json</span></h3>
+        <p>What has been annotated and when. This is what makes a note that explained a term ten
+        chapters ago not explain it again on the next appearance.</p>
+      </div>
+      <div class="feed feed-out">
+        <h3>Resume point <span class="f-file">draft/*.state.json</span></h3>
+        <p>Rewritten after every stage, so an interrupted chapter picks up at the stage it died in
+        rather than at the top. Re-running the same command is always safe.</p>
+      </div>
+      <div class="feed feed-out">
+        <h3>Chapter history <span class="f-file">git</span></h3>
+        <p>One labeled commit per finished chapter. <code>git log</code> is a readable backup of the
+        project, and a changed term can be propagated to already-translated chapters by replacing
+        text instead of retranslating the book.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CONSENSUS ================= -->
+  <section class="band">
+    <div class="sec-head">
+      <h2>Any call can fan out</h2>
+    </div>
+    <p class="sec-sub">
+      Every model call the pipeline makes &mdash; the translation, the faithfulness verdict, glossary
+      expansion, the notes &mdash; goes through that job's provider array in <code>config.json</code>.
+      One block is one call. More than one block fans out, and an arbitrator merges.
+    </p>
+
+    <div class="fanout">
+      <div class="fan-fig">
+        <span class="fan-label">single block &mdash; the common case</span>
+        <div class="frow">
+          <span class="box">prompt</span><span class="arrow">&rarr;</span>
+          <span class="box alt">translator[0]</span><span class="arrow">&rarr;</span>
+          <span class="box">ordinary single-model reply</span>
+        </div>
+      </div>
+      <div class="fan-fig">
+        <span class="fan-label">two or more blocks</span>
+        <div class="frow">
+          <span class="box">prompt</span><span class="arrow">&rarr;</span>
+          <span class="box alt">translator[0]</span>
+          <span class="box alt">translator[1]</span>
+          <span class="arrow">&rarr;</span>
+          <span class="box arb">arbitrator</span>
+        </div>
+        <div class="out">Candidates are merged into one reply under the task's own JSON schema,
+        so gates and validators never have to learn about multi-model output.</div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <span class="p-tag">Two rules worth knowing</span>
+      <p>
+        The arbitrator is resolved <b>per job</b> &mdash; a translation merge and a notes merge can use
+        different models if you author them that way. And a configuration that fans out at all without
+        an authored arbitrator is refused at load rather than quietly resolving to one of the models it
+        is being asked to judge.
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    Diagram of <code>novel-translator/scripts/lib/pipeline.py</code> &middot;
+    stage order and the attempt loop read from source &middot; no generated diagrams, every claim traceable
+  </footer>
+</div>
+</body>
+</html>
