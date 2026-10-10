@@ -1318,10 +1318,24 @@ carries — `cultural` | `idiom` | `wordplay` | `honorific` | `unit` |
 epub builder does not read it (yet); the TN_DEDUP summary line counts by
 it. Entries are validated on save (`line` in range,
 non-empty string `term`/`note`); a save that keeps zero notes DELETES the
-sidecar (absent = no notes). `updated_at` is managed by the tool. A
-malformed sidecar is treated as "no notes" — the epub build never crashes on
-one — announced by `[warn] <stem>.json unreadable (<reason>) - treating as
-no notes`.
+sidecar (absent = no notes).
+
+The `notes` array is in **reading order** — ascending by `line`, ties keeping
+the annotator's relative order. That is the list the epub numbers its
+footnotes from, so the reader meets `[1]` on the earliest annotated line; a
+note the annotator ranked first but that sits on line 4 still prints as `[4]`.
+The severity order the annotator returns is a selection input only: it decides
+WHICH notes survive `max_notes_per_chapter`, never how the survivors are
+ordered — the sort runs after the cap, not before it. `load_notes` re-sorts on
+read as well, so a sidecar written before this ordering still builds with
+line-ordered footnotes; the file itself is rewritten in reading order the next
+time that chapter is translated or `tn`-re-checked. Entries with no usable
+`line` (reachable only by hand-editing) sort to the end of the array and are
+dropped by the builder's own anchor check with a `[warn]`.
+
+`updated_at` is managed by the tool. A malformed sidecar is treated as "no
+notes" — the epub build never crashes on one — announced by
+`[warn] <stem>.json unreadable (<reason>) - treating as no notes`.
 
 ## notes/<stem>.dropped.json (dropped-candidates review artifact)
 
@@ -1353,8 +1367,13 @@ file (absent = nothing dropped). `reason` is one of:
 Fields other than `reason` are best-effort snapshots of the candidate
 (invalid entries may carry `null`s). Within-chapter duplicates and
 gap-rule suppressions are deliberately NOT recorded (the term is still
-noted elsewhere / suppressed on purpose). An `overflow`-dropped term
-never consumes the gap window: its `tn_history.json` entry is rolled
+noted elsewhere / suppressed on purpose). Unlike the sidecar's `notes`
+array, this one is NOT in reading order: it is grouped by `reason` as the
+gates fired, because its job is auditing the gates, not reading alongside
+the text.
+
+An `overflow`-dropped term never consumes the gap window: its
+`tn_history.json` entry is rolled
 back (restored to its pre-call value, or removed when this chapter
 introduced it), so a later chapter inside the window can still annotate
 it. **Review artifact only — the
@@ -1602,7 +1621,9 @@ One translated paragraph per line, same count as the source.
 - Clean markdown only: no footnote markers, no Translator's Notes section.
   Translator's notes live in the per-chapter sidecar (`notes/<stem>.json`,
   previous section); the epub builder renders them as inline epub3 footnotes
-  (`<a epub:type="noteref">` → `<aside epub:type="footnote">`). Chapters
+  (`<a epub:type="noteref">` → `<aside epub:type="footnote">`), numbered in
+  the sidecar's reading order (ascending `line`), so the markers appear in
+  the order the reader meets the text. Chapters
   from older projects that still bake `[^N]` markers + a
   `## Translator's Notes` section into the markdown keep building — the
   builder falls back to parsing them out of the file — and the `tn`

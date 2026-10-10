@@ -473,7 +473,8 @@ rule vs `tn_history.json` — a term annotated within `tn_gap_chapters` in an
 earlier chapter stays suppressed — and the same code-enforced
 `max_notes_per_chapter` cap: the prompt asks for severity-ordered entries
 and the cap truncates after dedup, so the most severe context loss
-survives). Discarded candidates — low-threshold, cap overflow, invalid —
+survives — the survivors are then stored in reading order, ascending by
+the note's line index). Discarded candidates — low-threshold, cap overflow, invalid —
 are recorded in `notes/<stem>.dropped.json` next to the sidecar (a
 review artifact; the epub builder does not read it); the pipeline prints
 the same record as `[CHAPTER_NNNN] [ok] notes: K kept (cats); D dropped
@@ -855,7 +856,9 @@ to exit`; details land in
 - `max_notes_per_chapter` (default 10) -- cap on translator's notes
   generated per chapter, enforced in code after dedup (the annotator
   returns severity-ordered entries, so the cut tail is the least severe
-  context loss; discards land in `notes/<stem>.dropped.json`).
+  context loss; discards land in `notes/<stem>.dropped.json`). Severity
+  only picks which notes survive the cap: the kept notes are stored in
+  reading order, ascending by the note's line index.
 - `review_batch_size` (default 40) -- entries per `review glossary` /
   `review notes` model review call; `--batch-size N` overrides it for one
   run.

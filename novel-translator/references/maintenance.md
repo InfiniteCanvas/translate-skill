@@ -231,7 +231,8 @@ or updating the `tn_generate.md` template — run:
   cross-chapter gap rule vs `tn_history.json` — a term
   annotated within `tn_gap_chapters` in an earlier chapter stays
   suppressed — and the same code-enforced `max_notes_per_chapter` cap with
-  severity-ordered truncation); the discarded candidates are recorded the
+  severity-ordered truncation, after which the kept notes are sorted into
+  reading order by line index); the discarded candidates are recorded the
   same way too (`notes/<stem>.dropped.json`, review artifact only, and a
   pure category change counts as a change). An annotator response of
   zero notes for a chapter that HAS notes is treated as a failed

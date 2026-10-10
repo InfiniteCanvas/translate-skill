@@ -340,7 +340,9 @@ sorted by frequency):
    chapters (`tn_history.json`). The `max_notes_per_chapter` cap is enforced
    in code after the gap rule — the prompt asks for severity-ordered entries
    (wordplay and idioms first, then references/allusions, then honorific
-   nuances), so truncation keeps the most severe context loss. Every
+   nuances), so truncation keeps the most severe context loss. Whatever
+   survives is then stored in reading order — ascending by the note's line
+   index, which is the order the epub numbers its footnotes from. Every
    discard (low threshold, cap overflow, invalid entry) is recorded in the
    `notes/<stem>.dropped.json` review artifact (the epub builder does not
    read it), and the stage prints

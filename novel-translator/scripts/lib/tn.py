@@ -14,7 +14,12 @@ still noted elsewhere / deliberately suppressed).
 Notes are no longer baked into chapter markdown: they live in a
 per-chapter sidecar notes/<stem>.json (load_notes/save_notes), whose line
 indexes refer to the translated body lines and whose anchors let the epub
-builder re-resolve lines after hand-edits. strip_marked_notes migrates
+builder re-resolve lines after hand-edits. Kept notes are held in READING
+order -- ascending by that line index -- because that list is what the epub
+numbers footnotes from and what `review notes` reads as reading order;
+process sorts its survivors after the severity-ordered cap, and load_notes
+re-sorts what it reads, so a sidecar written before this ordering still
+renders in reading order. strip_marked_notes migrates
 legacy chapters whose notes were baked in as "[^N]" markers plus a
 "## Translator's Notes" section.
 """
@@ -72,6 +77,25 @@ def _dropped_entry(entry: object, reason: str) -> dict:
     }
 
 
+def _line_sort_key(entry: object) -> tuple[int, int]:
+    """Reading-order sort key for one note: (0, line) for a usable integer
+    line index, (1, 0) for anything else (not an object, `line` missing,
+    `line` a bool or a non-int).
+
+    The sort must stay TOTAL on hand-edited sidecars -- load_notes accepts
+    any dict, and the pipeline's own output always carries a validated int
+    -- so unusable entries park at the end of the order instead of raising
+    a TypeError mid-build. They are not silently lost: every consumer
+    (epub.chapter_md_to_xhtml, review_notes._resolve_line) already drops an
+    unresolvable note with a [warn] of its own. Python's sort is stable, so
+    several notes sharing one line keep the annotator's relative order.
+    """
+    line = entry.get("line") if isinstance(entry, dict) else None
+    if isinstance(line, bool) or not isinstance(line, int):
+        return (1, 0)
+    return (0, line)
+
+
 def _history_path(project_dir: Path) -> Path:
     return Path(project.paths(project_dir)["tn_history"])
 
@@ -114,9 +138,16 @@ def dropped_path(project_dir: Path, file: str) -> Path:
 
 
 def load_notes(project_dir: Path, file: str) -> list[dict]:
-    """Read the notes sidecar for a chapter; [] when missing or malformed
+    """Read the notes sidecar for a chapter in READING order (ascending
+    `line`); [] when missing or malformed
     (load_history's leniency: a broken sidecar means "no notes", never a
-    crashed epub build -- discarding a malformed sidecar prints a [warn])."""
+    crashed epub build -- discarding a malformed sidecar prints a [warn]).
+
+    The sort happens here, not only on write, so a sidecar stored in the
+    old severity order still yields line-ordered footnotes in an epub built
+    today. It reorders nothing on disk: the file itself is rewritten in
+    reading order the next time the chapter is translated or `tn`-re-checked.
+    """
     path = notes_path(project_dir, file)
     if not path.is_file():
         return []
@@ -135,7 +166,7 @@ def load_notes(project_dir: Path, file: str) -> list[dict]:
     if reason is not None:
         print(f"[warn] {path.name} unreadable ({reason}) - treating as no notes")
         return []
-    return notes
+    return sorted(notes, key=_line_sort_key)
 
 
 def save_notes(project_dir: Path, file: str, lines: list[str], notes: list) -> list[dict]:
@@ -299,6 +330,11 @@ def process(
       chapter first) never suppresses the note. Otherwise keep the note and
       set history[key] = {"note", "last_order", "times": previous times + 1
       or 1}.
+    - Reading order: the survivors are sorted by `line` ascending (ties keep
+      the annotator's relative order), AFTER the cap, so the sidecar, the epub
+      footnote numbers and `review notes`' reading order all follow the text.
+      The severity order the annotator returned is a selection input only --
+      it decides WHICH notes survive the cap, never how they are ordered.
     - Category: each kept entry's "category" is normalized to the entry's
       value when it is a string in NOTE_CATEGORIES, else "other" (silent
       default).
@@ -423,5 +459,13 @@ def process(
             else:
                 del updated[key]
         kept = kept[:max_notes]
+
+    # Reading order LAST, after the cap above: the annotator returns
+    # severity-ordered entries so the truncation keeps the most severe
+    # context loss, but the survivors are then re-sorted by the line each
+    # note sits on -- that is the order the reader meets, because the epub
+    # numbers its footnotes straight off this list (a note on line 4 that
+    # ranked first would otherwise print as [1] before [2] on line 1).
+    kept.sort(key=_line_sort_key)
 
     return kept, updated, warnings, dropped

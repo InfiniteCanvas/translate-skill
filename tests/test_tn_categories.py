@@ -318,6 +318,80 @@ def case_9_overflow_history_rollback() -> None:
           f"updated={updated}")
 
 
+def case_10_reading_order() -> None:
+    """Kept notes come back in READING order (ascending `line`), never in the
+    severity order the annotator returned -- the epub numbers footnotes off
+    this list, so a line-4 note ranked first must not print as [1].
+
+    Also pins the two properties that make the sort safe: it happens AFTER the
+    cap (so severity still decides which notes SURVIVE), and ties on one line
+    keep the annotator's relative order (the sort is stable)."""
+    # Deliberately reverse severity-vs-position: the first note the model
+    # returns sits last in the chapter.
+    notes = [
+        note("首注", line=4),    # ranked first by the annotator, line 4
+        note("次注", line=1),
+        note("末注", line=9),
+    ]
+    kept, _history, warnings, dropped = tn.process(notes, 12, 0, {}, 10)
+    check("10a order: survivors sorted by line, not by model rank",
+          [e["term"] for e in kept] == ["次注", "首注", "末注"],
+          f"kept={[e.get('term') for e in kept]}")
+    check("10b order: reordering is silent and drops nothing",
+          warnings == [] and dropped == [], f"warnings={warnings}, dropped={dropped}")
+
+    # Cap first, THEN the sort: severity still decides who survives, so the
+    # two cut entries are the annotator's last two, and only the line sort
+    # reorders the ten that made it.
+    many = [note(f"词{i}", line=11 - i) for i in range(12)]  # line 11 down to 0
+    capped, _h, _w, over = tn.process(many, 12, 0, {}, 10, max_notes=10)
+    check("10c order: cap keeps the annotator's first 10 (severity), not the earliest lines",
+          [d["term"] for d in over] == ["词10", "词11"], f"dropped={[d.get('term') for d in over]}")
+    check("10d order: the cap survivors are then sorted by line",
+          [e["term"] for e in capped] == ["词9", "词8", "词7", "词6", "词5",
+                                          "词4", "词3", "词2", "词1", "词0"],
+          f"kept={[e.get('term') for e in capped]}")
+
+    # Ties: stable sort keeps the annotator's order within one line.
+    tied = [note("甲", line=2), note("乙", line=2), note("丙", line=0)]
+    tied_kept, _h2, _w2, _d2 = tn.process(tied, 5, 0, {}, 10)
+    check("10e order: notes sharing a line keep the annotator's relative order",
+          [e["term"] for e in tied_kept] == ["丙", "甲", "乙"],
+          f"kept={[e.get('term') for e in tied_kept]}")
+
+
+def case_11_load_sorts_reading_order() -> None:
+    """load_notes re-sorts a sidecar written in the old severity order, so an
+    epub built today numbers its footnotes in reading order without waiting
+    for a re-translate. Unusable entries (no usable `line`) park at the end
+    instead of raising -- the epub builder drops those with its own [warn]."""
+    with tempfile.TemporaryDirectory() as td:
+        project_dir = Path(td)
+        (project_dir / "notes").mkdir()
+        document = {
+            "chapter": "CHAPTER_0001.md",
+            "updated_at": "2026-10-01T00:00:00+00:00",
+            "notes": [
+                {"line": 7, "term": "晚", "note": "late", "category": "other", "anchor": "x"},
+                {"line": 2, "term": "早", "note": "early", "category": "other", "anchor": "y"},
+                {"line": 5, "term": "中", "note": "mid", "category": "other", "anchor": "z"},
+                {"term": "无线", "note": "no line at all", "category": "other", "anchor": ""},
+            ],
+        }
+        (project_dir / "notes" / "CHAPTER_0001.json").write_text(
+            json.dumps(document, ensure_ascii=False), encoding="utf-8")
+
+        loaded = tn.load_notes(project_dir, "CHAPTER_0001.md")
+        check("11a load: an old severity-ordered sidecar comes back line-ordered",
+              [n["term"] for n in loaded] == ["早", "中", "晚", "无线"],
+              f"loaded={[n.get('term') for n in loaded]}")
+        check("11b load: no content is dropped by the sort",
+              len(loaded) == 4, f"loaded={len(loaded)}")
+        check("11c load: sorting does not rewrite the file on disk",
+              json.loads((project_dir / "notes" / "CHAPTER_0001.json").read_text(encoding="utf-8"))
+              ["notes"][0]["term"] == "晚")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -332,6 +406,8 @@ def main() -> int:
     case_7_sidecar_category()
     case_8_notes_schema()
     case_9_overflow_history_rollback()
+    case_10_reading_order()
+    case_11_load_sorts_reading_order()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
