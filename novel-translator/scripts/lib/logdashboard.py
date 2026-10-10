@@ -1084,6 +1084,8 @@ a{color:var(--celadon)}
 .mbar i{display:block;height:100%;background:var(--ink-faint);border-radius:2px}
 
 /* --- call ledger ------------------------------------------------------- */
+.ledger .ep{font-family:var(--mono);font-size:.6875rem;color:var(--ink-soft);
+  max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ledger-bar{display:flex;gap:.75rem;align-items:center;margin:0 0 .9rem;flex-wrap:wrap}
 .ledger-bar input[type=search]{flex:1 1 18rem;min-width:12rem;padding:.5rem .7rem;
   font-family:var(--mono);font-size:.75rem;color:var(--ink);background:var(--surface);
@@ -1699,10 +1701,20 @@ def _call_ledger(data: dict) -> str:
         flag_html = "".join(
             f'<span class="flag flag-bad">{_esc(f)}</span>' for f in flags)
         shape = str(call.get("shape") or "text")
+        # The endpoint, not the operation: every row's url ends in
+        # /chat/completions, so a column of identical full paths hides the one
+        # thing it is for -- WHICH provider served the call. `model` alone
+        # cannot answer that, since two providers can serve one model name.
+        endpoint = str(call.get("url") or "")
+        for suffix in ("/chat/completions", "/completions"):
+            if endpoint.endswith(suffix):
+                endpoint = endpoint[:-len(suffix)]
+                break
         rows.append(
             f'<tr class="callrow" data-idx="{idx}" data-job="{_esc(job)}" '
             f'data-shape="{_esc(shape)}" data-chapter="{_esc(call["chapter"])}" '
-            f'data-model="{_esc(model)}" data-cid="{_esc(call["call_id"])}" '
+            f'data-model="{_esc(model)}" data-endpoint="{_esc(endpoint)}" '
+            f'data-cid="{_esc(call["call_id"])}" '
             f'tabindex="0">'
             f'<td><button class="callid" type="button" data-open="{idx}" '
             f'aria-expanded="false" '
@@ -1711,24 +1723,25 @@ def _call_ledger(data: dict) -> str:
             f'<td>{_esc(call["chapter"])}</td>'
             f'<td>{_esc(job)}<span class="sub">{_esc(tag)}</span></td>'
             f'<td>{_esc(model)}</td>'
+            f'<td class="ep">{_esc(endpoint)}</td>'
             f'<td class="v">{_esc(shape)}</td>'
             f'<td class="v">{_esc(_fmt_count(total))}</td>'
             f'<td class="v">{reasoning_cell}</td>'
             f'<td class="v">{_esc(_fmt_duration(call.get("elapsed_s")))}</td>'
             f'</tr>')
         rows.append(f'<tr id="rowhost{idx}" class="bodyhost" hidden>'
-                    f'<td colspan="8"></td></tr>')
+                    f'<td colspan="9"></td></tr>')
 
     parts.append(
         '<div class="ledger-bar"><input id="callq" type="search" '
-        'placeholder="filter by chapter, job, model or call id" '
+        'placeholder="filter by chapter, job, model, endpoint or call id" '
         'aria-label="Filter calls">'
         f'<span class="count">{len(calls)} calls</span>'
         '<button class="chip" type="button" id="expandall" '
         'aria-pressed="false">show all bodies</button></div>')
     parts.append(
         '<table class="tbl ledger"><thead><tr><th>call id</th><th>chapter</th>'
-        '<th>job</th><th>model</th><th>shape</th>'
+        '<th>job</th><th>model</th><th>endpoint</th><th>shape</th>'
         '<th style="text-align:right">tokens</th>'
         '<th style="text-align:right">reasoning</th>'
         '<th style="text-align:right">elapsed</th></tr></thead>'
@@ -2142,6 +2155,7 @@ document.addEventListener('DOMContentLoaded', function () {
                    r.getAttribute('data-chapter') + ' ' +
                    r.getAttribute('data-job') + ' ' +
                    r.getAttribute('data-model') + ' ' +
+                   r.getAttribute('data-endpoint') + ' ' +
                    r.getAttribute('data-shape')).toLowerCase();
         r.hidden = want !== '' && hay.indexOf(want) === -1;
       });

@@ -1330,6 +1330,77 @@ def case_25_no_double_escaped_entity() -> None:
               "&middot;" in text, "")
 
 
+def case_26_ledger_shows_the_provider() -> None:
+    """The ledger says WHICH provider served each call.
+
+    `url` has been written on every llm_request/llm_response row and carried
+    into the ledger's `calls[]` since the ledger shipped -- it was simply never
+    rendered. `model` alone cannot answer the question, since two providers can
+    serve the same model name (two Z.AI endpoints, a gateway and a direct key),
+    and the whole point of a per-call record is to be able to see where a paid
+    call actually went.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        seed_config(root)
+        bucket = root / "logs" / "chapters" / "CHAPTER_0001"
+        rid = "20260101-040000-translate-9"
+        write_lines(bucket / "index.jsonl", [
+            {"ts": "2026-01-01T04:00:00.000+00:00", "run_id": rid,
+             "phase": "open", "command": "translate", "file": "CHAPTER_0001.md",
+             "number": 1},
+        ])
+        # Two calls to the SAME model on DIFFERENT endpoints -- the case model
+        # alone cannot distinguish, and the reason the column exists.
+        write_lines(bucket / f"run-{rid}.jsonl", [
+            {"ts": "2026-01-01T04:01:00.000+00:00", "run_id": rid, "chapter":
+             "CHAPTER_0001.md", "event": "llm_request", "call_id": "EP1",
+             "job": "translator", "model": "glm-5.3",
+             "url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+             "prompt": "p1"},
+            {"ts": "2026-01-01T04:01:01.000+00:00", "run_id": rid, "chapter":
+             "CHAPTER_0001.md", "event": "llm_response", "call_id": "EP1",
+             "job": "translator", "model": "glm-5.3",
+             "url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+             "response": "{}", "elapsed_s": 1.0},
+            {"ts": "2026-01-01T04:02:00.000+00:00", "run_id": rid, "chapter":
+             "CHAPTER_0001.md", "event": "llm_request", "call_id": "EP2",
+             "job": "consensus", "consensus_for": "translator",
+             "model": "glm-5.3",
+             "url": "http://100.85.218.125:8888/v1/chat/completions",
+             "prompt": "p2"},
+            {"ts": "2026-01-01T04:02:01.000+00:00", "run_id": rid, "chapter":
+             "CHAPTER_0001.md", "event": "llm_response", "call_id": "EP2",
+             "job": "consensus", "consensus_for": "translator",
+             "model": "glm-5.3",
+             "url": "http://100.85.218.125:8888/v1/chat/completions",
+             "response": "{}", "elapsed_s": 2.0},
+        ])
+        text = html_of(root)
+        check("26a endpoint: the ledger renders an endpoint column header",
+              "<th>endpoint</th>" in text, "")
+        check("26b endpoint: both providers appear, so two calls on one model "
+              "are distinguishable",
+              "https://api.z.ai/api/coding/paas/v4" in text
+              and "100.85.218.125:8888" in text, "")
+        check("26c endpoint: the repeated operation suffix is trimmed (a column "
+              "of identical /chat/completions paths would hide the difference)",
+              "/chat/completions" not in text, "")
+        check("26d endpoint: the row carries it as data-endpoint for the filter",
+              'data-endpoint="https://api.z.ai/api/coding/paas/v4"' in text
+              and 'data-endpoint="http://100.85.218.125:8888/v1"' in text, "")
+        check("26e endpoint: the filter predicate searches it",
+              "getAttribute('data-endpoint')" in text
+              and "model, endpoint or call id" in text, "")
+        check("26f endpoint: the consensus row still groups under the task it "
+              "arbitrates, so the endpoint shows on the right row",
+              text.count('data-endpoint=') == 2, "")
+        # The body row must still span the widened table, or the expandable
+        # detail breaks on the last column.
+        check("26g endpoint: the expandable body spans all nine columns",
+              text.count('colspan="9"') == 2, "")
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in (
             "utf-8", "utf8"):
@@ -1348,7 +1419,8 @@ def main() -> int:
                  case_22_script_selectors_match_the_markup,
                  case_23_no_chapter_claims_a_cause_it_cannot_know,
                  case_24_whole_row_click_guards,
-                 case_25_no_double_escaped_entity):
+                 case_25_no_double_escaped_entity,
+                 case_26_ledger_shows_the_provider):
         case()
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     return 1 if FAILED else 0

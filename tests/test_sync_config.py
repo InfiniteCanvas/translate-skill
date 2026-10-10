@@ -658,6 +658,40 @@ def case_9_corrupt_overlay_is_a_clean_error() -> None:
                                                / "assets" / "templates")
 
 
+def _provider_blocks(job_value):
+    """A providers entry as a list of blocks: a bare dict is the legacy
+    single-block shape, an array is the multi-model shape."""
+    if isinstance(job_value, dict):
+        return [job_value]
+    if isinstance(job_value, list):
+        return [b for b in job_value if isinstance(b, dict)]
+    return []
+
+
+def _effective_blocks(jobs: dict):
+    """Yield (job, block) for every provider block AS IT WILL RUN.
+
+    A per-job arbitrator (`consensus_<job>`, v015) is deliberately allowed to
+    be a partial block -- it merges key-wise onto the global `consensus` block
+    at load time. Validating the AUTHORED text instead would report false
+    positives on exactly the shape the shipped examples are teaching: a
+    `{"model": ...}` block that inherits a working `api_key_env` and a 128000
+    `max_tokens` from the global arbitrator has neither of the problems these
+    checks exist to catch. So resolve first, then validate what runs.
+    """
+    global_block = (_provider_blocks(jobs.get("consensus")) or [{}])[0]
+    for job, value in jobs.items():
+        if not job.startswith(config.CONSENSUS_PREFIX):
+            for block in _provider_blocks(value):
+                yield job, block
+            continue
+        for authored in _provider_blocks(value):
+            merged = dict(config.PROVIDER_DEFAULTS["consensus"])
+            merged.update(global_block)
+            merged.update(authored)
+            yield job, merged
+
+
 def case_10_shipped_examples_are_valid() -> None:
     """The shipped example overlays must actually load.
 
@@ -695,8 +729,8 @@ def case_10_shipped_examples_are_valid() -> None:
                   f"found {config.inline_api_keys(overlay)}")
             check(f"10 {name}: uses api_key_env, not api_key",
                   all("api_key_env" in block
-                      for job in overlay.get("providers", {}).values()
-                      for block in ([job] if isinstance(job, dict) else job)),
+                      for _job, block in _effective_blocks(
+                          overlay.get("providers", {}))),
                   "a block falls back to an inline key")
 
             # And it must normalize into a usable project config.
@@ -743,23 +777,17 @@ def case_10_shipped_examples_are_valid() -> None:
         #    a block relying on that is unprotected either way.
         jobs = overlay.get("providers", {})
 
-        # Providers may be a single block dict or an array of blocks (the
-        # consensus fan-out); the checks below must read every block either
-        # way, or a multi-model example silently escapes validation.
-        def _blocks(job_value):
-            if isinstance(job_value, dict):
-                return [job_value]
-            if isinstance(job_value, list):
-                return [b for b in job_value if isinstance(b, dict)]
-            return []
+        # Blocks are read in their EFFECTIVE form (see _effective_blocks): a
+        # per-job arbitrator may be authored partial and inherit from the
+        # global `consensus`, and these checks are about what will run.
+        _effective = _effective_blocks
 
         def _labelled(job, block):
             return f"{job}[{block.get('model', '?')}]"
 
         unbounded_m3 = sorted(
             _labelled(job, block)
-            for job, value in jobs.items()
-            for block in _blocks(value)
+            for job, block in _effective(jobs)
             if block.get("model") == "MiniMax-M3"
             and (block.get("extra_body", {})
                  .get("thinking", {}).get("type")) != "disabled")
@@ -770,8 +798,7 @@ def case_10_shipped_examples_are_valid() -> None:
         BOUNDED = {"low", "medium", "high", "xhigh", "max"}
         unpinned_flash = sorted(
             _labelled(job, block)
-            for job, value in jobs.items()
-            for block in _blocks(value)
+            for job, block in _effective(jobs)
             if block.get("model") == "MiniMax-M3.1-Flash-Preview"
             and (block.get("extra_body", {})
                  .get("reasoning_effort")) not in BOUNDED)
@@ -786,8 +813,7 @@ def case_10_shipped_examples_are_valid() -> None:
         # original 20-minute failure -- require the large cap to go with it.
         underbudgeted = sorted(
             _labelled(job, block)
-            for job, value in jobs.items()
-            for block in _blocks(value)
+            for job, block in _effective(jobs)
             if block.get("model") == "MiniMax-M3.1-Flash-Preview"
             and (block.get("extra_body", {}).get("reasoning_effort")) == "max"
             and int(block.get("max_tokens", 0)) < 131072)
@@ -795,8 +821,8 @@ def case_10_shipped_examples_are_valid() -> None:
               not underbudgeted,
               f"`max` effort under a cap that cannot hold it: {underbudgeted}")
 
-        small = sorted(f"{job}[{i}]" for job, value in jobs.items()
-                       for i, block in enumerate(_blocks(value))
+        small = sorted(f"{job}[{block.get('model', '?')}]"
+                       for job, block in _effective(jobs)
                        if int(block.get("max_tokens", 0)) < 65536)
         check(f"10 {name}: every block carries the 64k output budget",
               not small, f"blocks below 65536 max_tokens: {small}")
@@ -812,7 +838,7 @@ def case_10_shipped_examples_are_valid() -> None:
         # block is so small that chapters cannot be packed into it
         # (pipeline.MIN_TRANSLATOR_MAX_TOKENS).
         max_out = overlay.get("translate_max_output_tokens")
-        translator_blocks = _blocks(jobs.get("translator"))
+        translator_blocks = _provider_blocks(jobs.get("translator"))
         smallest = min((int(b.get("max_tokens", 0))
                         for b in translator_blocks), default=0)
         from lib import pipeline as _pl
@@ -832,7 +858,8 @@ def case_10_shipped_examples_are_valid() -> None:
         # config.local.example.zai.json reproduced the original bug, since
         # every one of its blocks is Z.AI (wall 131072) and `consensus`
         # inherits translator[0].
-        cblocks = _blocks(jobs.get("consensus")) or _blocks(jobs.get("translator"))
+        cblocks = _provider_blocks(jobs.get("consensus")) or _provider_blocks(
+            jobs.get("translator"))
         unprotected: list[str] = []
         for cb in cblocks[:1]:
             declared = int(cb.get("max_tokens") or 0)
@@ -843,6 +870,107 @@ def case_10_shipped_examples_are_valid() -> None:
                     f"with no max_tokens_limit")
         check(f"10 {name}: the consensus merge cannot over-send its provider",
               not unprotected, f"unsprotected consensus block(s): {unprotected}")
+
+
+def case_11_per_job_consensus_overlay() -> None:
+    """A `consensus_<job>` key behaves like any other provider key under
+    `sync-config` (v015) -- which is the point of putting it in `providers`
+    rather than in a new top-level section.
+
+    Three paths, all of which the merge already had to handle for every other
+    job, so none of them needed special-casing:
+
+    * absent in the project -> the overlay's block is added wholesale
+    * present in the project -> the single-dict form merges KEY-WISE into the
+      existing block, so a partial overlay still cannot un-point a working
+      endpoint (merge_overlay's "must never quietly un-point" rule)
+    * a two-block overlay ARRAY -> rejected before anything is written, because
+      an arbitrator is exactly one model
+    """
+    with tempfile.TemporaryDirectory() as td:
+        # --- added to a project that has no such key -----------------------
+        project = Path(td) / "add"
+        project.mkdir()
+        write_config(project, {
+            "source_lang": "zh", "version": 8,
+            "providers": {"translator": [
+                {"base_url": "http://project:8888/v1", "model": None}]},
+        })
+        changed, lines = config.apply_overlay(project, {"providers": {
+            "consensus_translator": {"base_url": "http://local:9999/v1",
+                                     "model": "translator-arb"}}})
+        on_disk = read_config(project)
+        check("11a add: a per-job arbitrator in the overlay is added whole",
+              on_disk["providers"]["consensus_translator"]
+              == {"base_url": "http://local:9999/v1", "model": "translator-arb"},
+              f"got={on_disk['providers'].get('consensus_translator')}")
+        check("11b add: the changed key names the per-job path",
+              any("consensus_translator" in key for key in changed),
+              f"changed={changed}")
+
+        # --- merged key-wise into an existing block -------------------------
+        project2 = Path(td) / "merge"
+        project2.mkdir()
+        write_config(project2, {
+            "source_lang": "zh", "version": 8,
+            "providers": {
+                "translator": [{"base_url": "http://project:8888/v1",
+                                "model": None}],
+                "consensus_translator": {"base_url": "http://project:8888/v1",
+                                         "model": "old-arb"},
+            },
+        })
+        config.apply_overlay(project2, {"providers": {
+            "consensus_translator": {"model": "new-arb"}}})
+        merged = read_config(project2)["providers"]["consensus_translator"]
+        check("11c merge: a partial overlay overrides only the key it names "
+              "and keeps the working base_url",
+              merged == {"base_url": "http://project:8888/v1", "model": "new-arb"},
+              f"got={merged}")
+
+        # --- the repair path: a fan-out with no consensus is refused at load
+        # (v015), so sync-config must be able to FIX it -- an overlay that adds
+        # `consensus` merges into a config that then validates. Without this,
+        # the rule would be a lockout: the only way to repair the project would
+        # be to edit it by hand.
+        project3 = Path(td) / "repair"
+        project3.mkdir()
+        write_config(project3, {
+            "source_lang": "zh", "version": 8,
+            "providers": {"translator": [
+                {"base_url": "http://project:8888/v1", "model": "m1"},
+                {"base_url": "http://project:8888/v1", "model": "m2"}]},
+        })
+        try:
+            config.load_config(project3)
+            loads = "loaded anyway"
+        except ValueError as exc:
+            loads = str(exc)
+        check("11f repair: the project is refused before the overlay",
+              "providers.consensus is required" in loads, f"got {loads!r}")
+        _changed, _lines = config.apply_overlay(project3, {"providers": {
+            "consensus": {"base_url": "http://project:8888/v1",
+                          "model": "arbiter"}}})
+        repaired = config.load_config(project3)
+        check("11g repair: an overlay that adds consensus applies cleanly and "
+              "the project loads afterwards (no lockout)",
+              config.provider(repaired, "consensus")["model"] == "arbiter"
+              and len(config.provider_list(repaired, "translator")) == 2,
+              f"consensus={config.provider(repaired, 'consensus')!r}")
+
+        # --- an array overlay is rejected before the write ------------------
+        before = read_config(project2)
+        try:
+            config.apply_overlay(project2, {"providers": {
+                "consensus_annotator": [{"model": "a"}, {"model": "b"}]}})
+            check("11d reject: a two-block per-job arbitrator is rejected",
+                  False, "returned without raising")
+        except ValueError as exc:
+            check("11d reject: a two-block per-job arbitrator is rejected",
+                  "consensus_annotator" in str(exc), f"message={exc}")
+        check("11e reject: the working config survived the rejected merge",
+              read_config(project2) == before,
+              "config.json was modified by a failed apply")
 
 
 def main() -> int:
@@ -860,6 +988,7 @@ def main() -> int:
     case_8_corrupt_base_config_is_a_clean_error()
     case_9_corrupt_overlay_is_a_clean_error()
     case_10_shipped_examples_are_valid()
+    case_11_per_job_consensus_overlay()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

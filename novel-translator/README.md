@@ -704,12 +704,45 @@ to exit`; details land in
   provider blocks (a bare block object is the legacy single-model shape
   and loads unchanged); two or more blocks run multi-model consensus --
   every prompt fans out to all the job's models in parallel and one
-  `consensus`-provider call merges the candidates into the final
+  arbitrator call merges the candidates into the final
   response under the task's own JSON schema. The `consensus` job itself
   is exactly one block (omitted, it defaults to the translator's first
   block — that block's settings win, with temperature 0.2 filling what it
   leaves unset); any other omitted job inherits the
   translator's whole array, each element onto the job's own defaults.
+
+  **The arbitrator can be per job** (v015). Add an optional
+  `consensus_<job>` sibling key — `consensus_translator`,
+  `consensus_annotator`, `consensus_glossary`, … — and that job's merge uses it
+  instead of the global `consensus`:
+
+  ```json
+  "providers": {
+    "translator": [{"base_url": "...", "model": "m1"},
+                   {"base_url": "...", "model": "m2"}],
+    "consensus":  {"base_url": "...", "model": "flagship"},
+    "consensus_translator": {"model": "big-context-arbiter"},
+    "consensus_annotator":  {"model": "cheap-fast-arbiter"}
+  }
+  ```
+
+  Each partial block merges key-wise onto the resolved global block, so the
+  examples above name only a model and keep the global's endpoint and auth — a
+  partial override never re-points a working provider. A key you do NOT write
+  resolves to the global block unchanged, so existing projects are unaffected.
+  The tradeoff the feature exists to remove: one arbitrator has to be strong
+  enough for the chapter merge *and* cheap enough for the notes merge, which is
+  usually neither. `ping` reports each in-force arbitrator as
+  `[ok] consensus(translator) <url> -> <model>`.
+
+  **`consensus` is required as soon as anything fans out.** A config with two
+  or more blocks in any job and no `providers.consensus` is refused at load
+  (exit 2), because the arbitrator would otherwise be silently derived from
+  `providers.translator[0]` — one of the models it is judging. If nothing fans
+  out, no `consensus` is needed. The same one rule covers the old
+  `consensus_translator`-without-`consensus` trap, so a typo'd or partial
+  setup fails loudly instead of routing a paid merge somewhere you did not
+  choose.
 
   **A failed provider call stops the run.** Any call that fails after its
   retries prints one `[FAIL]` line and exits 3, instead of falling back to a

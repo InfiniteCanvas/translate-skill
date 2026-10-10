@@ -268,7 +268,16 @@ Two things it deliberately does **not** do:
 
 One inheritance wrinkle: an omitted `consensus` block inherits the translator's
 **first** block, including this key. If the two point at different providers,
-set `max_tokens_limit` on the `consensus` block explicitly.
+set `max_tokens_limit` on the `consensus` block explicitly. As of v015 the same
+holds one level down: a partial `consensus_<job>` inherits the global
+arbitrator's `max_tokens_limit`, so declare it on the per-job block too when its
+provider's real ceiling differs.
+
+One thing the per-job arbitrator does **not** change: chapters are still packed
+against the **translator blocks'** `min(max_tokens, max_tokens_limit)`, never
+the arbitrator's. A deliberately small `consensus_translator` therefore bounds
+the *merge*, not the chapter — size it for a response that can hold the merged
+candidates.
 
 ### `MiniMax-M3`: use `thinking`, and note the different failure shape
 
@@ -327,18 +336,44 @@ So: spend Z.AI credits on judgment, spend MiniMax's pool on volume.
 | `glossary` / `recap` / `profile` | `glm-5.3-flash` | structured extraction and summaries; a cheap model genuinely suffices |
 
 Fan-out is **per job, not translator-only**: any job whose array carries two
-or more blocks runs both models in parallel and merges them through the
-`consensus` provider (`consensus.py` `chat()` is what every job call routes
+or more blocks runs both models in parallel and merges them through an
+arbitrator (`consensus.py` `chat()` is what every job call routes
 through). So each fan-out job costs 3 calls — 2 candidates plus 1 synthesis —
-and the synthesis always runs on the `consensus` block, whatever that is set
-to. Both fan-outs run in parallel across blocks, so wall-clock stays at the
+and the synthesis runs on that job's arbitrator: `providers.consensus_<job>`
+where one is authored, otherwise `providers.consensus` (the table's
+`glm-5.3`). Both fan-outs run in parallel across blocks, so wall-clock stays at the
 slowest model rather than the sum, but credit/token spend is multiplied.
 
 Keep `consensus` on the flagship if translator quality is the priority: it is
 the synthesizer for *every* fan-out job, so demoting it to save credits would
-degrade the translator too. If credits are the binding constraint instead, the
-lever with the best ratio is dropping a fan-out job back to a single block —
-it removes a candidate *and* its synthesis call.
+degrade the translator too. **As of v015 you no longer have to choose** —
+give the expensive merge its own model and let the cheap merges use a cheap one:
+
+```json
+"providers": {
+  "consensus":             {"model": "glm-5.3-flash"},
+  "consensus_translator":  {"model": "glm-5.3"}
+}
+```
+
+Each partial block merges key-wise onto the global block, so those two lines
+name only a model and keep the shared `base_url` and `api_key_env`. A job you do
+not name (`annotator`, `glossary`, …) still merges through `providers.consensus`,
+and a project that writes neither key is unchanged. This is the lever with the
+best ratio when credits bind *and* translator quality matters: the notes merge
+no longer pays flagship prices. `ping` reports each one as
+`[ok] consensus(translator) <url> -> <model>`.
+
+**Write the global block first — it is required.** As of v015 a config that
+fans out at all without an authored `providers.consensus` is **refused at load**
+(`[FAIL] cannot read config.json: providers.consensus is required because 6
+job(s) fan out ...`, exit 2). With nothing authored, the arbitrator would
+otherwise be derived from `providers.translator[0]` — its endpoint, model,
+temperature and limits — so in a two-model translator array every merge would
+silently be synthesized by one of the models it is judging. One rule covers it:
+author the global, then override per job. `sync-config` can repair such a
+project with an overlay, so it is never a lockout. A config where nothing fans
+out needs no `consensus` at all.
 
 Batch big runs outside **Mon–Fri 14:00–18:00 UTC+8** and Z.AI bills at half
 — a free 2x on the credit-heavy jobs.

@@ -13,6 +13,12 @@ config._normalize_providers) merges the candidates into the final response
 under the same JSON schema the task itself uses, so every downstream
 validator treats it exactly like a single-model reply.
 
+The arbitrator is resolved PER JOB by config.consensus_provider: an authored
+`providers.consensus_<job>` block wins, otherwise it is the global
+`providers.consensus` block. Two fan-out jobs can therefore merge through two
+different models, and a project that authors no per-job key merges through the
+one global arbitrator exactly as before.
+
 Failure policy: TERMINAL. Every failure — a candidate that exhausted its
 retries, or a consensus call that exhausted its retries — stops the run with one
 [FAIL] line per failed candidate and a `fatal` event in the orchestration log.
@@ -138,6 +144,16 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     every other call cannot silently shrink a merge below what the surviving
     candidates need.
 
+    Which arbitrator runs is `config.consensus_provider(cfg, job)`: the job's
+    own `providers.consensus_<job>` block when authored, else the global
+    `providers.consensus`. Everything below that point -- the max_tokens floor,
+    the `max_tokens_limit` clamp, the trace tags, the terminal failure policy --
+    reads the block that function returns, so it all follows the per-job choice
+    with no special casing. The trace tags are deliberately UNCHANGED
+    (`job="consensus"`, `consensus_for=<task>`): the dashboard groups on
+    `consensus_for` and prints the arbitrator's own model as the column header,
+    so the routing is already visible in the ledger.
+
     The fan-out candidates themselves ARE clamped by client.chat to their own
     block's cap, so a task cap above a block's limit can never raise that
     block past what its provider accepts.
@@ -228,7 +244,7 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     # original task prompt (which carries the output contract) and writes
     # the single final response in exactly that format.
     from lib import pipeline  # lazy: pipeline imports this module at top level
-    cblock = config.provider(cfg, "consensus")
+    cblock = config.consensus_provider(cfg, job)
     sections = [
         f"### Candidate {i} (model: {_model_label(blocks[i - 1])})\n\n{text}"
         for i, text in survivors

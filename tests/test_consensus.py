@@ -547,6 +547,68 @@ def case_local_template_wins() -> None:
               f"prompt={con[0]['prompt'][:200] if con else None!r}")
 
 
+def case_j_per_job_arbitrator() -> None:
+    """Two fan-out jobs, two different arbitrators (v015).
+
+    The point of the case is that the routing is PER JOB and not a coincidence:
+    the translator merges through `consensus_translator` while the annotator,
+    with no key of its own, still merges through the global `consensus`. Both
+    jobs carry the SAME two candidate models, so only the arbitrator selection
+    can explain the difference.
+
+    Also pins that an absent key is the pre-v015 path untouched -- the existing
+    case (b2) already asserts `c["block"] is cblock`, which is the identity
+    guarantee every project without a per-job key keeps."""
+    reset_globals()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        proj = make_project(root, "perjob")
+        global_arb = block("global-arb")
+        translator_arb = block("translator-arb", max_tokens=4096)
+        cfg = {"providers": {
+                   "translator": [block("m1"), block("m2")],
+                   "annotator": [block("m1"), block("m2")],
+                   "consensus": [global_arb],
+                   # Deliberately PARTIAL: it must inherit the global's endpoint
+                   # and override only the model, the way a user would write it.
+                   "consensus_translator": [{"model": "translator-arb"}],
+               },
+               "log_llm": True}
+        fake = FakeChat()
+        with patched_chat(fake), contextlib.redirect_stdout(io.StringIO()):
+            r_t = consensus.chat(proj, cfg, "translator", TASK_PROMPT,
+                                 max_tokens=1000)
+            # Separate the two merges: both fan out to the SAME candidate models
+            # and both produce exactly one synthesis, so the only thing that
+            # tells them apart is which arbitrator each selected.
+            t_con = list(fake.consensus())
+            fake.calls.clear()
+            r_a = consensus.chat(proj, cfg, "annotator", TASK_PROMPT,
+                                 max_tokens=1000)
+            a_con = list(fake.consensus())
+
+        check("j1 routing: the translator merged through its OWN arbitrator",
+              len(t_con) == 1
+              and t_con[0]["block"].get("model") == "translator-arb",
+              f"models={[c['block'].get('model') for c in t_con]!r}")
+        check("j2 routing: the annotator, having no key of its own, merged "
+              "through the global arbitrator (a per-job key never leaks sideways)",
+              len(a_con) == 1 and a_con[0]["block"] is global_arb,
+              f"blocks={[c['block'].get('model') for c in a_con]!r}")
+        check("j3 inheritance: the partial per-job block inherited the global's "
+              "base_url instead of falling back to the hard-coded default",
+              t_con[0]["block"].get("base_url") == global_arb.get("base_url"),
+              f"block={t_con[0]['block']!r}")
+        # The max_tokens floor still tracks whichever block is in force: the
+        # translator's own task cap of 1000 against its arbitrator's 4096.
+        check("j4 cap: the synthesis floor follows the per-job block "
+              "(max(task cap, that block's max_tokens))",
+              t_con[0]["max_tokens"] == 4096,
+              f"max_tokens={t_con[0]['max_tokens']!r}")
+        check("j5 both merges returned the synthesizer's output",
+              r_t == r_a == "merged-final", f"t={r_t!r} a={r_a!r}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -561,6 +623,7 @@ def main() -> int:
     case_g_consensus_call_fails()
     case_h_explicit_consensus_array()
     case_i_unresolved_model_label()
+    case_j_per_job_arbitrator()
     case_local_template_wins()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")

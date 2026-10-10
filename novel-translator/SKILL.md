@@ -227,7 +227,11 @@ sorted by frequency):
    minimum governs packing so no model truncates its part). Two `[warn]` lines
    still apply: a translator block below 8192 cannot be packed into, and a
    `reasoning_effort` high/xhigh/max block that the ceiling squeezes below its
-   own `max_tokens` may stop converging. A source line whose
+   own `max_tokens` may stop converging. As of v015 a config that fans out at
+   all without an authored `providers.consensus` is refused outright at load
+   (exit 2) rather than warned about — with nothing authored, the arbitrator
+   would be silently derived from `providers.translator[0]`, i.e. one of the
+   models it is judging. A config where nothing fans out needs none. A source line whose
    estimated output exceeds
    even the escalated cap fails fast with actionable feedback
    (`TRANSLATE failed: ... source line N alone exceeds the output budget
@@ -360,10 +364,14 @@ TRANSLATE, FAITH, GLOSSARY_EXPAND, the glossary merge/cleanup judgments,
 TN_GENERATE, and the recap below — goes through the job's provider array
 in `config.json`. A single-block job makes exactly one call; a job with
 two or more blocks fans the prompt out to all its models in parallel and
-ONE `consensus`-provider call merges the labeled candidates into the
+ONE arbitrator call merges the labeled candidates into the
 final response under the task's own JSON schema, so gates and validators
 see an ordinary single-model reply (console: `[consensus] {job}: {n}
-model(s) - merging results via the consensus provider`). **As of v014 a
+model(s) - merging results via the consensus provider`). That arbitrator is
+resolved PER JOB (v015): `providers.consensus_<job>` if authored, else the
+global `providers.consensus` — so the translation merge and the notes merge can
+use different models, and a project that authors no per-job key is unchanged.
+**As of v014 a
 provider failure is terminal rather than degrading**: any call that fails after
 its retries stops the run — one `[FAIL]` line, exit 3 — instead of falling back
 to a surviving candidate or a lone one, and a code the provider itself calls
@@ -515,12 +523,16 @@ background build too. Builds produce no git commits — `export/`,
   multi-model candidates). Each job's value is an ARRAY of provider blocks
   (a bare block object is the legacy single-model shape and loads
   unchanged); two or more blocks fan the job's prompts out to all models
-  in parallel and merge via the consensus provider (see the multi-model
+  in parallel and merge via that job's arbitrator (see the multi-model
   note under the pipeline). An omitted job inherits the translator's whole
   array element-wise (authored keys win, the job's sampling defaults
   apply); `consensus` never inherits the array — exactly one block,
   defaulting to the translator's first block (its authored keys win;
-  temperature 0.2 unless it sets one). Start
+  temperature 0.2 unless it sets one). As of v015 a fan-out job may also name
+  its own arbitrator with an optional `consensus_<job>` sibling key
+  (`consensus_translator`, `consensus_annotator`, …), which merges KEY-WISE
+  onto the global block — so `{"model": "x"}` keeps the global's endpoint and
+  auth — while an ABSENT key resolves to the global block unchanged. Start
   with one endpoint doing everything; later point `reviewer` at a stronger
   model, or add a second translator block, without touching the rest.
   `ping` shows what each job resolves to, one line per block: single-block
@@ -528,7 +540,9 @@ background build too. Builds produce no git commits — `export/`,
   index-suffixed (`[ok] translator[0] <url> -> <model> (config model:
   <m>)`) and a repeated model inside one job warns (`[warn]
   translator[i]: same model as translator[j] (<model>) - candidates will
-  be near-identical`). Temperature and top_p
+  be near-identical`). An in-force per-job arbitrator is probed too, labelled
+  `[ok] consensus(translator) <url> -> <model>`, and deduplicated against the
+  blocks already probed. Temperature and top_p
   are per-provider passthroughs (translator defaults 0.7/1.0 per the model
   card — quality across temperatures is subjective; the user tunes this).
   A per-provider `thinking` flag defaults to false (sglang

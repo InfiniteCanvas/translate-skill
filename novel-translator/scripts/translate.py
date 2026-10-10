@@ -619,56 +619,96 @@ def _ping_err(exc: Exception) -> str:
     return f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
+def _ping_key(block: dict) -> tuple:
+    """Identity of a provider block for ping's already-probed set: two blocks
+    agreeing on all four fields are the same endpoint, model and credential,
+    so probing the second would prove nothing the first did not."""
+    return (str(block.get("base_url", "")), str(block.get("model") or ""),
+            str(block.get("api_key_env") or ""), str(block.get("api_key") or ""))
+
+
+def _ping_one(label: str, pcfg: dict) -> tuple[bool, str | None]:
+    """Probe one block and print its line. Returns (ok, resolved model).
+
+    Shared by the per-job loop and the per-job-arbitrator pass so both report
+    identically and -- more importantly -- fail identically, onto the same
+    exit-2 path. A hosted provider may not serve /models (or auth-gate it); a
+    minimal chat completion still proves routing + auth work.
+    """
+    base_url = str(pcfg.get("base_url", ""))
+    try:
+        resolved = client.resolve_model(
+            base_url, headers=client.auth_headers(pcfg))
+        extra = f" (config model: {pcfg['model']})" if pcfg.get("model") else ""
+        print(f"[ok] {label} {base_url} -> {resolved}{extra}")
+        # client.chat prefers the block's explicit model over the
+        # /models default, so duplicates are judged on the model
+        # that will actually run (same rule as consensus
+        # ._model_label).
+        return True, str(pcfg["model"]) if pcfg.get("model") else resolved
+    except Exception as exc:  # noqa: BLE001 - endpoint errors are reported per block
+        if not pcfg.get("model"):
+            print(f"[FAIL] {label} {base_url} -> {_ping_err(exc)}")
+            return False, None
+        try:
+            client.probe(pcfg)
+            print(
+                f"[ok] {label} {base_url} -> {pcfg['model']} "
+                f"(chat ok; /models failed: {_ping_err(exc)})"
+            )
+            return True, str(pcfg["model"])
+        except Exception as exc2:  # noqa: BLE001 - report both failures
+            print(
+                f"[FAIL] {label} {base_url} -> "
+                f"/models: {_ping_err(exc)}; chat: {_ping_err(exc2)}"
+            )
+            return False, None
+
+
 def cmd_ping(args: argparse.Namespace, project_dir: Path) -> int:
     cfg = _load_config(project_dir)
     failed = False
+    # Already-probed blocks, keyed by _ping_key. Deliberately NOT the per-job
+    # `seen` dict below, which is re-created on every job iteration and is
+    # therefore empty at the end of each one.
+    probed: set[tuple] = set()
     for job in config.PROVIDER_JOBS:
         blocks = config.provider_list(cfg, job)
         multi = len(blocks) > 1
         seen: dict[str, int] = {}  # resolved model -> first block index
         for i, pcfg in enumerate(blocks):
+            probed.add(_ping_key(pcfg))
             # Single-block jobs keep the pre-array line shape (bare padded
             # job name); blocks of a multi-block array are index-suffixed
             # (0-based) so operators can tell them apart.
             label = f"{job}[{i}]" if multi else f"{job:<10}"
-            base_url = str(pcfg.get("base_url", ""))
-            try:
-                resolved = client.resolve_model(
-                    base_url, headers=client.auth_headers(pcfg))
-                extra = f" (config model: {pcfg['model']})" if pcfg.get("model") else ""
-                print(f"[ok] {label} {base_url} -> {resolved}{extra}")
-                # client.chat prefers the block's explicit model over the
-                # /models default, so duplicates are judged on the model
-                # that will actually run (same rule as consensus
-                # ._model_label).
-                model = str(pcfg["model"]) if pcfg.get("model") else resolved
-            except Exception as exc:  # noqa: BLE001 - endpoint errors are reported per job
-                # Hosted providers may not serve /models (or auth-gate it); a
-                # minimal chat completion still proves routing + auth work.
-                if pcfg.get("model"):
-                    try:
-                        client.probe(pcfg)
-                        print(
-                            f"[ok] {label} {base_url} -> {pcfg['model']} "
-                            f"(chat ok; /models failed: {_ping_err(exc)})"
-                        )
-                        model = str(pcfg["model"])
-                    except Exception as exc2:  # noqa: BLE001 - report both failures
-                        failed = True
-                        print(
-                            f"[FAIL] {label} {base_url} -> "
-                            f"/models: {_ping_err(exc)}; chat: {_ping_err(exc2)}"
-                        )
-                        continue
-                else:
-                    failed = True
-                    print(f"[FAIL] {label} {base_url} -> {_ping_err(exc)}")
-                    continue
+            ok, model = _ping_one(label, pcfg)
+            if not ok:
+                failed = True
+                continue
             if multi and model in seen:
                 print(f"[warn] {job}[{i}]: same model as {job}[{seen[model]}] "
                       f"({model}) - candidates will be near-identical")
             else:
                 seen.setdefault(model, i)
+    # Per-job arbitrators. `consensus` IS a PROVIDER_JOBS entry, so the loop
+    # above already probed the global one; a `consensus_<job>` block is
+    # deliberately NOT a job, so without this pass the one provider whose
+    # failure kills the run AFTER the candidates were already paid for would be
+    # the only block in the file ping cannot check. A project that authors no
+    # per-job key resolves every arbitrator to the global block, which the loop
+    # above already probed -- so the dedupe leaves its output byte-identical.
+    for job in config.PROVIDER_JOBS:
+        if job == "consensus" or len(config.provider_list(cfg, job)) < 2:
+            continue  # a single-block job never fans out, so it never merges
+        cblock = config.consensus_provider(cfg, job)
+        key = _ping_key(cblock)
+        if key in probed:
+            continue
+        probed.add(key)
+        ok, _model = _ping_one(f"consensus({job})", cblock)
+        if not ok:
+            failed = True
     if failed:
         _fail("ping: one or more providers unreachable")
         return 2

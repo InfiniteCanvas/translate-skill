@@ -86,7 +86,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config  # noqa: E402
 import migrations  # noqa: E402
-from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014  # noqa: E402
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015  # noqa: E402
 import translate  # noqa: E402
 
 PASSED = 0
@@ -1514,11 +1514,11 @@ def case_13_v011() -> None:
               isinstance(v011.DESCRIPTION, str)
               and "\n" not in v011.DESCRIPTION, "")
 
-        # v014 is the chain head: chain() is ascending, so the head is the
+        # v015 is the chain head: chain() is ascending, so the head is the
         # LAST entry, and current_version() is what init/migrate actually use.
-        check("13k v014 is the chain head",
-              migrations.chain()[-1].VERSION == 14
-              and migrations.current_version() == 14,
+        check("13k v015 is the chain head",
+              migrations.chain()[-1].VERSION == 15
+              and migrations.current_version() == 15,
               f"chain_head={migrations.chain()[-1].VERSION} "
               f"current={migrations.current_version()}")
 
@@ -1535,6 +1535,10 @@ def case_13_v011() -> None:
         check("13q v014: DESCRIPTION is one line",
               isinstance(v014.DESCRIPTION, str)
               and "\n" not in v014.DESCRIPTION, "")
+        check("13r v015: VERSION matches the filename", v015.VERSION == 15, "")
+        check("13s v015: DESCRIPTION is one line",
+              isinstance(v015.DESCRIPTION, str)
+              and "\n" not in v015.DESCRIPTION, "")
 
 
 def case_14_v012() -> None:
@@ -1834,6 +1838,192 @@ def case_16_v014() -> None:
             _os.environ[env] = prev
 
 
+def case_17_v015() -> None:
+    """v15 is REPORT-ONLY, like v012/v013/v014.
+
+    It exists because the MEANING of `providers` changed: a fan-out job can now
+    name its own arbitrator (`providers.consensus_<job>`), with an absent key
+    resolving to the global one exactly as before.
+
+    Two properties are worth pinning, because either regression is silent:
+
+    1. Nothing is rewritten. There is no old-default sentinel -- no value on
+       disk was wrong that is right now -- and the migration cannot know which
+       model anyone wants to merge with, which is the whole decision v015
+       enables.
+    2. The report names the arbitrator each fan-out job will ACTUALLY merge
+       through. That means honouring the inheritance an omitted job really
+       gets: an unspelled `glossary` inherits the translator's WHOLE array, so
+       it fans out too even though the file never names it. v013 could not need
+       this because it only ever looked at the translator.
+    """
+    import json as _json
+
+    def make(root: Path, name: str, providers: dict, **extra) -> Path:
+        proj = root / name
+        proj.mkdir(parents=True)
+        (proj / "config.json").write_text(_json.dumps(
+            {"providers": providers, "version": 14, **extra},
+            indent=2) + "\n", encoding="utf-8")
+        return proj
+
+    two = [{"base_url": "http://a/v1", "model": "m1"},
+           {"base_url": "http://b/v1", "model": "m2"}]
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = root / "ship"
+        src.mkdir()
+
+        # A two-model translator: every other job inherits that array, so every
+        # other job fans out too -- all merging through the global arbitrator.
+        proj = make(root, "global", {"translator": two,
+                                     "consensus": {"base_url": "http://a/v1",
+                                                   "model": "global-arb"}})
+        before = (proj / "config.json").read_text(encoding="utf-8")
+        out = v015.migrate(proj, src)
+        report = "\n".join(out)
+        check("17a v015: the report names providers.consensus as the arbitrator",
+              "providers.consensus" in report, f"out={out}")
+        check("17a2 v015: with an explicit arbitrator the report is advisory "
+              "(never a [FAIL])",
+              not any(line.startswith("[FAIL]") for line in out), f"out={out}")
+        check("17b v015: it advertises the per-job key as the way to change it",
+              "consensus_<job>" in report, f"out={out}")
+        check("17c v015: config.json is byte-identical (report-only)",
+              before == (proj / "config.json").read_text(encoding="utf-8"),
+              "config.json was rewritten")
+        check("17d v015: idempotent -- a second run reports the same thing",
+              v015.migrate(proj, src) == out, f"second run differs: {out!r}")
+
+        # The inheritance half: `glossary` is never named in this file, but it
+        # inherits the translator's array, so it really does merge -- and it
+        # merges through the global arbitrator.
+        check("17e v015: an unnamed job that inherits the translator's array is "
+              "reported as fanning out (it really does merge) -- all six here",
+              "glossary" in report and "6 fan-out job(s)" in report,
+              f"report={report}")
+
+        # A dedicated arbitrator is named as such, and the others are not
+        # silently folded in with it.
+        proj_ded = make(root, "dedicated", {
+            "translator": two,
+            "annotator": two,
+            "consensus": {"base_url": "http://a/v1", "model": "global-arb"},
+            "consensus_translator": {"base_url": "http://c/v1",
+                                     "model": "translator-arb"},
+        })
+        out_ded = v015.migrate(proj_ded, src)
+        ded = "\n".join(out_ded)
+        check("17f v015: a dedicated arbitrator is named with its own key",
+              "providers.consensus_translator" in ded, f"out={out_ded}")
+        check("17g v015: the jobs still on the global are listed separately",
+              "annotator" in ded and "providers.consensus" in ded, f"out={out_ded}")
+        check("17h v015: still report-only",
+              _json.loads((proj_ded / "config.json").read_text(
+                  encoding="utf-8"))["providers"]["consensus_translator"]
+              == {"base_url": "http://c/v1", "model": "translator-arb"},
+              "config.json was rewritten")
+
+        # A single-model translator never fans out, so no arbitrator is needed
+        # and none is reported.
+        proj_single = make(root, "single", {
+            "translator": [{"base_url": "http://a/v1", "model": "m1"}]})
+        out_single = v015.migrate(proj_single, src)
+        check("17i v015: a single-block translator reports no merge and no "
+              "arbitrator to choose",
+              any(line.startswith("[ok]") and "no job fans out" in line
+                  for line in out_single)
+              and not any(line.startswith("[warn]") for line in out_single),
+              f"out={out_single}")
+
+        # v013's cap check, aimed at the arbitrator that will actually be used:
+        # with a dedicated translator arbitrator, it is THAT block that matters,
+        # not the global one it inherits from.
+        proj_cap = make(root, "cap", {
+            "translator": two,
+            "consensus": {"base_url": "http://a/v1", "model": "g",
+                          "max_tokens": 256000},
+            "consensus_translator": {"base_url": "http://c/v1",
+                                     "model": "translator-arb",
+                                     "max_tokens": 128000},
+        }, translate_max_output_tokens=256000)
+        out_cap = v015.migrate(proj_cap, src)
+        cap = "\n".join(out_cap)
+        check("17j v015: the cap check is aimed at providers.consensus_translator, "
+              "not the global block it no longer uses",
+              "providers.consensus_translator" in cap and "128000" in cap,
+              f"out={out_cap}")
+        check("17k v015: the global block, which is unused for the translator, "
+              "is not the one reported",
+              not any("providers.consensus will be sent" in line
+                      for line in out_cap), f"out={out_cap}")
+
+        # The BLOCKING condition: a fan-out with no authored `consensus` is
+        # refused at load from v015, so the migration predicts a run that will
+        # not start. It is a [FAIL] for that reason -- an [info] or [ok] here
+        # would understate a hard stop. It must NOT rewrite: auto-writing a
+        # consensus block from translator[0] would re-create on disk the exact
+        # inference the rule forbids.
+        proj_blocked = make(root, "blocked", {"translator": two})
+        before_blocked = (proj_blocked / "config.json").read_text(encoding="utf-8")
+        out_blocked = v015.migrate(proj_blocked, src)
+        blocked = "\n".join(out_blocked)
+        check("17n v015: a fan-out with no consensus is reported as a [FAIL]",
+              any(line.startswith("[FAIL]") for line in out_blocked)
+              and "providers.consensus is not set" in blocked,
+              f"out={out_blocked}")
+        check("17o v015: the [FAIL] names every job that fans out, including the "
+              "ones the file never mentions (they inherit the array)",
+              all(j in blocked for j in ("translator", "glossary", "reviewer",
+                                         "annotator", "recap", "profile")),
+              f"report={blocked}")
+        check("17p v015: the [FAIL] gives both remedies and predicts the refusal",
+              "add providers.consensus" in blocked.lower()
+              and "single provider block" in blocked
+              and "refuses to start" in blocked, f"report={blocked}")
+        check("17q v015: it does NOT invent a consensus block (that would write "
+              "the forbidden inference to disk)",
+              before_blocked == (proj_blocked / "config.json").read_text(
+                  encoding="utf-8")
+              and "consensus" not in _json.loads(
+                  (proj_blocked / "config.json").read_text(
+                      encoding="utf-8"))["providers"],
+              "config.json was rewritten")
+
+        # A single-model translator fans nothing out, so no arbitrator is needed
+        # and the blocking [FAIL] must not fire.
+        proj_ok_block = make(root, "okblock", {
+            "translator": [{"base_url": "http://a/v1", "model": "m0"}]})
+        out_ok_block = v015.migrate(proj_ok_block, src)
+        check("17r v015: a single-block job with no consensus is not a [FAIL] "
+              "(consensus only blocks when it is needed)",
+              not any(line.startswith("[FAIL]") for line in out_ok_block)
+              and any(line.startswith("[ok]") for line in out_ok_block),
+              f"out={out_ok_block}")
+
+        # A legacy bare-dict provider block must not raise.
+        proj_legacy = make(root, "legacy",
+                           {"translator": {"base_url": "http://a/v1",
+                                           "model": "m0"},
+                            "consensus_translator": {"base_url": "http://c/v1",
+                                                     "model": "t-arb"}})
+        out_legacy = v015.migrate(proj_legacy, src)
+        check("17l v015: a legacy single-dict block is tolerated (it cannot fan "
+              "out, so there is no merge to report)",
+              any(line.startswith("[ok]") for line in out_legacy),
+              f"out={out_legacy}")
+
+        # A corrupt config is v001's business: report the skip, do not raise.
+        proj_bad = root / "bad"
+        proj_bad.mkdir()
+        (proj_bad / "config.json").write_text("{not json", encoding="utf-8")
+        out_bad = v015.migrate(proj_bad, src)
+        check("17m v015: an unreadable config.json reports a skip, not a raise",
+              any(line.startswith("[warn]") and "not readable" in line
+                  for line in out_bad), f"out={out_bad}")
+
+
 def main() -> int:
     # CJK output must survive non-UTF-8 consoles/pipes (e.g. Windows cp1252)
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -1855,6 +2045,7 @@ def main() -> int:
     case_14_v012()
     case_15_v013()
     case_16_v014()
+    case_17_v015()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

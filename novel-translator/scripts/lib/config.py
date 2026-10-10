@@ -5,6 +5,21 @@ from pathlib import Path
 
 PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "profile", "consensus")
 
+# A per-job arbitrator is authored as a SIBLING key, `consensus_<job>`:
+# `providers.consensus_translator` is the model that merges the translator's
+# candidates, `providers.consensus_annotator` the one that merges the
+# annotator's. An ABSENT key resolves to `providers.consensus`, the global
+# arbitrator, so a project that authors none behaves exactly as it did before
+# per-job arbitrators existed -- that fallback is the whole backward-compat
+# contract.
+#
+# The jobs that may carry a suffix. `consensus` is excluded deliberately: it is
+# the global arbitrator, it can never hold two blocks (see _normalize_providers),
+# and consensus.chat is never called with job="consensus", so
+# `consensus_consensus` would be accepted, normalized, and then read by nothing.
+CONSENSUS_PREFIX = "consensus_"
+CONSENSUS_JOBS = tuple(j for j in PROVIDER_JOBS if j != "consensus")
+
 DEFAULTS: dict = {
     "seed_min_count": 3,
     # Minimum novel-wide occurrences for a glossary-expansion proposal to be
@@ -188,6 +203,49 @@ def _with_defaults(job: str, element: dict) -> dict:
     return merged
 
 
+def _normalize_per_job_consensus(providers: dict, normalized: dict) -> None:
+    """Validate and shape-normalize every authored `consensus_<job>` key into
+    `normalized`, WITHOUT pre-filling its keys.
+
+    Shape (dict -> one-element list, exactly one block) is normalized here for a
+    reason beyond hygiene: the run_start event snapshots `provider_jobs` by
+    filtering `isinstance(blocks, list)` (translate.py), so a bare-dict
+    `consensus_translator` would silently drop out of the run ledger -- and the
+    run ledger is where an operator reads which model arbitrated the translator.
+
+    The keys are deliberately NOT filled. consensus_provider() layers the
+    defaults at READ time instead, because the test suite -- and any in-process
+    caller -- hands consensus.chat a hand-built cfg that never passed through
+    load_config. Resolving at read time keeps one cfg resolving identically
+    however it was built; pre-filling here would make the two worlds disagree.
+
+    Mutates `normalized`; returns nothing.
+    """
+    for key in providers:
+        if not key.startswith(CONSENSUS_PREFIX):
+            continue
+        job = key[len(CONSENSUS_PREFIX):]
+        if job not in CONSENSUS_JOBS:
+            # Reachable by a one-character typo on the exact key this feature
+            # introduces, and the consequence of letting it through is a silent
+            # no-op: an unrecognized providers key passes straight through
+            # untouched, nothing ever reads it, and the job quietly keeps
+            # merging through the global arbitrator.
+            raise ValueError(
+                f"providers.{key} names no job: expected "
+                f"{CONSENSUS_PREFIX}<job> where <job> is one of "
+                f"{', '.join(CONSENSUS_JOBS)}")
+        blocks = _provider_blocks(providers, key)
+        if blocks is None:
+            continue
+        if len(blocks) > 1:
+            # Same invariant as the global consensus job: the arbitrator
+            # synthesizes ONE final response, so it is exactly one model.
+            raise ValueError(
+                f"providers.{key} must list exactly one model (got {len(blocks)})")
+        normalized[key] = blocks
+
+
 def _normalize_providers(providers: dict) -> dict:
     """Guarantee every job in PROVIDER_JOBS exists as a LIST of provider
     blocks with every default key filled.
@@ -208,7 +266,11 @@ def _normalize_providers(providers: dict) -> dict:
     hard-coded DEFAULT_BASE_URL. An explicitly authored consensus array
     with more than one block is rejected; inherited consensus is always
     exactly one block, so legacy configs can never trip that check.
-    Unknown extra jobs pass through untouched.
+    An authored `consensus_<job>` key (a per-job arbitrator -- see
+    CONSENSUS_PREFIX) is shape-normalized by _normalize_per_job_consensus and
+    left otherwise alone: it inherits nothing here, so an ABSENT key resolves
+    to the global arbitrator at read time via consensus_provider. Unknown extra
+    jobs pass through untouched.
     """
     translator = _provider_blocks(providers, "translator")
     normalized: dict[str, list[dict]] = {}
@@ -230,10 +292,55 @@ def _normalize_providers(providers: dict) -> dict:
             raise ValueError(
                 f"providers.consensus must list exactly one model (got {len(authored)})")
         normalized[job] = [_with_defaults(job, element) for element in authored]
+    _require_consensus_when_fanning_out(providers, normalized)
+    _normalize_per_job_consensus(providers, normalized)
     for key, value in providers.items():
         if key not in normalized:
             normalized[key] = value
     return normalized
+
+
+def _require_consensus_when_fanning_out(providers: dict,
+                                        normalized: dict) -> None:
+    """Refuse a config that fans out without authoring `providers.consensus`.
+
+    A multi-block job merges its candidates through ONE arbitrator call, so the
+    job that decides the final translation has to be chosen, not inferred. When
+    `consensus` is unauthored the fallback is derived from
+    `providers.translator[0]` (see the branch above), which quietly sends every
+    merge -- to translator[0]'s endpoint, with its model, temperature,
+    max_tokens, max_tokens_limit and extra_body -- and, in a translator array
+    of two or more, that is a model judging the very candidates it is being
+    handed. Inference must not decide where a paid merge call goes.
+
+    Scoped to fan-out only. With every job at a single block nothing merges, so
+    the fallback is never reached and the config loads unchanged -- a `consensus`
+    key is required exactly when one is needed, and not before.
+
+    Authorship is read from the RAW `providers`, never from `normalized`: the
+    loop above materializes `consensus` for every config, so the normalized dict
+    cannot distinguish "you wrote this" from "I filled this in for you". The
+    fan-out set IS read from `normalized`, because omitted jobs inherit the
+    translator's whole array -- a two-block translator means all six jobs fan
+    out, and the message must name all six.
+
+    Mutates nothing; raises ValueError, which load_config already surfaces as
+    `[FAIL] cannot read config.json: ...` (exit 2) and which apply_overlay
+    already validates before writing anything -- so this both refuses the run
+    and leaves the no-lockout repair path open: an overlay that ADDS `consensus`
+    merges into a valid config and applies cleanly.
+    """
+    if "consensus" in providers:
+        return
+    fanned = sorted(job for job in CONSENSUS_JOBS
+                    if len(normalized.get(job) or ()) > 1)
+    if not fanned:
+        return
+    raise ValueError(
+        f"providers.consensus is required because {len(fanned)} job(s) fan out "
+        f"to more than one model ({', '.join(fanned)}) and no consensus "
+        f"provider is set. Add providers.consensus explicitly, or give those "
+        f"jobs a single provider block.")
 
 
 def load_config(project_dir: Path) -> dict:
@@ -457,6 +564,52 @@ def provider_list(cfg: dict, job: str) -> list:
     working."""
     blocks = cfg["providers"][job]
     return [blocks] if isinstance(blocks, dict) else blocks
+
+
+def consensus_provider(cfg: dict, job: str) -> dict:
+    """The single arbitrator that merges `job`'s fan-out candidates.
+
+    Three layers, bottom-up, each filling only the keys the layer above left
+    unset -- the same per-key semantics as _with_defaults:
+
+        PROVIDER_DEFAULTS["consensus"]
+        <- the resolved providers.consensus block (the global arbitrator)
+        <- the authored providers.consensus_<job> block
+
+    When `consensus_<job>` is absent the global block is returned UNCHANGED --
+    the same dict object, not a copy -- which is what makes a project that
+    authors no per-job arbitrator behave exactly as it did before this existed
+    (tests/test_consensus.py case (b2) asserts that identity).
+
+    Why the layer is the RESOLVED global and not PROVIDER_DEFAULTS: a user who
+    writes {"model": "big-arbiter"} and nothing else must keep their working
+    base_url and auth. Filling from the defaults instead would silently re-point
+    the merge at the hard-coded DEFAULT_BASE_URL -- the exact failure
+    merge_overlay exists to prevent ("a partial overlay must never quietly
+    un-point a working provider").
+
+    Resolved at READ time rather than in _normalize_providers, because the test
+    suite and any in-process caller hand consensus.chat a hand-built cfg that
+    never passed through load_config; resolving here keeps one cfg resolving
+    identically however it was built. That is also why the normalizer stores
+    `consensus_<job>` WITHOUT pre-filled keys.
+
+    The optional key is read through _provider_blocks rather than
+    provider_list so a malformed value raises the same contractual ValueError
+    the other provider keys raise, with this key's own name in the message,
+    instead of failing later as an IndexError. A cfg with no `consensus` key at
+    all raises KeyError from provider() exactly as before: load_config
+    guarantees the key, so that is reachable only from a hand-built cfg, where
+    falling back to the defaults would aim the merge at the hard-coded
+    DEFAULT_BASE_URL instead of failing loudly.
+    """
+    blocks = _provider_blocks(cfg["providers"], CONSENSUS_PREFIX + job)
+    if not blocks:
+        return provider(cfg, "consensus")
+    merged = dict(PROVIDER_DEFAULTS["consensus"])
+    merged.update(provider(cfg, "consensus"))
+    merged.update(blocks[0])
+    return merged
 
 
 def block_cap(block: dict) -> int:

@@ -287,7 +287,65 @@ LLM call.
   when omitted it inherits only the translator's FIRST block (that
   block's authored keys win; the consensus temperature 0.2 applies only
   when the block leaves it unset), and an explicitly authored multi-block
-  consensus array is rejected at load.
+  consensus array is rejected at load. That derivation is a safety net rather
+  than a live route — a config that actually fans out must author `consensus`
+  (see below), and one that does not fan out never reaches an arbitrator.
+- **Per-job arbitrators — `providers.consensus_<job>` (v015).** The arbitrator
+  is resolved **per job**, so two fan-out jobs can merge through two different
+  models. An optional sibling key `consensus_<job>` overrides the global
+  `consensus` block for that one job's merge — `<job>` being any of
+  `translator`, `glossary`, `reviewer`, `annotator`, `recap`, `profile`
+  (`consensus` itself is excluded: it is the global arbitrator and never merges
+  candidates of its own). A partial block merges KEY-WISE onto the resolved
+  global block, so `{"model": "big-arbiter"}` keeps the global's `base_url`,
+  `api_key_env` and sampling knobs and overrides only the model — a partial
+  override can never quietly re-point a working provider at the hard-coded
+  `DEFAULT_BASE_URL`. **An absent `consensus_<job>` resolves to the global block
+  unchanged**, so a project that authors none behaves exactly as it did before
+  v015. Resolution order, bottom-up: `PROVIDER_DEFAULTS["consensus"]` ← the
+  resolved `providers.consensus` ← the authored `providers.consensus_<job>`.
+  `consensus_<job>` is shape-normalized at load (a bare block object → a
+  one-element array, so it stays visible in the run ledger's `provider_jobs`
+  snapshot) but its keys are **not** pre-filled: resolution happens at read
+  time, so a hand-built cfg resolves identically to a loaded one. Errors:
+  a two-block `consensus_<job>` raises `providers.consensus_<job> must list
+  exactly one model (got {n})`; a suffix that names no job raises rather than
+  passing through untouched and silently never being read.
+- **`consensus` is REQUIRED the moment any job fans out (v015).** A config with
+  two or more blocks in any job and no authored `providers.consensus` is
+  REFUSED at load (`[FAIL] cannot read config.json: providers.consensus is
+  required because 6 job(s) fan out to more than one model (annotator,
+  glossary, profile, recap, reviewer, translator) and no consensus provider is
+  set. Add providers.consensus explicitly, or give those jobs a single
+  provider block.`, exit 2). Inference must not decide where a paid merge
+  call goes: with `consensus` unauthored the fallback is derived from
+  `providers.translator[0]` — its endpoint, model, temperature, `max_tokens`,
+  `max_tokens_limit` and `extra_body` — so in a two-model translator array
+  every merge would silently be synthesized by one of the models it is
+  judging. Scoped to fan-out: with every job at a single block nothing merges,
+  no arbitrator is ever called, and the config loads unchanged.
+  - Authorship is read from the **raw** file, never the normalized one —
+    `_normalize_providers` materializes `consensus` for every config, so the
+    loaded dict cannot tell authored from derived. The fan-out list IS computed
+    on the normalized dict, which is why it names all six jobs even when the
+    file spells out only `translator`.
+  - A `consensus_<job>` key does **not** substitute for the global: with one
+    authored and no `consensus`, the load is still refused.
+  - **The `consensus` <- `translator[0]` derivation is no longer reachable
+    through `load_config`** — a config that fans out must author `consensus`,
+    and one that does not fan out never reaches an arbitrator. The derivation
+    is kept rather than deleted, because `consensus_provider`'s absent-key path
+    calls `provider(cfg, "consensus")` and a hand-built cfg bypasses
+    `load_config` entirely; deleting it would trade a harmless fallback for a
+    `KeyError`. Read it as a safety net, not a routing rule.
+  - No lockout: `sync-config` validates the MERGED config, so an overlay that
+    *adds* `providers.consensus` applies cleanly and repairs the project. `ping` probes each
+  in-force arbitrator under the label `consensus(<job>)`, deduplicated against
+  the blocks already probed — a project with no per-job key prints exactly the
+  same lines it always did. Note that the arbitrator is deliberately NOT part of
+  the chapter packing budget (see `max_tokens_limit` below): `provider_max` is
+  computed from the translator's own blocks, so a deliberately small
+  `consensus_translator` bounds the *merge*, not the chapter.
 - **`max_tokens_limit` — the provider's HARD ceiling (v013).** A provider block
   may declare the largest `max_tokens` its endpoint accepts. Absent, it is
   exactly `max_tokens` and nothing changes; present, it is a ceiling on EVERY
@@ -309,7 +367,13 @@ LLM call.
   - The consensus job inherits `translator[0]`'s authored keys when it is not
     authored itself, so a limit on the translator's first block also bounds an
     inherited consensus block that may point at a different provider. Set the
-    key explicitly on the consensus block when the two differ.
+    key explicitly on the consensus block when the two differ. Under v015 the
+    same holds one level down: a partial `consensus_<job>` inherits the global
+    arbitrator's `max_tokens_limit`, so a limit declared only on
+    `providers.consensus` also bounds every per-job arbitrator that does not
+    override it. A per-job arbitrator that overrides `max_tokens` but not
+    `max_tokens_limit` keeps the inherited limit — declare it explicitly there
+    too when the provider's real ceiling differs.
 - **Sampling knobs**: `temperature` and `top_p` (plus optional `top_k`,
   `repetition_penalty`) are per-provider and passed through to the server.
   Only `translator` carries `top_p` by default (1.0, per the model card);
@@ -333,7 +397,17 @@ LLM call.
   exit 2), with one of four messages — `providers.{job} must be a provider
   block (object) or an array of blocks`, `providers.{job} must not be an
   empty array`, `providers.{job}[{i}] must be an object`, and
-  `providers.consensus must list exactly one model (got {n})`.
+  `providers.consensus must list exactly one model (got {n})`. A per-job
+  arbitrator `providers.consensus_<job>` raises the same four with its own key
+  name substituted (so `providers.consensus_translator must not be an empty
+  array`), and additionally raises `providers.consensus_<job> must list exactly
+  one model (got {n})` for a two-block arbitrator, or
+  `providers.consensus_<job> names no job: expected consensus_<job> where
+  <job> is one of ...` for a suffix that is not a real job. The last one is
+  deliberate rather than a pass-through: an unrecognized providers key is
+  otherwise carried through untouched, so a typo'd suffix would load cleanly,
+  be read by nothing, and leave that job quietly merging through the global
+  arbitrator.
 - A translator `max_tokens` below `translate_max_output_tokens` is a SUPPORTED
   configuration since v012, not a defect: the block's own limit wins. Each
   translator block's `max_tokens` is a hard ceiling the pipeline may lower but
@@ -384,7 +458,11 @@ a JSON object or whose `providers` is not an object. Both are shape-checked
 before the merge, so a refused sync leaves the project's `config.json`
 byte-identical. A `providers.<job>` block of the wrong shape inside an
 otherwise well-formed overlay (an empty array, an array of non-objects, two
-`consensus` blocks) is likewise rejected before anything is written.
+`consensus` blocks) is likewise rejected before anything is written. A
+`consensus_<job>` key in an overlay is an ordinary provider key: absent in the
+project it is added whole, present as a single block OBJECT it merges key-wise
+into the existing block, and given as a two-block ARRAY it is rejected for the
+same exactly-one-arbitrator reason as `consensus` itself.
 
 Merge rules: objects and scalars merge key-by-key; a `providers.<job>`
 given as an ARRAY replaces that job's blocks wholesale, while a single block
@@ -1045,6 +1123,39 @@ number that will go on the wire and the declared one beside it, says the shape
 is supported, and says nothing was rewritten. A block that already declares
 `max_tokens_limit` reports `[ok]` and is left alone, and so does a single-block
 translator, which never fans out and therefore never calls a consensus provider.
+`v015` (DESCRIPTION: `a fan-out job can name its own arbitrator:
+providers.consensus_<job> overrides providers.consensus for that job's merge;
+report which arbitrator each fan-out job resolves to`) is **report-only** and
+rewrites nothing, on v012's and v013's reasoning: no value on disk is wrong that
+was right before, and the migration cannot know which model anyone wants to
+merge with — that choice IS what this step enables. It adds no key to `DEFAULTS`
+or `PROVIDER_DEFAULTS`, so there is nothing to materialize; the change lives
+entirely inside `providers`, like v008's, and is authoritative by v008's
+precedent. Materializing the new keys was explicitly rejected: a config would
+carry six dead blocks duplicating the global arbitrator's `base_url` and auth,
+and changing the global later would leave stale copies silently winning for
+the jobs that had them. What it reports is the one fact the operator cannot see
+without reading the file — which arbitrator each fan-out job will merge through,
+`providers.consensus_<job>` where authored and `providers.consensus` otherwise —
+split by severity, and the split is the point. A config that **fans out without
+an authored `consensus`** is REFUSED at load from v015, so that case is a
+`[FAIL]`: it predicts a run that will not start, and an `[info]` or `[ok]` would
+understate a hard stop. It names every job that fans out, offers both remedies,
+and **does not rewrite** — auto-writing a `consensus` block from `translator[0]`
+would re-create on disk, silently and with nothing to explain it, the exact
+inference the rule forbids; that number is the operator's choice to make. Every
+other case stays advisory `[ok]`/`[info]`.
+Resolving that map requires honouring the inheritance a real load would apply:
+a job omitted from the file inherits the translator's WHOLE array, so it fans
+out too even though the file never names it, and a job with one block never
+merges at all. v013 did not need this, because it only ever examined the
+translator. v013 itself is left reading the raw `providers.consensus`: the chain
+is version-stamped and never re-runs, so a config sitting at v013 cannot contain
+a v015-era key unless hand-written before upgrading, and v015's own report is
+the authoritative one. v015 also re-aims v013's `max_tokens_limit` check at the
+arbitrator that will actually be used rather than the global one, which a
+dedicated key may have displaced. Idempotent by construction: it reads, reports,
+writes nothing.
 `v012` (DESCRIPTION: `decouple translate_max_output_tokens from provider
 max_tokens (the key is now a ceiling a block can lower, not an override; report
 mismatched translator pairs)`) is **report-only** and rewrites nothing. It reads

@@ -273,7 +273,11 @@ def case_f_provider_max_floor() -> None:
                 {"base_url": "http://fake:1/v1", "model": "m1",
                  "max_tokens": 256000},
                 {"base_url": "http://fake:1/v1", "model": "m2"},
-            ]}
+            ],
+                # A two-block translator fans out, so the arbitrator must be
+                # named explicitly or load_config refuses (v015). This case is
+                # about max_tokens defaults, not about consensus.
+                "consensus": {"base_url": "http://fake:1/v1", "model": "arb"}}
         }, indent=2) + "\n", encoding="utf-8")
         cfg = config.load_config(proj)
         blocks = config.provider_list(cfg, "translator")
