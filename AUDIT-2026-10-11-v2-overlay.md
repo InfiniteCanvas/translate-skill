@@ -186,3 +186,42 @@ goal is rewritten to be decidable (A6), `style.md` is explicitly scoped out
 
 Two of these (A1, A2) would have shipped as runtime failures on every existing
 project — the class of defect this loop exists to catch before merge.
+
+---
+
+## P2 — isolated checkout bootstrap (2026-10-11)
+
+**Checkout:** `D:/Repos/vibed/translate-skill-wt-v2-overlay`
+**Branch:** `scratch/v2-overlay`, branched from the working-branch tip `913dc01`.
+**Commit:** `f5d7525` — *"docs: v2 overlay plan + P1 static audit round; track
+the verification loop"*, carrying `PLAN-2026-10-11-v2-overlay.md`,
+`AUDIT-2026-10-11-v2-overlay.md` and `workflows/verification-loop.md`. All three
+were untracked in the main tree and do not travel to a checkout otherwise
+(`workflows/verification-loop.md` §P2 bullet 2).
+
+### Vacuous-green probe (§3) — run once for this checkout shape
+
+| Probe | Command | Expected | Observed |
+|---|---|---|---|
+| nonexistent suite | `uv run <abs>\tests\definitely_nonexistent.py` from `D:\` | exit 2, loud | **exit 2**, `error: Failed to spawn` |
+| one real suite by absolute path | `uv run <abs>\tests\test_main_exit_codes.py` from `D:\` | passes | **32 passed, 0 failed**, exit 0 |
+
+### Baseline gate in the checkout
+
+`uv run tests/run_all.py` → **50 passed, 0 failed (50 scripts, 2362 checks)**,
+exit 0, **59.4s**. Matches the main-tree baseline (2362 checks), confirming the
+checkout is a faithful branch point and not a degraded one.
+
+### Untracked state (§6) — checked, nothing to copy
+
+- `novel-translator/config.local.json` — **absent in both trees.** Nothing to
+  copy. **Carry into D1:** the phase touches provider resolution, and this file
+  is the only untracked state that can affect it. Whoever implements D1 should
+  create one before the round, or state explicitly that D1 is verified without
+  layer 1 exercised (the `apply_overlay` removal and the raw-reader fix are then
+  only covered by the migrated-project checks, not by a live layer-1 run).
+- `probe-artifacts/`, `.zcode/` — absent in the checkout, expected, and no suite
+  depends on either.
+
+The checkout working tree is clean at `f5d7525`; the main tree is untouched by
+this bootstrap (`scripts/` and `tests/` still byte-identical to `913dc01`).
