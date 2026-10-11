@@ -371,3 +371,86 @@ Scope is `novel-translator/` + `tests/` only, so the orchestrator's own
 `PLAN-*.md` / `AUDIT-*.md` writes in the main tree never false-positive.
 Wired into `workflows/verification-loop.md` (§P2 record, §P3 step 0 verify) and
 `AGENTS.md`. Gate re-confirmed at 2399 checks after the addition.
+
+---
+
+## P3 D2 — templates, per-job consensus arbitration
+
+**Commits:** `6a1d2b7` (implementation, 17 files, +650/−60) → `662e67c`
+(audit fixes). Not merged.
+
+### Gate
+
+| Point | Result |
+|---|---|
+| baseline `9f1d7cd` | 50 suites, 2399 checks |
+| after D2 `6a1d2b7` | 50 suites, **2401** checks |
+| after fix round `662e67c` | **51 suites, 2435 checks**, 0 failed, 59.8s |
+
+Script count moves 50 → 51: a new suite `tests/test_template_assets.py` was added
+and `run_all.py` globs `test_*.py`, so it is auto-discovered.
+
+### The orphaning risk, closed — verified independently
+
+`.history.json` seeds **17 templates / 35 hashes**. Orchestrator re-derived it
+rather than trusting the report:
+
+- every shipped template's current sha256 is recorded (0 missing);
+- **all 35 hashes trace to a real `git cat-file` blob** — 0 untraceable;
+- per-template depth is real (`glossary_cleanup.md` 5, `tn_generate.md` 5,
+  `faithfulness.md` 4, `translation.md` 2 — matching audit §A5).
+
+Verification used real MiniMax calls, not mocks: 26 provider requests, 5
+arbitration calls all through `consensus_translator.md`, `recap` single-block
+loading none. `init` copies 0 templates. `v017` deletes 15 unmodified copies,
+keeps 2 customizations, reports nothing on a second run.
+
+### Audit round — verdict `goal_holds: true`, with one evidentiary caveat
+
+Three findings, all about honesty and coverage rather than behavior:
+`_resolve_template`'s docstring made a **false** claim about pre-D2
+customizations surviving; `v017` was **destructive with no test at all**; and the
+`AGENTS.md` rule that `.history.json` edits need a migration was enforced by
+nothing.
+
+**Evidentiary caveat — the audit ruled "not a violation" partly on grounds that
+were circular.** It cited `tests/test_consensus.py:533` as proof the precedence
+is "the maintainer's desired spec". That test was **written in `6a1d2b7`**, by
+the implementer whose behavior was under audit — its own assertion cited back
+as independent evidence. The audit's linguistic reading of "falling back to"
+may still be correct, but that particular corroboration is not independent.
+
+The maintainer resolved the precedence directly from user impact: **per-job name
+wins, current order kept, consequence documented.** No code change.
+
+### Fix round — all four findings fixed
+
+The fix round **declined to run the gate**, citing its role contract
+("implementers never run the gates" — `workflows/verification-loop.md` §P3).
+That is correct behaviour and the orchestrator's brief was wrong to ask for a
+gate line; the gate was run by the orchestrator instead.
+
+- **F1** — the false docstring removed; the real precedence and its consequence
+  now stated in `lib/consensus.py` (function **and** module docstring, both of
+  which carried the claim).
+- **F2** — `case_19_v017` added (10 checks): deletion, customization preserved,
+  `--dry-run`, missing/malformed history safe-default, idempotency, plus
+  `--force` inert and byte-identity-over-filename.
+- **F3** — `tests/test_template_assets.py` (24 checks) asserts every shipped
+  template's current sha256 is recorded.
+- **F4** — `file-formats.md` normative section, its table row, and SKILL.md all
+  corrected. README.md needed no change (checked, not assumed).
+
+### Mutation-tested, because a passing new test proves nothing
+
+F3's suite was verified to actually bite:
+
+| Mutation | Result |
+|---|---|
+| drop `translation.md`'s **current** hash | **3 checks fail**, exit 1 |
+| restore | 24 passed, exit 0 |
+| drop only **historical** hashes | passes — correct, that is not the invariant |
+
+The first attempt at this check mutated the wrong thing and passed; the invariant
+guards the current revision, so the mutation had to target that. A test that
+cannot fail is worse than no test, and this one was made to fail on purpose.
