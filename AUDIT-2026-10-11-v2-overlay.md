@@ -249,3 +249,103 @@ migration path.
 
 The checkout working tree is clean at `f5d7525`; the main tree is untouched by
 this bootstrap (`scripts/` and `tests/` still byte-identical to `913dc01`).
+
+---
+
+## P3 D1 — implementation, audit, fix round
+
+**Commits:** `d918504` (implementation, 32 files, +950/−308) → `a518806`
+(audit fixes, 7 files). Not merged.
+
+### Gate, run independently by the orchestrator
+
+| Point | Result |
+|---|---|
+| baseline at `9d53e2d` | 50 passed, 0 failed, **2362** checks, 59.4s |
+| after D1 implementation `d918504` | 50 passed, 0 failed, **2382** checks, 52.2s |
+| after fix round `a518806` | 50 passed, 0 failed, **2399** checks, 56.8s |
+
+The fix round re-derived the 2382 baseline itself (`git stash` → gate →
+`git stash pop`) rather than trusting the reported figure. Net +17 checks, no
+regression.
+
+### The goal's central claim, verified by direct inspection
+
+| Observable | Pre-D1 | Post-D1 |
+|---|---|---|
+| project `config.json` top-level keys | 27 | **3** (`source_lang`, `target_lang`, `version`) |
+| `minimax｜MINIMAX_API_KEY｜100.85.218.125` in the project file | 8 hits | **no matches** |
+| `ping` on an endpoint-less project | impossible | **all 7 jobs `[ok]` → MiniMax-M3** |
+
+Three-layer composition verified by running it: a project single-object
+override preserves layer 1's endpoint and applies its own value; an authored
+array replaces wholesale; v016 preserves a deliberate `thinking: true` and
+`temperature: 0.42`.
+
+### Audit round (`vt-auditor` on `minimax/MiniMax-M3`) — verdict `goal_holds: true`
+
+4 medium + 5 low. Orchestrator re-verified every medium finding at source
+before disposition:
+
+- **M1 CONFIRMED** — `_load_config_lenient` (`translate.py:138-156`) caught
+  `(OSError, ValueError)`, reached by 6 commands, while `file-formats.md` and
+  `SKILL.md` claimed a malformed overlay "fails EVERY command". Mirrors and
+  code contradicted each other.
+- **M2 CONFIRMED** — a v16 project with `[{}]` provider blocks and no overlay
+  could never run `migrate` again (`cmd_migrate` → `_load_config` →
+  `resolves no base_url` → exit 2). A migration requiring the thing it repairs.
+- **M3 CONFIRMED** — `cmd_init` wrote directories, `style.md` and a bare
+  `config.json`, *then* failed the endpoint check, leaving a half-built project.
+- **M4 CONFIRMED** — `SKILL.md`'s migrate walkthrough stopped at v014; v016, a
+  breaking change, appeared nowhere.
+
+Refuted by the implementer: the auditor's F8 (`AGENTS.md` rot) — the two
+statements already agreed, so no change was made.
+
+### Fix round outcome
+
+F1–F7 fixed; F8 correctly declined. Two findings the implementer surfaced
+beyond the brief:
+
+1. **F2b — the same trap one layer deeper, in the primary workflow.**
+   `materialize_config` loads without a skill root, so a *healthy* v5 project
+   whose endpoint lives only in the overlay died mid-chain at v007. Fixed with
+   a documented `require_base_url` flag; shape/JSON/consensus guards intact.
+2. **A rejected test deletion was reported honestly** — `case_3_apply_overlay`
+   was deleted with `apply_overlay` (F7), while `case_8`/`case_9`/`case_11`
+   were re-pointed at the live read path rather than deleted, and two
+   assertions changed meaning (post-D1 the project out-ranks the overlay).
+
+### Post-fix verification (orchestrator, live)
+
+| Check | Result |
+|---|---|
+| F2: v16 `[{}]` blocks, no overlay → `migrate` | **exit 0**, ran to completion |
+| F1: malformed overlay + existing project config → `glossary count` | **`[FAIL]` + exit 2**, names the file |
+| F3: `init` with neither `--api-base` nor overlay | **exit 2**, leaves only the user's `source/` |
+| Regression: normal `init` + `ping` | 3 authored keys, all 7 jobs reachable |
+
+One orchestrator test was itself **invalid on first run**: the F1 fixture
+omitted a project `config.json`, so `FileNotFoundError` was correctly tolerated
+and the command succeeded. Re-run with a config present, F1 fails as designed.
+Recorded because a harness that cannot distinguish "fixed" from "never fired"
+is worse than no harness.
+
+### Incident — working-tree contamination, detected and reversed
+
+`git status` in the main tree showed **7 modified test files** despite both
+implementers reporting the main tree untouched. Investigation: the session's
+first status check recorded only `M AGENTS.md`, and the 7 files were written at
+**08:08–08:09**, inside the first implementer's execution window. They carried
+D1-derived fixture edits (`{"providers": {}}` → an authored `base_url`) that
+were never committed to the branch, and differed from the branch's versions.
+
+Confirmed the authoritative versions were committed and green on the scratch
+branch, then `git restore`d the 7 files. Main tree is back to its pre-session
+state: `M AGENTS.md` (the user's own edit, preserved) plus the three untracked
+plan/audit/workflow docs.
+
+**Lesson for the loop:** "work only in the checkout" is an instruction, not a
+guarantee. Every phase boundary should re-check `git status` in the main tree.
+The check that caught it was incidental — run to inspect branch state, not to
+look for contamination.
