@@ -101,6 +101,80 @@ def count_in_target(entry: dict, lines: list[str], fuzzy_max: int = 2) -> int:
     return total
 
 
+def classify(entry: dict, src_count: int, translated_lines: list[str],
+             min_coverage: float = 0.25,
+             fuzzy_max: int = 2) -> tuple[str, int, int]:
+    """One glossary entry's balance verdict against a chapter's translation,
+    as (kind, tgt_count, floor).
+
+    kind is one of "skip", "drift", "under", "over" or "ok", and is MUTUALLY
+    EXCLUSIVE, in that order of precedence: an entry whose canonical rendering
+    is absent entirely is drift and never also counted as under-use, because
+    the pipeline reports it as an actionable omission while the under-use line
+    would describe the same absence as a soft heuristic.
+
+    "skip" covers the two entries the count is meaningless for -- a GUIDE_ONLY
+    category (injected as a rendering guide, never a verbatim obligation) and
+    an entry with no rendering to match.
+
+    This is the single definition of the usage floor,
+    `max(1, ceil(src_count * min_coverage))`, and of what counts as
+    contamination. check() reports its three severities from it, and
+    lib/verify.py's deterministic stage reads the same verdict through
+    underused(), so the pipeline's advisory balance and the whole-book verify
+    scan can never drift apart on what "under-used" means.
+    """
+    if entry.get("category") in GUIDE_ONLY_CATEGORIES:
+        return ("skip", 0, 0)
+    if not entry.get("translation"):
+        return ("skip", 0, 0)
+    tgt_count = count_in_target(entry, translated_lines, fuzzy_max)
+    floor = max(1, math.ceil(src_count * min_coverage))
+    if src_count >= 2 and tgt_count == 0:
+        return ("drift", tgt_count, floor)
+    if tgt_count < floor:
+        return ("under", tgt_count, floor)
+    if tgt_count - src_count > max(2, src_count):
+        return ("over", tgt_count, floor)
+    return ("ok", tgt_count, floor)
+
+
+def underused(pairs: list[tuple[dict, int]],
+              translated_lines: list[str], min_coverage: float = 0.25,
+              fuzzy_max: int = 2) -> list[dict]:
+    """The same rows check() warns about as possible under-use, as data.
+
+    One dict per entry classified "under" -- the canonical rendering present in
+    the source at least `src_count` times but rendered in the translation
+    fewer times than the usage floor. Dict keys: "source", "translation",
+    "src_count", "tgt_count", "floor".
+
+    This is the structured face of check()'s middle tier, for a caller that
+    must act on an under-used term rather than print it: lib/verify.py hands
+    each row to the model that decides whether forcing the pinned rendering
+    here would mistranslate, and it needs the counts to do that. Ordering is
+    check()'s, because both walk `pairs` once through classify().
+
+    Note what is NOT here: "drift" entries. An absent rendering is a separate,
+    already-actionable signal -- the FAITH reviewer owns it inside a translate
+    run -- so a whole-book scan asks the semantic question only about the
+    under-used ones, where the count is genuinely ambiguous."""
+    rows: list[dict] = []
+    for entry, src_count in pairs:
+        kind, tgt_count, floor = classify(entry, src_count, translated_lines,
+                                         min_coverage, fuzzy_max)
+        if kind != "under":
+            continue
+        rows.append({
+            "source": entry.get("source", ""),
+            "translation": entry.get("translation", ""),
+            "src_count": src_count,
+            "tgt_count": tgt_count,
+            "floor": floor,
+        })
+    return rows
+
+
 def check(pairs: list[tuple[dict, int]],
           translated_lines: list[str], min_coverage: float = 0.25,
           fuzzy_max: int = 2) -> tuple[list[dict], list[str], list[str]]:
@@ -115,7 +189,9 @@ def check(pairs: list[tuple[dict, int]],
 
     Entries whose category is in GUIDE_ONLY_CATEGORIES are skipped entirely:
     they are injected into the translation prompt as rendering guides, and
-    counting their short polysemous source strings is noise.
+    counting their short polysemous source strings is noise. Which tier an
+    entry falls into is decided by classify(), which lib/verify.py also reads,
+    so the two never disagree.
 
     Returns (drift_signals, warnings, over_count):
     - drift_signals (advisory, surfaced to the FAITH reviewer, who owns the
@@ -136,16 +212,13 @@ def check(pairs: list[tuple[dict, int]],
     warnings: list[str] = []
     over_count: list[str] = []
     for entry, src_count in pairs:
-        if entry.get("category") in GUIDE_ONLY_CATEGORIES:
+        kind, tgt_count, floor = classify(entry, src_count, translated_lines,
+                                         min_coverage, fuzzy_max)
+        if kind == "skip":
             continue
-        if not entry.get("translation"):
-            continue
-        tgt_count = count_in_target(entry, translated_lines, fuzzy_max)
-        floor = max(1, math.ceil(src_count * min_coverage))
-        extra = tgt_count - src_count
         term = entry.get("source", "")
         expected = entry.get("translation", "")
-        if src_count >= 2 and tgt_count == 0:
+        if kind == "drift":
             drift_signals.append({
                 "source": term,
                 "translation": expected,
@@ -159,12 +232,12 @@ def check(pairs: list[tuple[dict, int]],
                     "or vary it."
                 ),
             })
-        elif tgt_count < floor:
+        elif kind == "under":
             warnings.append(
                 f"'{term}' rendered {tgt_count}/{src_count} times "
                 f"(floor {floor}) — possible under-use."
             )
-        elif extra > max(2, src_count):
+        elif kind == "over":
             over_count.append(
                 f"'{term}' rendered {tgt_count}/{src_count} times "
                 f"(ceiling {src_count + max(2, src_count)}) — possible count "

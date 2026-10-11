@@ -22,7 +22,7 @@ values -- including ones already sitting under the new key names -- survive
 verbatim, a file missing exactly the new keys gets them reported and
 defaulted, a second identical run reports [] and writes nothing), and the
 real package's chain() == [v001 ... vNNN] with current_version() == NNN, the
-chain head (case 13k pins 17, the v017 head; v003's own behavior tests live in
+chain head (case 13k pins 18, the v018 head; v003's own behavior tests live in
 tests/test_git.py; only the chain shape is pinned here, plus v004's
 direct add-only materialize of min_term_occurrences mirroring the v002
 cases, and v005's direct templates-only sync -- config.json never
@@ -1425,9 +1425,9 @@ def case_13_v011() -> None:
               isinstance(v011.DESCRIPTION, str)
               and "\n" not in v011.DESCRIPTION, "")
 
-        check("13k v017 is the chain head",
-              migrations.chain()[-1].VERSION == 17
-              and migrations.current_version() == 17,
+        check("13k v018 is the chain head",
+              migrations.chain()[-1].VERSION == 18
+              and migrations.current_version() == 18,
               f"chain_head={migrations.chain()[-1].VERSION} "
               f"current={migrations.current_version()}")
 
@@ -1788,8 +1788,10 @@ def case_17_v015() -> None:
               v015.migrate(proj, src) == out, f"second run differs: {out!r}")
 
         check("17e v015: an unnamed job that inherits the translator's array is "
-              "reported as fanning out (it really does merge) -- all six here",
-              "glossary" in report and "6 fan-out job(s)" in report,
+              "reported as fanning out (it really does merge) -- every "
+              "CONSENSUS_JOBS member here",
+              "glossary" in report
+              and f"{len(config.CONSENSUS_JOBS)} fan-out job(s)" in report,
               f"report={report}")
 
         proj_ded = make(root, "dedicated", {

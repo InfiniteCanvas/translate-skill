@@ -17,7 +17,7 @@ recognize the value in an existing project's config.json and strip it."""
 import json
 from pathlib import Path
 
-PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "profile", "consensus")
+PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "profile", "verify", "consensus")
 
 CONSENSUS_PREFIX = "consensus_"
 CONSENSUS_JOBS = tuple(j for j in PROVIDER_JOBS if j != "consensus")
@@ -65,6 +65,7 @@ PROVIDER_DEFAULTS: dict[str, dict] = {
     "annotator": {"model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
     "recap": {"model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
     "profile": {"model": None, "temperature": 0.3, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "verify": {"model": None, "temperature": 0.0, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
     "consensus": {"model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
 }
 
@@ -222,8 +223,8 @@ def _require_consensus_when_fanning_out(providers: dict,
     loop above materializes `consensus` for every config, so the normalized dict
     cannot distinguish "you wrote this" from "I filled this in for you". The
     fan-out set IS read from `normalized`, because omitted jobs inherit the
-    translator's whole array -- a two-block translator means all six jobs fan
-    out, and the message must name all six.
+    translator's whole array -- a two-block translator means every
+    CONSENSUS_JOBS member fans out, and the message must name all of them.
 
     Mutates nothing; raises ValueError, which load_config already surfaces as
     `[FAIL] cannot read config.json: ...` (exit 2) -- so this both refuses the

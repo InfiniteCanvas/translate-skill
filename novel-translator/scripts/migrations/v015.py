@@ -53,6 +53,8 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+from lib import config
+
 from . import common
 
 VERSION = 15
@@ -60,7 +62,20 @@ DESCRIPTION = ("a fan-out job can name its own arbitrator: providers.consensus_<
                "overrides providers.consensus for that job's merge; report which "
                "arbitrator each fan-out job resolves to")
 
-_JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "profile")
+_JOBS = config.CONSENSUS_JOBS
+
+"""The jobs whose fan-out this step reports on, read from the CURRENT schema
+rather than frozen here.
+
+This step is report-only, so every line it prints is a claim about what will
+happen when the project runs with the code that ships today -- and that claim is
+only true while the list matches. A frozen tuple made v015 stop naming a job
+added later (v018 added `verify`), so a config whose translator fans out would
+have been told that fewer jobs merge than really do, and the
+`providers.consensus_<job>` key the report advertises would have been
+documented for a subset of the jobs that accept it. Deriving it keeps the
+report honest across schema additions; the step's behaviour for the six jobs it
+shipped with is unchanged."""
 
 _LIMIT_KEY = "max_tokens_limit"
 

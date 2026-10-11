@@ -373,7 +373,8 @@ stamp; `init` copies no defaults and no overlay values into it.
   is resolved **per job**, so two fan-out jobs can merge through two different
   models. An optional sibling key `consensus_<job>` overrides the global
   `consensus` block for that one job's merge — `<job>` being any of
-  `translator`, `glossary`, `reviewer`, `annotator`, `recap`, `profile`
+  `translator`, `glossary`, `reviewer`, `annotator`, `recap`, `profile`,
+  `verify`
   (`consensus` itself is excluded: it is the global arbitrator and never merges
   candidates of its own). A partial block merges KEY-WISE onto the resolved
   global block, so `{"model": "big-arbiter"}` keeps the global's `base_url`,
@@ -393,11 +394,12 @@ stamp; `init` copies no defaults and no overlay values into it.
 - **`consensus` is REQUIRED the moment any job fans out (v015).** A config with
   two or more blocks in any job and no authored `providers.consensus` is
   REFUSED at load (`[FAIL] cannot read config.json: providers.consensus is
-  required because 6 job(s) fan out to more than one model (annotator,
-  glossary, profile, recap, reviewer, translator) and no consensus provider is
-  set. Add providers.consensus explicitly, or give those jobs a single
-  provider block.`, exit 2). Inference must not decide where a paid merge
-  call goes: with `consensus` unauthored the fallback is derived from
+  required because N job(s) fan out to more than one model (annotator,
+  glossary, profile, recap, reviewer, translator, verify) and no consensus
+  provider is set. Add providers.consensus explicitly, or give those jobs a
+  single provider block.`, exit 2 — the message names every `CONSENSUS_JOBS`
+  member, so its list follows the schema). Inference must not decide where a
+  paid merge call goes: with `consensus` unauthored the fallback is derived from
   `providers.translator[0]` — its endpoint, model, temperature, `max_tokens`,
   `max_tokens_limit` and `extra_body` — so in a two-model translator array
   every merge would silently be synthesized by one of the models it is
@@ -1314,6 +1316,31 @@ ones. Those materialized copies are byte-identical to the shipped file by constr
 so v017 deletes exactly the ones that step wrote and keeps every customization —
 including one `--force` did not overwrite.
 
+`v018` (DESCRIPTION: `record the `verify` provider job added for `translate verify`
+(report-only: it inherits the translator's blocks until authored; nothing is
+rewritten)`) records `providers.verify`, the job `translate verify`'s stage 2
+spends calls on. A job named nowhere **inherits the translator's whole array**
+(`_normalize_providers`), so the new job resolves to working blocks without any
+project file changing — which is why the step writes nothing: materializing it
+would be exactly the pre-v016 behaviour the overlay chain removed (pinning one
+machine's endpoint into every project it touched, where it would then out-rank a
+later edit to `config.local.json`). It follows v012's report-only precedent
+rather than v007's: there is no old-default sentinel to match on, because unlike
+v012 even a threshold's MEANING did not shift — `verify` simply resolves an array
+it did not resolve before. The report names what the job resolves to, from the
+**raw** project file (a migration reads layers 0 and 2 only, so a line about "the
+endpoint it will use" would describe one machine's layering):
+
+```
+[ok] config: providers.verify is a new job (v018) - it inherits the translator's
+provider blocks until you author it; set providers.verify to point the whole-book
+drift scan at its own models, or providers.consensus_verify to arbitrate its
+fan-out differently.
+```
+
+A project that had already authored `providers.verify` gets a line saying so and
+is otherwise untouched.
+
 `v015` (DESCRIPTION: `a fan-out job can name its own arbitrator:
 providers.consensus_<job> overrides providers.consensus for that job's merge;
 report which arbitrator each fan-out job resolves to`) is **report-only** and
@@ -1339,7 +1366,10 @@ other case stays advisory `[ok]`/`[info]`.
 Resolving that map requires honouring the inheritance a real load would apply:
 a job omitted from the file inherits the translator's WHOLE array, so it fans
 out too even though the file never names it, and a job with one block never
-merges at all. v013 did not need this, because it only ever examined the
+merges at all. The set of jobs it walks is read from `config.CONSENSUS_JOBS`
+rather than frozen in the script, because every line this step prints is a claim
+about what will happen when the project runs with the code that ships today, and
+a frozen list would under-report a job added later (v018 added `verify`). v013 did not need this, because it only ever examined the
 translator. v013 itself is left reading the raw `providers.consensus`: the chain
 is version-stamped and never re-runs, so a config sitting at v013 cannot contain
 a v015-era key unless hand-written before upgrading, and v015's own report is
@@ -1745,6 +1775,41 @@ Flags are resolved once per invocation, not per event.
 Pre-v11 `llm-*.jsonl` files are never listed, never matched and never pruned;
 they are simply left alone.
 
+## `verify.jsonl` (whole-book glossary-drift scan)
+
+`translate verify` writes its own report at `logs/verify.jsonl` (`--out PATH`
+overrides it; a relative path resolves against the project directory). It is a
+**result artifact**, not a trace log: it is rewritten whole on every run, is not
+part of the two-tier scheme above, and is never indexed or pruned. It is
+appended to no index and read by no other command.
+
+One line per chapter **examined** — a chapter that has both `source/` and
+`translated/`, in chapter order. Clean chapters are included with empty
+`terms` and `findings`, so the file is the complete result set a later
+visualization is built from, not only its failures.
+
+```json
+{"chapter": "CHAPTER_0007.md",
+ "terms":   [{"source": "天道", "translation": "Heavenly Dao",
+              "src_count": 8, "tgt_count": 1, "floor": 2}],
+ "findings": [{"source": "天道", "pinned": "Heavenly Dao",
+               "source_count": 8, "rendered_count": 1, "floor": 2,
+               "mistranslates": true, "reason": "..."}],
+ "error": null}
+```
+
+| Key | Meaning |
+|---|---|
+| `chapter` | the chapter file name |
+| `terms` | **stage 1** — the under-used glossary terms the deterministic scan flagged on this chapter, one per row, with the counts it judged by (`floor` = `max(1, ceil(src_count × min_term_coverage))`) |
+| `findings` | **stage 2** — one verdict per term offered to the model, `mistranslates` carrying the verdict. Present only for a chapter stage 1 flagged; a term the model omitted appears in neither list |
+| `error` | the failure that stopped this chapter's stage 2, or `null` |
+
+`terms` and `findings` answer different questions and neither substitutes for
+the other: `terms` says the count looked low, `findings` says a model judged
+the sense. A chapter whose `terms` is non-empty and whose findings are all
+`mistranslates: false` was scanned and came back clean.
+
 ## Draft artifacts (`draft/`)
 
 For `CHAPTER_0001.md` the pipeline creates:
@@ -1886,6 +1951,7 @@ after filling — typos fail fast.
 | `glossary_merge.md` | glossary collision merge | `existing_json proposed_json` |
 | `glossary_cleanup.md` | balance drift-signal cleanup | `source_lang target_lang term_list sample_lines` |
 | `glossary_review.md` | `review glossary` model tier | `source_lang target_lang entries` |
+| `glossary_verify.md` | `verify` model tier (stage 2) | `source_lang target_lang chapter terms` |
 | `notes_review.md` | `review notes` model tier | `source_lang target_lang entries` |
 | `style_profile.md` | `--style auto` init / `profile` (legacy) | `source_lang target_lang sample_text` |
 | `consensus.md` | arbitration for a job with no `consensus_<job>.md` in either layer | `task_prompt candidates_section` |
@@ -1895,21 +1961,23 @@ after filling — typos fail fast.
 | `consensus_annotator.md` | arbitration for an `annotator` fan-out | `task_prompt candidates_section` |
 | `consensus_recap.md` | arbitration for a `recap` fan-out | `task_prompt candidates_section` |
 | `consensus_profile.md` | arbitration for a `profile` fan-out | `task_prompt candidates_section` |
+| `consensus_verify.md` | arbitration for a `verify` fan-out | `task_prompt candidates_section` |
 
-Each of the six jobs in `CONSENSUS_JOBS` that fans out (two or more provider
+Each job in `CONSENSUS_JOBS` that fans out (two or more provider
 blocks) resolves **its own** `consensus_<job>.md`, because what makes one
 candidate better is not the same question for each: a translation is judged on
 line-indexed structure and pinned terminology, a glossary entry on being
 grounded in the source, a reviewer finding on being grounded in the text it
-reviews. A project-local `consensus_<job>.md` beats the shipped one under the
+reviews, and a verify verdict on a sense the pinned rendering cannot carry. A
+project-local `consensus_<job>.md` beats the shipped one under the
 same overlay as every other prompt.
 
 The general `consensus.md` is reached only when `consensus_<job>.md` resolves
 in neither layer — when the project and the skill both have no file of that
 name, which is the `PipelineError` path. The skill ships
-`consensus_<job>.md` for every job in `CONSENSUS_JOBS`, so for all six of them
-the per-job name resolves and `consensus.md` is not read: a project's
-customized general `consensus.md` is bypassed for those six jobs. A job with a
+`consensus_<job>.md` for every job in `CONSENSUS_JOBS`, so the per-job name
+always resolves and `consensus.md` is not read: a project's
+customized general `consensus.md` is bypassed for every fan-out job. A job with a
 **single** provider block returns before any template is loaded, so it loads
 none.
 
@@ -2103,7 +2171,7 @@ Every command exits 0 on success. The non-zero exits:
 
 | Exit | Meaning |
 |---|---|
-| 1 | `translate` / `retry` — at least one chapter ended `needs-review`; `build-epub` — epubcheck reported errors (the epub failed validation); `review glossary` — warns remain after the run; `review fix` — at least one command failed, or the report was refused as stale; `glossary search` — nothing found; `glossary count` — below the significance threshold; `tn` — failed chapters (annotator call or unreadable chapter) or no eligible chapters in range; `profile` — generation failed |
+| 1 | `translate` / `retry` — at least one chapter ended `needs-review`; `build-epub` — epubcheck reported errors (the epub failed validation); `review glossary` — warns remain after the run; `review fix` — at least one command failed, or the report was refused as stale; `glossary search` — nothing found; `glossary count` — below the significance threshold; `tn` — failed chapters (annotator call or unreadable chapter) or no eligible chapters in range; `profile` — generation failed; `verify` — at least one chapter had glossary drift CONFIRMED by the model stage, or at least one chapter could not be checked |
 | 2 | usage or setup error — bad arguments, missing files, corrupt project JSON (one `[FAIL]` line, never a traceback); a config that resolves no `base_url` (§ Overlay layers); `build-epub` — the builder subprocess crashed; `ping` — one or more providers unreachable; `sync-config` — the skill's `config.local.json` is unreadable/malformed, or the project has no `config.json` |
 | 3 | a provider call failed and the run stopped — see "Provider failure is fatal" below |
 | 130 | interrupted at the keyboard (`Ctrl-C`) — chapter state is saved, re-run to resume |

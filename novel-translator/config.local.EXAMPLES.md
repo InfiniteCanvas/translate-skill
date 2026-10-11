@@ -332,6 +332,7 @@ So: spend Z.AI credits on judgment, spend MiniMax's pool on volume.
 | `translator` | `glm-5.3` **+** `MiniMax-M3.1-Flash-Preview` | two-model array — the consensus fan-out; each candidate reaches a different plan |
 | `annotator` | `glm-5.3-flash` **+** `MiniMax-M3.1-Flash-Preview` | same idea for translation notes, where two cheap models agreeing beats one |
 | `reviewer` | `glm-5.3` | the faithfulness gate; a false rejection costs more than a cheap review |
+| `verify` | `glm-5.3` | the whole-book drift scan's semantic verdict; a false confirmation schedules a re-translation |
 | `consensus` | `glm-5.3` | synthesizes every fan-out, so it gets the strongest |
 | `glossary` / `recap` / `profile` | `glm-5.3-flash` | structured extraction and summaries; a cheap model genuinely suffices |
 
@@ -366,8 +367,9 @@ no longer pays flagship prices. `ping` reports each one as
 
 **Write the global block first — it is required.** As of v015 a config that
 fans out at all without an authored `providers.consensus` is **refused at load**
-(`[FAIL] cannot read config.json: providers.consensus is required because 6
-job(s) fan out ...`, exit 2). With nothing authored, the arbitrator would
+(`[FAIL] cannot read config.json: providers.consensus is required because N
+job(s) fan out ...`, exit 2 — N is every `CONSENSUS_JOBS` member that really
+fans out, 7 as of v018 which added `verify`). With nothing authored, the arbitrator would
 otherwise be derived from `providers.translator[0]` — its endpoint, model,
 temperature and limits — so in a two-model translator array every merge would
 silently be synthesized by one of the models it is judging. One rule covers it:

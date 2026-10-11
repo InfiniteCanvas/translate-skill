@@ -303,6 +303,42 @@ translation — run `review notes`:
   (see failures above)` instead. Commits `review: notes audit` and logs one
   `notes_review` trace event.
 
+## Whole-book glossary drift (`verify`)
+
+Distinct from everything above. `review glossary` audits each entry on its own
+merits; `verify` asks whether an entry **mistranslates where it is actually
+used**, which is the failure that spreads: every chapter after the one that
+seeded the term is translated against the same pinned rendering.
+
+    uv run "$SCRIPT" verify --project <dir> [--out PATH]
+
+Stage 1 is deterministic and costs nothing: it matches each translated
+chapter's source against the glossary, then checks how the translation rendered
+those terms — the balance rule the pipeline's advisory already prints, so a term
+rendered fewer times than `max(1, ceil(min_term_coverage × occurrences))` is
+flagged. Stage 2 spends calls **only on the chapters stage 1 flagged**, on the
+`verify` provider job (which inherits the translator's blocks until authored, and
+arbitrates its own fan-out through `consensus_verify.md`), asking whether
+forcing that pinned rendering in that chapter's context produces a
+mistranslation. A term rendered not at all is drift rather than under-use and is
+left to the FAITH reviewer that already owns it.
+
+Console markers: `[verify] <n> chapter(s) examined, <n> flagged ..., <n>
+term(s) confirmed ...`, `[verify] report: <path>`, `[verify] <chapter> ->
+needs-review: forcing '<term>' mistranslates this chapter`, `[warn] verify: <n>
+chapter(s) could not be checked` details per failure, and `[ok] verify: no
+confirmed glossary drift`. Writes one JSONL line per chapter **examined** — clean
+chapters included with empty findings — to `logs/verify.jsonl` (`--out`
+overrides; a relative path resolves against the project directory).
+
+**Never rewrites a translated chapter.** A confirmed term flips its chapter to
+`needs-review` through `project.set_status`, which is what makes the chapter
+eligible for `retry`; that happens on a stage-2 confirmation only, never on a
+stage-1 counting hit. Exit 0 nothing confirmed, 1 something confirmed **or** a
+chapter that could not be checked. Nothing triggers it automatically — run it
+after a glossary-changing operation (`review glossary --fix`, `glossary
+merge`/`retire`/`replace`) to see which chapters that change put at risk.
+
 ## Bulk review fixes
 
 `review glossary` may leave dozens of machine-determinable findings behind

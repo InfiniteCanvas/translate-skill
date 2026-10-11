@@ -20,6 +20,9 @@
   "consensus_translator.md": [
     "19f40c6d2f91519cfeac1f05bc5097461925504109360af37859db445b5ff810"
   ],
+  "consensus_verify.md": [
+    "6ffd11b565a9d80138241cbafd5e20c52d204b309e41cdc19c069ae0a2148244"
+  ],
   "faithfulness.md": [
     "cf514f86ca17275d024fbab6365d696773847a1ff8be71d6056ac7811dac6686",
     "66cbefa8cafec181a044802abdffa2fa7f72292f8244d20a4ab69a1b41355184",
@@ -47,6 +50,9 @@
     "7176ecb0ea3af6d2e874e478b1e9b38fd272e737c2493ebb8c85bd4ed7d58127",
     "5c7ad4a6ea636749ec2587ec1b9f7994edea75ac910134cd638686a1968d08ec",
     "73e9dadd475347bcf41b573738c867b1b5d79bdab6164c4533995fea958c855e"
+  ],
+  "glossary_verify.md": [
+    "e47706c8ccc87f4c79a1663552be456bc352528cb4d5c5f124f39be490e3829f"
   ],
   "notes_review.md": [
     "638f07ec59c75f36737d04a0e9ff40f7cd1e77c169dff5e1cdca8f79e291d826"

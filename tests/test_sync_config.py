@@ -291,7 +291,8 @@ def case_5_cmd_sync_config() -> None:
                   "api_key" not in on_disk["providers"]["translator"][0],
                   f"block={on_disk['providers']['translator'][0]}")
             check("5g report-only: the report names each resolved endpoint",
-                  out.count("http://project:8888/v1") == 7, f"out={out!r}")
+                  out.count("http://project:8888/v1") == len(config.PROVIDER_JOBS),
+                  f"out={out!r}")
             check("5h report-only: the report names the layers it composed",
                   "config.local.json <- config.json" in out, f"out={out!r}")
             check("5i report-only: the project's own keys are untouched",

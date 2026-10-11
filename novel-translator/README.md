@@ -462,6 +462,44 @@ the same command to finish). The epub rebuilds once after changed chapters when
 itself and runs exactly one final epub build at the end). Build failures
 are warnings only.
 
+## Whole-book glossary drift (`verify`)
+
+A glossary entry that renders correctly where it was seeded can still be wrong
+for the same term used another way elsewhere — and because every later chapter
+is translated against that entry, the error propagates forward. `verify` looks
+for exactly that:
+
+    uv run scripts/translate.py verify --project . [--out logs/verify.jsonl]
+
+For every chapter that has both a source and a translation:
+
+1. **Deterministic (free).** Match the chapter's *source* against the glossary,
+   then check how the *translation* rendered those terms — the same balance rule
+   the pipeline's advisory uses, so a term rendered fewer times than
+   `max(1, ceil(min_term_coverage × occurrences))` is flagged. This is a
+   question-generator, not a verdict: English legitimately repeats nouns less
+   than Chinese does.
+2. **Model, only on the flagged chapters.** For each one, ask whether forcing
+   that pinned rendering *in this chapter's context* produces a mistranslation.
+   These calls run on the `verify` provider job, which inherits the
+   translator's blocks until you author one, and which arbitrates its own fan-out
+   through `consensus_verify.md` (the general reviewer wording tells the merge
+   that a pinned rendering is never an error — the opposite of what this asks).
+
+It never rewrites a translated chapter. A **confirmed** term marks its chapter
+`needs-review`, which is the existing human review surface and also what makes
+it eligible for `retry --failed`; that flip happens only on a model
+confirmation, never on a counting hit, so a heuristic can never schedule a
+re-translation. The complete result set — one line per chapter examined, clean
+chapters included with empty findings — is written to `logs/verify.jsonl` as the
+input a later visualization can be built from. Exit 0 when nothing is
+confirmed, 1 when a chapter is confirmed **or** could not be checked.
+
+Run it after a glossary-changing operation (`review glossary --fix`,
+`glossary merge` / `retire` / `replace`) to see which chapters the change put
+at risk, and before trusting a long-translated book. It is standalone: nothing
+triggers it automatically.
+
 Translator's notes have their own re-evaluation path: they live in
 `notes/<stem>.json` sidecars next to the chapters, never in the chapter
 markdown, so re-running the annotator can't disturb chapter prose. Point it

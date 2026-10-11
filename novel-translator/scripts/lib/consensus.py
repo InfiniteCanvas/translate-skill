@@ -20,14 +20,14 @@ different models, and a project that authors no per-job key merges through the
 one global arbitrator exactly as before.
 
 Its PROMPT is per job too: a fanning-out job resolves consensus_<job>.md, so
-each of the six jobs in config.CONSENSUS_JOBS arbitrates on what makes a
+each job in config.CONSENSUS_JOBS arbitrates on what makes a
 candidate better for that job rather than on one shared wording. consensus.md
 stays shipped and is reached only for a job that has no consensus_<job>.md in
 either layer; the skill ships one for every job in config.CONSENSUS_JOBS, so
-none of the six reaches it. A project's own consensus_<job>.md wins for its own
+none of them reaches it. A project's own consensus_<job>.md wins for its own
 job under the same overlay every other prompt uses, and a project's own
-consensus.md is bypassed for all six. _resolve_template carries the resolution
-order and its exact fallback condition.
+consensus.md is bypassed for all of them. _resolve_template carries the
+resolution order and its exact fallback condition.
 
 Failure policy: TERMINAL. Every failure — a candidate that exhausted its
 retries, or a consensus call that exhausted its retries — stops the run with one
@@ -77,9 +77,9 @@ def _resolve_template(project_dir: Path, job: str) -> tuple[str, str]:
     reached exactly for a job no per-job template exists for.
 
     The skill ships consensus_<job>.md for every job in
-    config.CONSENSUS_JOBS, so for all six of those jobs the first branch
+    config.CONSENSUS_JOBS, so for every one of those jobs the first branch
     resolves and `consensus.md` is never read. The consequence for a project:
-    its own customized `consensus.md` is bypassed for all six fan-out jobs. A
+    its own customized `consensus.md` is bypassed for all fan-out jobs. A
     project written before the per-job templates existed, which customized only
     `consensus.md`, keeps that file on disk and stops arbitrating through it.
     A project-local `consensus_<job>.md` does win for its own job, under the

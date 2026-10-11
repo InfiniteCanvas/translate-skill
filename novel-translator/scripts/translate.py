@@ -6,11 +6,13 @@
 """novel-translator: staged, resumable CJK novel translation CLI.
 
 Subcommands: init, ping, seed, migrate, profile, styles, status, sync,
-sync-config, translate, retry, mark, tn, review, util, glossary, build-epub.
+sync-config, translate, retry, mark, tn, review, verify, util, glossary,
+build-epub.
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
 had failures or the report was refused as stale / glossary search found nothing
 / glossary count below threshold / tn re-check failed chapters or scanned
-nothing eligible / profile generation failed, 2 usage or setup error /
+nothing eligible / profile generation failed / verify confirmed glossary drift
+or could not check a chapter, 2 usage or setup error /
 build-epub builder crashed / ping with one or more providers unreachable /
 130 interrupted (Ctrl-C).
 """
@@ -40,6 +42,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from lib import client, config, consensus, cover, epub, fix, glossary, logger, logdashboard, logreport, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs
 from lib import profile as profile_mod
 from lib import styles as styles_mod
+from lib import verify as verify_mod
 
 import migrations
 
@@ -1050,6 +1053,86 @@ def cmd_tn(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace, project_dir: Path) -> int:
+    """Whole-book glossary-drift scan: two stages, one JSONL, advisory only.
+
+    Stage 1 is deterministic and free (lib/verify.py: source matched against
+    the glossary, then the translation's rendering checked); stage 2 spends the
+    `verify` provider job's calls on the chapters stage 1 flagged and asks
+    whether forcing the pinned rendering there mistranslates.
+
+    The status flip is the one write that touches project state, and it fires
+    ONLY on a stage-2 confirmation: `needs-review` is what makes a chapter
+    eligible for `retry`, so a counting heuristic must never schedule a
+    re-translation. Nothing in translated/ is ever rewritten.
+
+    --out defaults to logs/verify.jsonl; a relative --out resolves against the
+    project directory, so the artifact lands beside the chapters it describes
+    wherever the command was run from."""
+    cfg = _load_config(project_dir)
+    manifest = _load_manifest(project_dir)
+    out_path = Path(args.out) if args.out else Path("logs/verify.jsonl")
+    if not out_path.is_absolute():
+        out_path = project_dir / out_path
+    _run_start(project_dir, cfg, manifest, "verify", out=str(out_path))
+    try:
+        result = verify_mod.verify_project(project_dir, cfg)
+    except client.LLMFatal:
+        _run_end(project_dir, "verify", "failed")
+        raise
+
+    known = {entry.get("file") for entry in manifest}
+    for chapter in result["confirmed_chapters"]:
+        if chapter not in known:
+            print(f"[warn] verify: {chapter} is not in the manifest - "
+                  "confirmed, but its status cannot be flipped")
+            continue
+        project.set_status(manifest, chapter, "needs-review")
+    if result["confirmed_chapters"]:
+        project.save_manifest(project_dir, manifest)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        "".join(json.dumps(record, ensure_ascii=False) + "\n"
+                for record in result["chapters"]),
+        encoding="utf-8", newline="\n")
+
+    logger.log_event(project_dir, {
+        "event": "verify",
+        "chapters": result["examined"],
+        "flagged": result["flagged"],
+        "confirmed": result["confirmed"],
+        "confirmed_chapters": result["confirmed_chapters"],
+        "errors": result["errors"],
+        "report": str(out_path),
+    })
+    _run_end(project_dir, "verify", "completed" if not result["confirmed_chapters"]
+             else "findings",
+             {"findings": [len(result["confirmed_chapters"])]})
+
+    print(f"[verify] {result['examined']} chapter(s) examined, "
+          f"{result['flagged']} flagged by the deterministic stage, "
+          f"{result['confirmed']} term(s) confirmed by the model stage")
+    print(f"[verify] report: {out_path}")
+    for chapter in result["confirmed_chapters"]:
+        terms = [f["source"] for record in result["chapters"]
+                 if record["chapter"] == chapter
+                 for f in record["findings"] if f["mistranslates"]]
+        print(f"[verify] {chapter} -> needs-review: forcing "
+              f"{', '.join(repr(t) for t in terms)} mistranslates this chapter")
+    for error in result["errors"]:
+        print(f"[warn] verify: {error}")
+    if result["confirmed_chapters"]:
+        _fail(f"verify: {len(result['confirmed_chapters'])} chapter(s) confirmed "
+              "glossary drift - flagged needs-review")
+        return 1
+    if result["errors"]:
+        _fail(f"verify: {len(result['errors'])} chapter(s) could not be checked")
+        return 1
+    print("[ok] verify: no confirmed glossary drift")
+    return 0
+
+
 def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
     """Post-hoc fixer driver: parse the review report (config
     review_report_path) and run every machine-
@@ -1721,6 +1804,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stale-ok", action="store_true", dest="stale_ok",
                    help="(subject=fix) run the report even if the glossary changed since generation")
     p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser("verify", parents=[common], allow_abbrev=False,
+                       help="whole-book glossary-drift scan: does a pinned rendering mistranslate where it appears? (advisory; flags chapters needs-review, never rewrites text)")
+    p.add_argument("--out", metavar="PATH", default=None,
+                   help="where to write the JSONL report (default: logs/verify.jsonl; a relative path resolves against the project)")
+    p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("logs", parents=[common], allow_abbrev=False,
                        help="show the trace logs: orchestration timeline (tier 1) and per-chapter model IO (tier 2)")

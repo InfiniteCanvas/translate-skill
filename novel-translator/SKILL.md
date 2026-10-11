@@ -774,6 +774,26 @@ background build too. Builds produce no git commits — `export/`,
   `review-report.md` findings, change auto-retirement
   (`glossary_auto_cleanup`, the `retired` list), or check a term's
   significance (`glossary count`).
+- **Whole-book glossary drift (`verify`)**: `uv run "$SCRIPT" verify --project
+  <dir>` asks, for every chapter that has both a source and a translation,
+  whether forcing a pinned glossary rendering **mistranslates** anywhere it
+  appears — the contamination that spreads forward, since every later chapter is
+  translated against the same entry. Two stages: a deterministic scan matches
+  the chapter's source against the glossary and checks how the translation
+  rendered those terms (the same balance rule the pipeline's advisory uses), and
+  model calls are spent **only on the chapters that scan flags**, asking whether
+  the low count is a real sense the pinned rendering cannot carry. It is
+  advisory and **never rewrites a translated chapter**; a confirmed term marks
+  its chapter `needs-review`, which is what makes it eligible for `retry`, so
+  the flip happens **only** on a model confirmation and never on a counting hit.
+  The full result set is written to `logs/verify.jsonl` (`--out PATH` to
+  redirect), one line per chapter examined including the clean ones. Exit 0
+  nothing confirmed, 1 something was confirmed or a chapter could not be
+  checked. Read this when the user asks whether a glossary term is right for the
+  book as a whole, whether a translation is faithful to a pinned term, or
+  whether a term should be split, retired or given a different rendering —
+  `verify` says which chapters to look at; `review glossary` is the separate
+  per-entry audit, and `review fix` applies it.
 - **Reading the trace logs**: every run writes two tiers under `logs/` —
   an orchestration timeline (`logs/run-<run_id>.jsonl`: run and chapter
   lifecycle, stage transitions, gate verdicts, degradations, one `llm_call`

@@ -480,8 +480,8 @@ def case_per_job_consensus() -> None:
         ok = ok and config.consensus_provider(
             {"providers": n}, job)["model"] == f"arb-{job}"
     check("i10 suffixes: every PROVIDER_JOBS member except consensus is accepted",
-          ok and config.CONSENSUS_JOBS == (
-              "translator", "glossary", "reviewer", "annotator", "recap", "profile"),
+          ok and config.CONSENSUS_JOBS == tuple(
+              job for job in config.PROVIDER_JOBS if job != "consensus"),
           f"jobs={config.CONSENSUS_JOBS}")
 
     two_own = raises_value_error({**two, "consensus_annotator": [
