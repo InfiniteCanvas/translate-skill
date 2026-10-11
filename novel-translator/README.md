@@ -479,21 +479,42 @@ For every chapter that has both a source and a translation:
    `max(1, ceil(min_term_coverage × occurrences))` is flagged. This is a
    question-generator, not a verdict: English legitimately repeats nouns less
    than Chinese does.
-2. **Model, only on the flagged chapters.** For each one, ask whether forcing
-   that pinned rendering *in this chapter's context* produces a mistranslation.
+2. **Model, only on the flagged terms.** For each one, ask whether forcing that
+   pinned rendering *in each context the term appears in* produces a mistranslation.
    These calls run on the `verify` provider job, which inherits the
    translator's blocks until you author one, and which arbitrates its own fan-out
    through `consensus_verify.md` (the general reviewer wording tells the merge
    that a pinned rendering is never an error — the opposite of what this asks).
 
+The model stage batches **by term across the whole book**, not by chapter. Drift is
+"the same word meaning different things in different contexts", and a per-chapter
+call structurally cannot see a chapter that renders a term faithfully contradict
+one that doesn't — and a name that recurs through the book would pay the rubric
+once per chapter. Each call gets one term plus *contexts*: the ±2-line window around
+a line it occurs on, with the source and the translation at the **same line
+numbers**, since index N in one is index N in the other (the pairing VALIDATE
+enforces; a chapter whose counts differ is reported and left unchecked rather than
+guessed at). A term with more than 8 contexts is split across follow-up calls until
+every one is covered — a dropped context is exactly where a contaminating one hides
+— and the number of calls made is printed, so an expensive term is never a silent
+one. The verdict is still per `(term, chapter)`.
+
 It never rewrites a translated chapter. A **confirmed** term marks its chapter
 `needs-review`, which is the existing human review surface and also what makes
 it eligible for `retry --failed`; that flip happens only on a model
 confirmation, never on a counting hit, so a heuristic can never schedule a
-re-translation. The complete result set — one line per chapter examined, clean
-chapters included with empty findings — is written to `logs/verify.jsonl` as the
-input a later visualization can be built from. Exit 0 when nothing is
-confirmed, 1 when a chapter is confirmed **or** could not be checked.
+re-translation. The same confirmation also flags the **glossary entry itself** as
+contaminated — flipping the chapter fixes the past, but the entry left in place is
+what the next chapter is translated against — which is reported on the console
+naming the term and every chapter affected. `glossary.json` is *not* written: it
+feeds the translator's pinned-terms list, so a flag stored there would change
+translation behaviour.
+
+The complete result set is written to `logs/verify.jsonl` — one line per chapter
+examined (clean chapters included with empty findings) plus one per contaminated
+entry, each tagged `kind` (`chapter` or `contamination`) so the two grains stay
+distinguishable. It is the input a later visualization can be built from. Exit 0
+when nothing is confirmed, 1 when a chapter is confirmed **or** could not be checked.
 
 Run it after a glossary-changing operation (`review glossary --fix`,
 `glossary merge` / `retire` / `replace`) to see which chapters the change put

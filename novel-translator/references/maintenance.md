@@ -316,26 +316,46 @@ Stage 1 is deterministic and costs nothing: it matches each translated
 chapter's source against the glossary, then checks how the translation rendered
 those terms — the balance rule the pipeline's advisory already prints, so a term
 rendered fewer times than `max(1, ceil(min_term_coverage × occurrences))` is
-flagged. Stage 2 spends calls **only on the chapters stage 1 flagged**, on the
-`verify` provider job (which inherits the translator's blocks until authored, and
-arbitrates its own fan-out through `consensus_verify.md`), asking whether
-forcing that pinned rendering in that chapter's context produces a
-mistranslation. A term rendered not at all is drift rather than under-use and is
+flagged. A term rendered not at all is drift rather than under-use and is
 left to the FAITH reviewer that already owns it.
 
-Console markers: `[verify] <n> chapter(s) examined, <n> flagged ..., <n>
-term(s) confirmed ...`, `[verify] report: <path>`, `[verify] <chapter> ->
-needs-review: forcing '<term>' mistranslates this chapter`, `[warn] verify: <n>
-chapter(s) could not be checked` details per failure, and `[ok] verify: no
-confirmed glossary drift`. Writes one JSONL line per chapter **examined** — clean
-chapters included with empty findings — to `logs/verify.jsonl` (`--out`
-overrides; a relative path resolves against the project directory).
+Stage 2 spends calls **only on the terms stage 1 flagged**, on the `verify`
+provider job (which inherits the translator's blocks until authored, and
+arbitrates its own fan-out through `consensus_verify.md`). It batches **by term
+across the book, not by chapter**: drift is "the same word meaning different
+things in different contexts", and a per-chapter call structurally cannot see
+one chapter's usage contradict another's. One call carries one term plus
+**contexts** — the ±2-line window around a line the term occurs on, source and
+translation paired at the **same line numbers** (index N is index N; that is the
+line-indexed protocol VALIDATE enforces). A term with more than 8 contexts is
+split across follow-up calls until every one is covered — a dropped context is
+where a contaminating one hides — and the call count is printed. A verdict is
+still per `(term, chapter)`, and a verdict naming a term or chapter that was not
+offered is dropped.
 
-**Never rewrites a translated chapter.** A confirmed term flips its chapter to
-`needs-review` through `project.set_status`, which is what makes the chapter
-eligible for `retry`; that happens on a stage-2 confirmation only, never on a
-stage-1 counting hit. Exit 0 nothing confirmed, 1 something confirmed **or** a
-chapter that could not be checked. Nothing triggers it automatically — run it
+Console markers: `[verify] <n> chapter(s) examined, <n> flagged ..., <n>
+term/chapter finding(s) confirmed ... across <n> call(s)`, `[verify] report:
+<path>`, `[verify] <chapter> -> needs-review: forcing '<term>' mistranslates this
+chapter`, `[verify] glossary contamination: '<term>' pinned as '<pinned>'
+mistranslates in <chapters> - ...`, `[warn] verify: <n> chapter(s) could not be
+checked` details per failure, and `[ok] verify: no confirmed glossary drift`.
+Writes to `logs/verify.jsonl` (`--out` overrides; a relative path resolves
+against the project directory): one line per chapter **examined** — clean
+chapters included with empty findings — plus one per contaminated entry, each
+tagged `kind` (`chapter` or `contamination`).
+
+**Never rewrites a translated chapter, and never writes `glossary.json`.** A
+confirmed term flips its chapter to `needs-review` through `project.set_status`,
+which is what makes the chapter eligible for `retry`; that happens on a stage-2
+confirmation only, never on a stage-1 counting hit. The same confirmation also
+flags the **glossary entry** as contaminated, on the console and in the report —
+the chapter flip fixes the past, a corrected entry stops the next chapter — but
+the flag is NOT stored in `glossary.json`, because that file feeds the
+translator's pinned-terms list and a stored flag would change translation
+behaviour. Exit 0 nothing confirmed, 1 something confirmed **or** a chapter that
+could not be checked (an unreadable chapter, or one whose translation line count
+differs from its source's, which the pairing cannot trust). Nothing triggers it
+automatically — run it
 after a glossary-changing operation (`review glossary --fix`, `glossary
 merge`/`retire`/`replace`) to see which chapters that change put at risk.
 

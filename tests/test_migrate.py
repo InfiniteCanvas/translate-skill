@@ -92,7 +92,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config
 import migrations
-from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015, v016, v017
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015, v016, v017, v018
 import translate
 
 PASSED = 0
@@ -2130,6 +2130,109 @@ def case_19_v017() -> None:
                   f"lines={out_broken!r}")
 
 
+def case_20_v018() -> None:
+    """v018.migrate called directly: report-only for CONFIG, but NOT a no-op.
+
+    The half of this step that is report-only is the part that can go wrong
+    silently: materializing `providers.verify` into a project would pin one
+    machine's endpoint where it out-ranks config.local.json, the exact behaviour
+    the v016 overlay chain removed. So config.json must come out byte-identical,
+    while the report still names what the job resolves to.
+
+    The half that DOES write is sync_templates, which copies the two prompts the
+    job needs so `verify` is runnable immediately. A step that copied nothing, or
+    that claimed in its docstring to write nothing while copying two files, both
+    pass a gate that only reads report lines -- so this case asserts the files,
+    not the prose. Idempotence is asserted the same way: a second run must add no
+    new template lines and must not touch config.json again.
+    """
+    SHIPPED = {"glossary_verify.md": "verify task rubric\n",
+               "consensus_verify.md": "verify arbitration\n"}
+
+    def make_src(root: Path, name: str) -> Path:
+        src = root / name
+        src.mkdir()
+        for tpl, body in SHIPPED.items():
+            (src / tpl).write_text(body, encoding="utf-8", newline="\n")
+        return src
+
+    def make_project(root: Path, name: str, providers: dict) -> Path:
+        proj = root / name
+        proj.mkdir()
+        (proj / "config.json").write_text(
+            json.dumps({"version": 17, "providers": providers}, indent=2) + "\n",
+            encoding="utf-8", newline="\n")
+        return proj
+
+    NEW_JOB_LINE = ("[ok] config: providers.verify is a new job (v018) - it "
+                    "inherits the translator's provider blocks until you author "
+                    "it; set providers.verify to point the whole-book drift scan "
+                    "at its own models, or providers.consensus_verify to "
+                    "arbitrate its fan-out differently.")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = make_src(root, "ship")
+
+        proj = make_project(root, "unauthored", {
+            "translator": [{"base_url": "http://x/v1", "model": "t"}],
+            "consensus": {"base_url": "http://x/v1", "model": "c"},
+        })
+        before = (proj / "config.json").read_bytes()
+        lines = v018.migrate(proj, src, confirm=refuse_confirm)
+        check("20a v018: an unauthored verify job is reported with the line "
+              "naming what it resolves to and how to change it",
+              lines[0] == NEW_JOB_LINE, f"lines={lines!r}")
+        check("20b v018: config.json is BYTE-IDENTICAL afterwards -- the job is "
+              "a schema addition the read-time layering resolves on its own, and "
+              "materializing it is the pre-v016 behaviour",
+              (proj / "config.json").read_bytes() == before,
+              "v018 rewrote config.json")
+        copied = sorted(p.name for p in (proj / "templates").glob("*.md")) \
+            if (proj / "templates").is_dir() else []
+        check("20c v018: the two templates the job needs ARE written into the "
+              "project -- the step does not merely report",
+              copied == sorted(SHIPPED), f"copied={copied!r}")
+        check("20d and they land byte-identical to the shipped copies, so the "
+              "job is runnable as-is",
+              all((proj / "templates" / t).read_text(encoding="utf-8") == body
+                  for t, body in SHIPPED.items()), "")
+        second = v018.migrate(proj, src, confirm=refuse_confirm)
+        check("20e v018: idempotent -- the second run repeats the config line, "
+              "adds no template lines and rewrites nothing",
+              second == [NEW_JOB_LINE]
+              and (proj / "config.json").read_bytes() == before,
+              f"second={second!r}")
+
+        authored = make_project(root, "authored", {
+            "translator": [{"base_url": "http://x/v1", "model": "t"}],
+            "verify": [{"base_url": "http://y/v1", "model": "v"}],
+        })
+        authored_before = (authored / "config.json").read_bytes()
+        out_authored = v018.migrate(authored, src, confirm=refuse_confirm)
+        check("20f v018: a project that already authored providers.verify is "
+              "told so, naming the model it resolves to, and its config is still "
+              "untouched",
+              any("was already authored" in line and "v" in line
+                  for line in out_authored)
+              and (authored / "config.json").read_bytes() == authored_before,
+              f"out={out_authored!r}")
+
+        dry = make_project(root, "dry", {"translator": [
+            {"base_url": "http://x/v1", "model": "t"}]})
+        dry_before = snapshot(dry)
+        out_dry = v018.migrate(dry, src, dry_run=True, confirm=refuse_confirm)
+        check("20g v018: --dry-run reports the config line and both template "
+              "additions, and creates nothing",
+              out_dry[0] == NEW_JOB_LINE
+              and [line for line in out_dry
+                   if line.startswith("[ok] templates + ")] == [
+                  "[ok] templates + consensus_verify.md (new)",
+                  "[ok] templates + glossary_verify.md (new)"]
+              and snapshot(dry) == dry_before,
+              f"out={out_dry!r}")
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -2153,6 +2256,7 @@ def main() -> int:
     case_17_v015()
     case_18_migrate_never_requires_the_endpoint_it_repairs()
     case_19_v017()
+    case_20_v018()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

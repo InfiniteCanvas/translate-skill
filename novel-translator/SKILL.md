@@ -781,15 +781,27 @@ background build too. Builds produce no git commits — `export/`,
   translated against the same entry. Two stages: a deterministic scan matches
   the chapter's source against the glossary and checks how the translation
   rendered those terms (the same balance rule the pipeline's advisory uses), and
-  model calls are spent **only on the chapters that scan flags**, asking whether
-  the low count is a real sense the pinned rendering cannot carry. It is
+  model calls are spent **only on the terms that scan flags**, asking whether the
+  low count is a real sense the pinned rendering cannot carry. Stage 2 batches
+  **by term across the book**, not by chapter, because drift is "the same word
+  meaning different things in different contexts" and that is only visible by
+  laying one term's usages against each other; each call carries the ±2-line
+  window around a line the term occurs on, source and translation paired at the
+  same line numbers. A term with more than 8 contexts is split across follow-up
+  calls so none is ever dropped, and the call count is printed. It is
   advisory and **never rewrites a translated chapter**; a confirmed term marks
   its chapter `needs-review`, which is what makes it eligible for `retry`, so
   the flip happens **only** on a model confirmation and never on a counting hit.
-  The full result set is written to `logs/verify.jsonl` (`--out PATH` to
-  redirect), one line per chapter examined including the clean ones. Exit 0
-  nothing confirmed, 1 something was confirmed or a chapter could not be
-  checked. Read this when the user asks whether a glossary term is right for the
+  The same confirmation also flags the **glossary entry** as contaminated — the
+  chapter flip fixes the past, a fixed entry stops the next chapter — on the
+  console and in the report; `glossary.json` itself is never written, since it
+  feeds the translator's pinned-terms list. The full result set is written to
+  `logs/verify.jsonl` (`--out PATH` to redirect), one line per chapter examined
+  including the clean ones plus one per contaminated entry, each tagged `kind`.
+  Exit 0 nothing confirmed, 1 something was confirmed or a chapter could not be
+  checked (an unreadable chapter, or one whose translation line count differs
+  from its source's, which the pairing cannot trust). Read this when the user
+  asks whether a glossary term is right for the
   book as a whole, whether a translation is faithful to a pinned term, or
   whether a term should be split, retired or given a different rendering —
   `verify` says which chapters to look at; `review glossary` is the separate

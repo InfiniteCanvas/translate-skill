@@ -7,13 +7,19 @@ so no project needs a `providers.verify` key to run it: an unconfigured verify
 resolves to the same blocks, endpoint and auth the translator already uses, and
 an explicitly authored one overrides.
 
-That inheritance is exactly why this step rewrites nothing. Materializing the
+That inheritance is exactly why this step rewrites no CONFIG. Materializing the
 job into a project file would be the pre-v016 behaviour the overlay chain
 removed -- it would pin one machine's endpoint into every project it ever
 touched, and that project's key would then out-rank a later edit to
 config.local.json. So this step follows v012's precedent rather than v007's:
 a new job is a schema addition that the read-time layering resolves on its own,
 and the only thing worth recording is that the schema moved.
+
+What the step DOES write is templates: sync_templates copies the two prompt
+templates the verify job needs -- glossary_verify.md for stage 2 and
+consensus_verify.md for its fan-out -- into a project that does not have them,
+so the job is runnable immediately. That is the whole of its output beyond the
+report line, and it is the same helper every other step uses.
 
 What a maintainer gets from the report line is the two facts a project needs to
 change the behaviour:
@@ -28,11 +34,9 @@ no old-default sentinel to match on has nothing to migrate (v012), and unlike
 that step there is not even a threshold whose MEANING shifted -- verify simply
 resolves an array it did not resolve before.
 
-Idempotent by construction: it reads, reports, and writes nothing. A second
-call reports the same line.
-
-No template changes for a project to pick up, so this step only calls
-sync_templates and is silent on an up-to-date project.
+Idempotent by construction: config.json is left alone and sync_templates is
+silent on a project already carrying both templates, so a second call reports
+the same line and writes nothing further.
 """
 
 from __future__ import annotations
@@ -47,7 +51,8 @@ from . import common
 VERSION = 18
 DESCRIPTION = ("record the `verify` provider job added for `translate verify` "
                "(report-only: it inherits the translator's blocks until "
-               "authored; nothing is rewritten)")
+               "authored; config.json is not rewritten, and the job's two "
+               "prompt templates are synced in)")
 
 _JOB = "verify"
 
@@ -106,9 +111,13 @@ def _raw_providers(project_dir: Path) -> dict | None:
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    """Report that the `verify` job exists and how it resolves. Writes nothing:
-    `force` and `confirm` are accepted and unused, because there is no
-    overwrite for consent to decide."""
+    """Report that the `verify` job exists and how it resolves, and sync the
+    two templates the job needs.
+
+    config.json is never written -- `force` and `confirm` are accepted and
+    unused there, because there is no overwrite for consent to decide. They
+    are passed through to sync_templates, which does have an overwrite: a
+    template that exists and differs from the shipped one is asked about."""
     if _JOB not in config.PROVIDER_JOBS:
         return [f"[warn] config: providers.{_JOB} is not a known job in this "
                 f"skill - nothing to record"]

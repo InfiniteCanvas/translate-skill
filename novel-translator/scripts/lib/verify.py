@@ -5,45 +5,67 @@ The question this module exists to answer is not "is the glossary internally
 consistent" (that is `review glossary`) and not "is this chapter faithful"
 (that is the FAITH gate, per chapter, at translate time). It is the
 book-wide, after-the-fact one: a glossary entry that renders correctly in the
-chapters that seeded it can be WRONG for a term the same chapter uses in
-another sense, and because every later chapter is translated against that
-entry, the damage propagates forward. That is the contamination this scans
-for -- a glossary item that would force a translation to match it where
-matching it mistranslates.
+chapters that seeded it can be WRONG for the same term used in another sense,
+and because every later chapter is translated against that entry, the damage
+propagates forward. That is the contamination this scans for -- a glossary item
+that would force a translation to match it where matching it mistranslates.
 
-Two stages, because the expensive answer is only worth buying for the chapters
+Two stages, because the expensive answer is only worth buying for the terms
 where a cheap answer says "look here".
 
-Stage 1 is deterministic and free. For each translated chapter, match the
-chapter's SOURCE against the glossary (glossary.contextual), then ask how the
-TRANSLATION rendered those terms (balance.underused, the same classification
-the pipeline's balance advisory prints). A glossary term that appears in the
-source and is rendered in the translation fewer times than its usage floor
--- max(1, ceil(min_coverage * src)) -- is a candidate. Natural English
-repeats nouns less than Chinese does, so this is genuinely ambiguous on its
-own: it is a question-generator, not a verdict. A term rendered not at all is
-DRIFT, not under-use, and is left to the FAITH reviewer that already owns it
+Stage 1 is deterministic and free, and runs per chapter. For each translated
+chapter, match the chapter's SOURCE against the glossary (glossary.contextual),
+then ask how the TRANSLATION rendered those terms (balance.underused, the same
+classification the pipeline's balance advisory prints). A glossary term that
+appears in the source and is rendered in the translation fewer times than its
+usage floor -- max(1, ceil(min_coverage * src)) -- is a candidate. Natural
+English repeats nouns less than Chinese does, so this is genuinely ambiguous on
+its own: it is a question-generator, not a verdict. A term rendered not at all
+is DRIFT, not under-use, and is left to the FAITH reviewer that already owns it
 inside a translate run.
 
-Stage 2 spends provider calls on the flagged chapters ONLY, and asks the one
-question stage 1 cannot: does forcing this pinned rendering, in THIS chapter's
-context, produce a mistranslation? It runs on the `verify` provider job, which
+Stage 2 batches BY TERM, across the whole book, and asks the one question stage
+1 cannot: does forcing this pinned rendering, in these contexts, produce a
+mistranslation? The grain is the term rather than the chapter because the drift
+definition is "words meaning different things in different contexts" -- spotting
+that needs one term's usages laid against EACH OTHER, and per-chapter calls
+structurally cannot see a chapter that renders the term faithfully contradict
+one that does not. The verdict itself stays per-(term, chapter), so the
+status-flip contract is unchanged. It runs on the `verify` provider job, which
 has its own arbitration template (consensus_verify.md) because the general
 reviewer/glossary arbitration wording instructs the merge to treat a pinned
 rendering as a project decision that is never an error -- the exact opposite
 of what this stage asks for.
 
+A term's occurrences are split into batches of MAX_CONTEXTS_PER_CALL and every
+context reaches a call: a dropped context is exactly where a contaminating one
+hides, so the cap is paid for with more calls rather than with a silent gap,
+and the call count is reported.
+
+Each context pairs a window of source lines with the translation lines at the
+SAME indices, both numbered. That pairing is the pipeline's line-indexed
+protocol -- VALIDATE refuses a translation whose line count differs from its
+source -- so index N here is index N there, and the window is what lets the
+model judge a SENSE rather than a bare hit line. A chapter whose counts do not
+match is reported as an error and left unchecked: its indices cannot be trusted,
+and verify never exits 0 over a chapter it failed to check.
+
 Advisory, and it never rewrites a translated chapter. A confirmed term marks
 its chapter `needs-review`, which is the existing human review surface: a
 status flip is what makes a chapter eligible for `retry`, so it is a schedule
 for re-translation and is made ONLY on a stage-2 confirmation, never on a
-stage-1 counting hit.
+stage-1 counting hit. The same confirmation ALSO flags the glossary entry, as a
+per-term contamination record: flipping the chapter fixes the past, while
+leaving the entry in place means the next chapter translated against it hits
+the same wall. Nothing writes glossary.json -- it feeds the translator's
+pinned-terms list, so a flag stored there would change translation behaviour,
+which is a separate decision.
 
-Failure policy follows lib/review.py: one chapter's model failure is reported
-and skipped so a book scan survives a single bad batch, while client.LLMFatal
-still propagates (a provider that will never answer is not a per-chapter
-problem). Every error is returned to the caller, which reports it and exits
-non-zero -- verify never exits 0 over a chapter it failed to check.
+Failure policy follows lib/review.py: one batch's model failure is reported and
+skipped so a book scan survives a single bad call, while client.LLMFatal still
+propagates (a provider that will never answer is not a one-batch problem). Every
+error is returned to the caller, which reports it and exits non-zero -- verify
+never exits 0 over a chapter it failed to check.
 """
 
 from __future__ import annotations
@@ -59,11 +81,11 @@ JOB = "verify"
 
 TEMPLATE = "glossary_verify.md"
 
-MAX_TERMS_PER_CALL = 40
+MAX_CONTEXTS_PER_CALL = 8
 
-EXCERPT_LINES = 3
+CONTEXT_WINDOW = 2
 
-EXCERPT_CHARS = 400
+CONTEXT_CHARS = 400
 
 VERIFY_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -74,10 +96,11 @@ VERIFY_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "source": {"type": "string"},
+                    "chapter": {"type": "string"},
                     "mistranslates": {"type": "boolean"},
                     "reason": {"type": "string"},
                 },
-                "required": ["source", "mistranslates", "reason"],
+                "required": ["source", "chapter", "mistranslates", "reason"],
             },
         }
     },
@@ -85,47 +108,96 @@ VERIFY_SCHEMA: dict[str, Any] = {
 }
 
 
-def _source_excerpt(source_lines: list[str], entry: dict) -> list[str]:
-    """Up to EXCERPT_LINES lines of the chapter's source that contain the
-    entry's own matchable strings (its source plus any variants).
+def _hit_lines(source_lines: list[str], entry: dict) -> list[int]:
+    """Indexes of the chapter's source lines that contain the entry's own
+    matchable strings (its source plus any variants).
 
-    This is an EVIDENCE excerpt for the model, deliberately not the count:
-    glossary.contextual's cross-entry longest-first ownership decides how many
-    occurrences a term is credited with, and reproducing that here would mean
-    a second implementation of it. A line that merely contains the term is
-    enough context for the semantic question, and any line both a longer
-    nested term and this one contain is included for the shorter one too --
-    which costs a little redundancy and cannot under-report a term's context.
+    This is an EVIDENCE locator, deliberately not a count: the number of lines
+    here is how many CONTEXTS a term is judged on, while how many OCCURRENCES
+    it was credited with stays balance's number, so the two can disagree and the
+    prompt does not claim otherwise. A line that merely contains the term is
+    enough to anchor a window, and a line both a longer nested term and this one
+    contain is offered for the shorter one too -- which costs redundancy and
+    cannot under-report a term's context.
     """
     needles = [s for s in [entry.get("source")] + list(entry.get("variants") or [])
                if s]
     if not needles:
         return []
     needles.sort(key=lambda s: (-len(s), s))
-    picked: list[str] = []
-    for line in source_lines:
-        if not any(needle in line for needle in needles):
-            continue
-        picked.append(line[:EXCERPT_CHARS])
-        if len(picked) >= EXCERPT_LINES:
-            break
-    return picked
+    return [index for index, line in enumerate(source_lines)
+            if any(needle in line for needle in needles)]
 
 
-def _term_record(entry: dict, row: dict, source_lines: list[str]) -> dict:
-    """One under-used glossary term, as the JSON object stage 2 reads. Carries
-    the counts that stage 1 flagged on, so the model can see what "under-used"
-    actually meant for this term rather than being asked to re-derive it."""
+def _chapter_lines(translated_body: str) -> list[str]:
+    """The translated chapter's lines, read the way read_chapter reads a source
+    chapter: blank lines off both ends are stripped, the body between is kept
+    verbatim.
+
+    The symmetry is the point, not tidiness. VALIDATE compares a translation
+    against the source lines read_chapter returns, which are trimmed, so those
+    trimmed lines are what "line N" means to the entire line-indexed protocol.
+    Reading the translation raw instead would make a trailing blank line look
+    like a paragraph of translation, and the pairing below would be off by one
+    against a protocol the pipeline itself is already enforcing."""
+    lines = translated_body.splitlines()
+    first = 0
+    while first < len(lines) and not lines[first].strip():
+        first += 1
+    last = len(lines)
+    while last > first and not lines[last - 1].strip():
+        last -= 1
+    return lines[first:last]
+
+
+def _context(chapter_file: str, source_lines: list[str],
+             translated_lines: list[str], index: int, row: dict) -> dict:
+    """One context: the CONTEXT_WINDOW lines either side of the hit line,
+    source and translation at the same 1-based line numbers, with the counts
+    stage 1 flagged this term on THIS chapter.
+
+    The counts travel with the context rather than with the term because they
+    are per chapter: the same term can be rendered faithfully everywhere but one.
+    """
+    low = max(0, index - CONTEXT_WINDOW)
+    high = min(len(source_lines) - 1, index + CONTEXT_WINDOW)
     return {
-        "source": row["source"],
-        "pinned": row["translation"],
-        "definition": entry.get("definition", ""),
-        "category": entry.get("category", ""),
+        "chapter": chapter_file,
+        "lines": f"{low + 1}-{high + 1}",
+        "source": [f"{n + 1}: {source_lines[n][:CONTEXT_CHARS]}"
+                   for n in range(low, high + 1)],
+        "translation": [f"{n + 1}: {translated_lines[n][:CONTEXT_CHARS]}"
+                        for n in range(low, high + 1)],
         "source_count": row["src_count"],
         "rendered_count": row["tgt_count"],
         "floor": row["floor"],
-        "source_lines": _source_excerpt(source_lines, entry),
     }
+
+
+def _term_block(term: dict) -> dict:
+    """The glossary entry under judgement, as the JSON object the prompt reads."""
+    return {
+        "source": term["source"],
+        "pinned": term["pinned"],
+        "definition": term["definition"],
+        "category": term["category"],
+    }
+
+
+def _context_block(contexts: list[dict]) -> str:
+    """Contexts as the prompt's numbered evidence blocks, source above
+    translation under each line range."""
+    blocks: list[str] = []
+    for position, context in enumerate(contexts, start=1):
+        blocks.append(
+            f"[{position}] {context['chapter']} lines {context['lines']} "
+            f"(source {context['source_count']} occurrence(s), rendered "
+            f"{context['rendered_count']}, floor {context['floor']})\n"
+            f"  source:\n"
+            + "\n".join(f"    {line}" for line in context["source"])
+            + "\n  translation:\n"
+            + "\n".join(f"    {line}" for line in context["translation"]))
+    return "\n\n".join(blocks)
 
 
 def scan_chapter(cfg: dict, g: dict, source_lines: list[str],
@@ -146,75 +218,121 @@ def scan_chapter(cfg: dict, g: dict, source_lines: list[str],
     )
 
 
-def _prompt(project_dir: Path, cfg: dict, chapter_file: str,
-            records: list[dict]) -> str:
+def _prompt(project_dir: Path, cfg: dict, term: dict,
+            contexts: list[dict]) -> str:
+    """One term's judging prompt: the rubric plus the term and the contexts it
+    is judged on. The data is IN the prompt -- the rubric alone answers nothing."""
     return fill(
         pipeline._load_template(project.paths(project_dir)["templates"], TEMPLATE),
         {
             "source_lang": _lang_name(cfg.get("source_lang")),
             "target_lang": _lang_name(cfg.get("target_lang")),
-            "chapter": chapter_file,
-            "terms": "\n".join(json.dumps(record, ensure_ascii=False)
-                               for record in records),
+            "term": json.dumps(_term_block(term), ensure_ascii=False, indent=2),
+            "contexts": _context_block(contexts),
+            "context_count": str(len(contexts)),
         },
         TEMPLATE,
     )
 
 
-def _verdicts(project_dir: Path, cfg: dict, chapter_file: str,
-              records: list[dict]) -> tuple[dict[str, dict], str | None]:
-    """Stage 2 for one flagged chapter: {source: verdict} per term stage 1
-    flagged, plus an error string when the chapter could not be judged.
+def _verdicts(project_dir: Path, cfg: dict, term: dict,
+              contexts: list[dict]) -> tuple[list[dict], str | None]:
+    """Stage 2 for one term's batch: the confirmed-or-not verdicts keyed by
+    chapter, plus an error string when the batch could not be judged.
 
-    One call per chapter, through consensus.chat on the `verify` job -- so a
-    project that fans `verify` out gets one model per block plus the
-    consensus_verify.md arbitration, exactly like every other job.
+    One consensus.chat per batch, on the `verify` job -- so a project that fans
+    `verify` out gets one model per block plus the consensus_verify.md
+    arbitration, exactly like every other job.
 
-    A verdict naming a term that was not in this chapter's list is dropped: a
-    model that answers about some other chapter's term has not judged this
+    A verdict naming a term or a chapter that was not in this batch is
+    dropped: a model that answers about some other context has not judged this
     one, and letting it through would confirm a chapter on evidence about a
-    different one. Terms the model omits are treated as NOT confirmed, so a
-    truncated or partial reply cannot confirm anything.
+    different one. Contexts the model omits are NOT confirmed, so a truncated
+    or partial reply cannot confirm anything.
     """
+    label = (f"{term['source']} ({len(contexts)} context(s), "
+             f"{', '.join(sorted({c['chapter'] for c in contexts}))})")
     try:
-        resp = consensus.chat(project_dir, cfg, JOB, _prompt(project_dir, cfg,
-                                                              chapter_file, records),
+        resp = consensus.chat(project_dir, cfg, JOB,
+                              _prompt(project_dir, cfg, term, contexts),
                               json_schema=VERIFY_SCHEMA,
-                              chapter=Path(chapter_file).stem)
+                              chapter=Path(contexts[0]["chapter"]).stem)
         data = client.extract_json(resp)
     except client.LLMFatal:
         raise
     except Exception as exc:
-        return {}, f"{chapter_file}: {type(exc).__name__}: {exc}"
+        return [], f"{label}: {type(exc).__name__}: {exc}"
     if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
-        return {}, f"{chapter_file}: response is not a JSON object with a verdicts list"
-    offered = {record["source"]: record for record in records}
-    out: dict[str, dict] = {}
+        return [], f"{label}: response is not a JSON object with a verdicts list"
+    offered = {context["chapter"]: context for context in contexts}
+    out: list[dict] = []
     for row in data["verdicts"]:
         if not isinstance(row, dict):
             continue
         name = row.get("source")
-        if not isinstance(name, str) or name not in offered:
+        chapter = row.get("chapter")
+        if not isinstance(name, str) or name != term["source"]:
+            continue
+        if not isinstance(chapter, str) or chapter not in offered:
             continue
         reason = row.get("reason")
-        out[name] = {
+        out.append({
             "source": name,
-            "pinned": offered[name]["pinned"],
-            "source_count": offered[name]["source_count"],
-            "rendered_count": offered[name]["rendered_count"],
-            "floor": offered[name]["floor"],
+            "pinned": term["pinned"],
+            "chapter": chapter,
+            "source_count": offered[chapter]["source_count"],
+            "rendered_count": offered[chapter]["rendered_count"],
+            "floor": offered[chapter]["floor"],
             "mistranslates": row.get("mistranslates") is True,
             "reason": reason if isinstance(reason, str) and reason.strip() else "",
-        }
+        })
     return out, None
+
+
+def _merge(into: dict[tuple[str, str], dict], verdicts: list[dict]) -> None:
+    """Fold one batch's verdicts into the per-(term, chapter) findings.
+
+    A term whose contexts span more than one batch produces one finding per
+    CHAPTER, not per batch: the contexts of that chapter in this batch add to
+    the ones already judged, and a confirmation anywhere among them confirms the
+    chapter, because a batch boundary is a payload limit and not a judgement
+    about where the drift is."""
+    for verdict in verdicts:
+        key = (verdict["source"], verdict["chapter"])
+        current = into.get(key)
+        if current is None:
+            into[key] = dict(verdict)
+            continue
+        current["mistranslates"] = (current["mistranslates"]
+                                    or verdict["mistranslates"])
+        if verdict["mistranslates"] and not current["reason"]:
+            current["reason"] = verdict["reason"]
+
+
+def _contamination(findings: list[dict]) -> list[dict]:
+    """One record per term the model confirmed, naming every chapter it
+    confirmed in. The glossary entry is the thing that propagates, so it is
+    flagged on its own rather than only through the chapters it hurt."""
+    out: list[dict] = []
+    for source in sorted({f["source"] for f in findings if f["mistranslates"]}):
+        hits = [f for f in findings
+                if f["source"] == source and f["mistranslates"]]
+        out.append({
+            "source": source,
+            "pinned": hits[0]["pinned"],
+            "chapters": sorted({f["chapter"] for f in hits}),
+            "reason": next((f["reason"] for f in hits if f["reason"]), ""),
+        })
+    return out
 
 
 def verify_project(project_dir: Path, cfg: dict) -> dict:
     """Scan every chapter that has both a source and a translation.
 
     Returns
-    {"chapters": [record], "examined": int, "flagged": int, "confirmed": int,
-     "confirmed_chapters": [str], "errors": [str]}.
+    {"chapters": [record], "contaminated_terms": [record], "examined": int,
+     "flagged": int, "confirmed": int, "calls": int, "confirmed_chapters":
+     [str], "errors": [str]}.
 
     One record per chapter EXAMINED, in chapter order, clean chapters
     included with empty "terms" and "findings" -- the record set is the input
@@ -234,6 +352,7 @@ def verify_project(project_dir: Path, cfg: dict) -> dict:
     records: list[dict] = []
     errors: list[str] = []
     flagged = 0
+    by_term: dict[str, dict] = {}
     for chapter in project.discover(root):
         translated = paths["translated"] / chapter.file
         if not translated.is_file():
@@ -245,34 +364,74 @@ def verify_project(project_dir: Path, cfg: dict) -> dict:
             errors.append(f"{chapter.file}: {exc}")
             continue
         source_lines = source_body.splitlines()
-        rows = scan_chapter(cfg, g, source_lines, translated_body.splitlines())
-        record = {"chapter": chapter.file, "terms": rows, "findings": [],
+        translated_lines = _chapter_lines(translated_body)
+        record = {"chapter": chapter.file, "terms": [], "findings": [],
                   "error": None}
+        if len(source_lines) != len(translated_lines):
+            message = (f"{chapter.file}: source has {len(source_lines)} lines "
+                       f"but the translation has {len(translated_lines)} - the "
+                       f"line indices stage 2 pairs cannot be trusted, so the "
+                       f"chapter was not checked")
+            errors.append(message)
+            record["error"] = message
+            records.append(record)
+            continue
+        rows = scan_chapter(cfg, g, source_lines, translated_lines)
         if rows:
             flagged += 1
             by_source = {entry.get("source", ""): entry
                          for entry in g.get("terms", [])}
-            records_for_prompt = [
-                _term_record(by_source.get(row["source"], {}), row, source_lines)
-                for row in rows[:MAX_TERMS_PER_CALL]
-            ]
-            verdicts, error = _verdicts(root, cfg, chapter.file, records_for_prompt)
-            if error:
-                errors.append(error)
-                record["error"] = error
-            record["findings"] = [verdicts[row["source"]]
-                                  for row in rows[:MAX_TERMS_PER_CALL]
-                                  if row["source"] in verdicts]
+            record["terms"] = rows
+            for row in rows:
+                entry = by_source.get(row["source"], {})
+                term = by_term.setdefault(row["source"], {
+                    "source": row["source"],
+                    "pinned": row["translation"],
+                    "definition": entry.get("definition", ""),
+                    "category": entry.get("category", ""),
+                    "contexts": [],
+                })
+                for index in _hit_lines(source_lines, entry):
+                    term["contexts"].append(
+                        _context(chapter.file, source_lines, translated_lines,
+                                 index, row))
         records.append(record)
 
-    confirmed_chapters = [record["chapter"] for record in records
-                          if any(f["mistranslates"] for f in record["findings"])]
+    findings: dict[tuple[str, str], dict] = {}
+    calls = 0
+    for source in sorted(by_term):
+        term = by_term[source]
+        contexts = term["contexts"]
+        for start in range(0, len(contexts), MAX_CONTEXTS_PER_CALL):
+            batch = contexts[start:start + MAX_CONTEXTS_PER_CALL]
+            calls += 1
+            verdicts, error = _verdicts(root, cfg, term, batch)
+            if error:
+                errors.append(error)
+                chapters = {context["chapter"] for context in batch}
+                for record in records:
+                    if record["chapter"] in chapters and not record["error"]:
+                        record["error"] = error
+            _merge(findings, verdicts)
+
+    per_chapter: dict[str, list[dict]] = {}
+    for (_source, chapter), finding in findings.items():
+        per_chapter.setdefault(chapter, []).append(finding)
+    for record in records:
+        record["findings"] = per_chapter.get(record["chapter"], [])
+
+    resolved = list(findings.values())
+    confirmed_chapters = sorted(
+        record["chapter"] for record in records
+        if any(f["mistranslates"] for f in record["findings"]))
     return {
         "chapters": records,
+        "contaminated_terms": _contamination(resolved),
         "examined": len(records),
         "flagged": flagged,
-        "confirmed": sum(1 for record in records
-                         for f in record["findings"] if f["mistranslates"]),
+        "confirmed": sum(1 for finding in resolved
+                         if finding["mistranslates"]),
+        "calls": calls,
         "confirmed_chapters": confirmed_chapters,
         "errors": errors,
     }

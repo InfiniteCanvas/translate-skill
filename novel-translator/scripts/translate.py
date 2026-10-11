@@ -1058,17 +1058,24 @@ def cmd_verify(args: argparse.Namespace, project_dir: Path) -> int:
 
     Stage 1 is deterministic and free (lib/verify.py: source matched against
     the glossary, then the translation's rendering checked); stage 2 spends the
-    `verify` provider job's calls on the chapters stage 1 flagged and asks
-    whether forcing the pinned rendering there mistranslates.
+    `verify` provider job's calls on the terms that scan flags, and asks whether
+    forcing the pinned rendering produces a mistranslation. Stage 2 batches BY
+    TERM across the book, because "different words in different contexts" is
+    only visible by comparing one term's usages against each other, and splits a
+    term's occurrences into follow-up calls so no context is ever dropped. The
+    verdict is still per (term, chapter).
 
     The status flip is the one write that touches project state, and it fires
     ONLY on a stage-2 confirmation: `needs-review` is what makes a chapter
     eligible for `retry`, so a counting heuristic must never schedule a
-    re-translation. Nothing in translated/ is ever rewritten.
+    re-translation. Nothing in translated/ is ever rewritten, and glossary.json
+    is never written either -- a confirmation is additionally reported as a
+    per-term contamination record instead.
 
     --out defaults to logs/verify.jsonl; a relative --out resolves against the
     project directory, so the artifact lands beside the chapters it describes
-    wherever the command was run from."""
+    wherever the command was run from. Every line carries a `kind`: "chapter"
+    for the per-chapter record, "contamination" for a confirmed glossary entry."""
     cfg = _load_config(project_dir)
     manifest = _load_manifest(project_dir)
     out_path = Path(args.out) if args.out else Path("logs/verify.jsonl")
@@ -1093,8 +1100,11 @@ def cmd_verify(args: argparse.Namespace, project_dir: Path) -> int:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
-        "".join(json.dumps(record, ensure_ascii=False) + "\n"
-                for record in result["chapters"]),
+        "".join(json.dumps({"kind": "chapter", **record}, ensure_ascii=False)
+                + "\n" for record in result["chapters"])
+        + "".join(json.dumps({"kind": "contamination", **term},
+                             ensure_ascii=False) + "\n"
+                  for term in result["contaminated_terms"]),
         encoding="utf-8", newline="\n")
 
     logger.log_event(project_dir, {
@@ -1102,7 +1112,10 @@ def cmd_verify(args: argparse.Namespace, project_dir: Path) -> int:
         "chapters": result["examined"],
         "flagged": result["flagged"],
         "confirmed": result["confirmed"],
+        "calls": result["calls"],
         "confirmed_chapters": result["confirmed_chapters"],
+        "contaminated_terms": [t["source"]
+                               for t in result["contaminated_terms"]],
         "errors": result["errors"],
         "report": str(out_path),
     })
@@ -1112,7 +1125,8 @@ def cmd_verify(args: argparse.Namespace, project_dir: Path) -> int:
 
     print(f"[verify] {result['examined']} chapter(s) examined, "
           f"{result['flagged']} flagged by the deterministic stage, "
-          f"{result['confirmed']} term(s) confirmed by the model stage")
+          f"{result['confirmed']} term/chapter finding(s) confirmed by the "
+          f"model stage across {result['calls']} call(s)")
     print(f"[verify] report: {out_path}")
     for chapter in result["confirmed_chapters"]:
         terms = [f["source"] for record in result["chapters"]
@@ -1120,6 +1134,11 @@ def cmd_verify(args: argparse.Namespace, project_dir: Path) -> int:
                  for f in record["findings"] if f["mistranslates"]]
         print(f"[verify] {chapter} -> needs-review: forcing "
               f"{', '.join(repr(t) for t in terms)} mistranslates this chapter")
+    for term in result["contaminated_terms"]:
+        print(f"[verify] glossary contamination: {term['source']!r} pinned as "
+              f"{term['pinned']!r} mistranslates in "
+              f"{', '.join(term['chapters'])} - the entry itself is wrong, so "
+              f"the next chapter translated against it repeats this")
     for error in result["errors"]:
         print(f"[warn] verify: {error}")
     if result["confirmed_chapters"]:

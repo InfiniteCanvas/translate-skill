@@ -1317,19 +1317,20 @@ so v017 deletes exactly the ones that step wrote and keeps every customization �
 including one `--force` did not overwrite.
 
 `v018` (DESCRIPTION: `record the `verify` provider job added for `translate verify`
-(report-only: it inherits the translator's blocks until authored; nothing is
-rewritten)`) records `providers.verify`, the job `translate verify`'s stage 2
-spends calls on. A job named nowhere **inherits the translator's whole array**
-(`_normalize_providers`), so the new job resolves to working blocks without any
-project file changing — which is why the step writes nothing: materializing it
-would be exactly the pre-v016 behaviour the overlay chain removed (pinning one
-machine's endpoint into every project it touched, where it would then out-rank a
-later edit to `config.local.json`). It follows v012's report-only precedent
-rather than v007's: there is no old-default sentinel to match on, because unlike
-v012 even a threshold's MEANING did not shift — `verify` simply resolves an array
-it did not resolve before. The report names what the job resolves to, from the
-**raw** project file (a migration reads layers 0 and 2 only, so a line about "the
-endpoint it will use" would describe one machine's layering):
+(report-only: it inherits the translator's blocks until authored; config.json is not
+rewritten, and the job's two prompt templates are synced in)`) records
+`providers.verify`, the job `translate verify`'s stage 2 spends calls on. A job
+named nowhere **inherits the translator's whole array** (`_normalize_providers`), so
+the new job resolves to working blocks without any project file changing — which is
+why the step rewrites no **config**: materializing it would be exactly the pre-v016
+behaviour the overlay chain removed (pinning one machine's endpoint into every
+project it touched, where it would then out-rank a later edit to
+`config.local.json`). It follows v012's report-only precedent rather than v007's:
+there is no old-default sentinel to match on, because unlike v012 even a threshold's
+MEANING did not shift — `verify` simply resolves an array it did not resolve before.
+The report names what the job resolves to, from the **raw** project file (a migration
+reads layers 0 and 2 only, so a line about "the endpoint it will use" would describe
+one machine's layering):
 
 ```
 [ok] config: providers.verify is a new job (v018) - it inherits the translator's
@@ -1340,6 +1341,15 @@ fan-out differently.
 
 A project that had already authored `providers.verify` gets a line saying so and
 is otherwise untouched.
+
+What the step **does** write is templates. It calls `sync_templates`, which copies the
+two prompts the job needs — `glossary_verify.md` for stage 2 and
+`consensus_verify.md` for its fan-out — into a project that does not have them, so
+`verify` is runnable immediately. `config.json` is never written, but the step is not
+"writes nothing": `force`/`confirm` are unused *by the config half* and passed
+through to `sync_templates`, which does have an overwrite to consent to. Idempotent
+by construction — `sync_templates` is silent on a project already carrying both
+templates, so a second call reports the same line and writes nothing further.
 
 `v015` (DESCRIPTION: `a fan-out job can name its own arbitrator:
 providers.consensus_<job> overrides providers.consensus for that job's merge;
@@ -1783,32 +1793,69 @@ overrides it; a relative path resolves against the project directory). It is a
 part of the two-tier scheme above, and is never indexed or pruned. It is
 appended to no index and read by no other command.
 
-One line per chapter **examined** — a chapter that has both `source/` and
-`translated/`, in chapter order. Clean chapters are included with empty
-`terms` and `findings`, so the file is the complete result set a later
-visualization is built from, not only its failures.
+Every line carries a `kind`, because the file holds two grains: `"chapter"` (one per
+chapter **examined** — a chapter that has both `source/` and `translated/`, in
+chapter order, clean chapters included with empty `terms` and `findings`, so the file
+is the complete result set a later visualization is built from, not only its
+failures) and `"contamination"` (one per glossary entry the model confirmed).
 
 ```json
-{"chapter": "CHAPTER_0007.md",
+{"kind": "chapter", "chapter": "CHAPTER_0007.md",
  "terms":   [{"source": "天道", "translation": "Heavenly Dao",
               "src_count": 8, "tgt_count": 1, "floor": 2}],
  "findings": [{"source": "天道", "pinned": "Heavenly Dao",
+               "chapter": "CHAPTER_0007.md",
                "source_count": 8, "rendered_count": 1, "floor": 2,
                "mistranslates": true, "reason": "..."}],
  "error": null}
+{"kind": "contamination", "source": "天道", "pinned": "Heavenly Dao",
+ "chapters": ["CHAPTER_0007.md", "CHAPTER_0012.md"], "reason": "..."}
 ```
 
 | Key | Meaning |
 |---|---|
+| `kind` | `"chapter"` or `"contamination"` — the record's grain |
 | `chapter` | the chapter file name |
 | `terms` | **stage 1** — the under-used glossary terms the deterministic scan flagged on this chapter, one per row, with the counts it judged by (`floor` = `max(1, ceil(src_count × min_term_coverage))`) |
-| `findings` | **stage 2** — one verdict per term offered to the model, `mistranslates` carrying the verdict. Present only for a chapter stage 1 flagged; a term the model omitted appears in neither list |
+| `findings` | **stage 2** — one verdict per `(term, chapter)` pair offered to the model, `mistranslates` carrying the verdict and `chapter` naming which chapter it is about. Present only for a chapter stage 1 flagged; a `(term, chapter)` the model omitted appears in neither list |
 | `error` | the failure that stopped this chapter's stage 2, or `null` |
+| `chapters` | (contamination records) every chapter the term was confirmed in |
 
 `terms` and `findings` answer different questions and neither substitutes for
 the other: `terms` says the count looked low, `findings` says a model judged
 the sense. A chapter whose `terms` is non-empty and whose findings are all
 `mistranslates: false` was scanned and came back clean.
+
+### How stage 2 is batched
+
+Stage 2 batches **by term across the whole book**, not by chapter: glossary drift is
+"words meaning different things in different contexts", and spotting that needs one
+term's usages laid against each other — a per-chapter call structurally cannot see a
+chapter that renders a term faithfully contradict one that does not, and a recurring
+name would otherwise pay the rubric once per chapter. One call carries one term plus
+**contexts**: each is the ±2-line window (`CONTEXT_WINDOW`) around one line the term
+occurs on, carrying the source lines and the translation lines at the **same 1-based
+line numbers**, plus that chapter's counts. Index N in the source is index N in the
+translation — the line-indexed protocol VALIDATE enforces — so a chapter whose
+translation line count differs from its source's is reported in `error` and left
+unchecked rather than paired by guesswork. Both ends of the translation are read the
+way `read_chapter` reads a source (blank lines trimmed), because those trimmed source
+lines are what "line N" means to VALIDATE too.
+
+A term's contexts are sent in batches of at most `MAX_CONTEXTS_PER_CALL` (8), and a
+term with more is split into **follow-up calls until every context is covered**: a
+dropped context is exactly where a contaminating one hides, so the cap is paid for
+with more calls rather than a silent gap. The call count is printed by the command
+(`across N call(s)`) and recorded as `calls` in the run event. A `(term, chapter)`
+whose contexts span batches still yields ONE finding — a batch boundary is a payload
+limit, not a second opinion. A verdict naming a term or chapter that was not offered
+is dropped, and a `(term, chapter)` the model omits is never confirmed.
+
+A confirmed term flags its chapter `needs-review` **and** emits a `contamination`
+record naming every chapter it was confirmed in, with a console line naming the term
+and those chapters. `glossary.json` is **never** written: it feeds the translator's
+pinned-terms list, so a flag stored there would change translation behaviour, which
+is a separate decision.
 
 ## Draft artifacts (`draft/`)
 
@@ -1951,7 +1998,7 @@ after filling — typos fail fast.
 | `glossary_merge.md` | glossary collision merge | `existing_json proposed_json` |
 | `glossary_cleanup.md` | balance drift-signal cleanup | `source_lang target_lang term_list sample_lines` |
 | `glossary_review.md` | `review glossary` model tier | `source_lang target_lang entries` |
-| `glossary_verify.md` | `verify` model tier (stage 2) | `source_lang target_lang chapter terms` |
+| `glossary_verify.md` | `verify` model tier (stage 2; one term per call, batched by term) | `source_lang target_lang term contexts context_count` |
 | `notes_review.md` | `review notes` model tier | `source_lang target_lang entries` |
 | `style_profile.md` | `--style auto` init / `profile` (legacy) | `source_lang target_lang sample_text` |
 | `consensus.md` | arbitration for a job with no `consensus_<job>.md` in either layer | `task_prompt candidates_section` |
