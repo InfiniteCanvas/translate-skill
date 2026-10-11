@@ -382,7 +382,8 @@ def make_autobuild_project(td: str) -> Path:
     directly: config.json (for cmd_build_epub's strict load and the
     auto_build_epub gate) and novel_info.json (the autobuild's guard)."""
     root = Path(td)
-    write_lf(root / "config.json", '{"providers": {}}\n')
+    write_lf(root / "config.json",
+             '{"providers": {"translator": {"base_url": "http://test.invalid/v1"}}}\n')
     write_lf(root / "novel_info.json",
              json.dumps(NOVEL_INFO, ensure_ascii=False, indent=2) + "\n")
     return root

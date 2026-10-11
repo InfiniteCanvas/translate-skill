@@ -63,8 +63,11 @@ uv run "$SCRIPT" init --project . \
   --source-url "https://example.com/novel" \
   --source-lang zh --target-lang en \
   --tags "xianxia,cultivation" \
-  --api-base "http://100.85.218.125:8888/v1"
+  --api-base "https://api.example.com/v1"
 ```
+
+Omit `--api-base` to leave the endpoint to `config.local.json` (below); it
+defaults to no endpoint at all, so a machine with no overlay must pass it.
 
 Creates the folder structure, `config.json`, `novel_info.json`,
 `chapters.json`, empty `glossary.json`/`tn_history.json`, copies the prompt
@@ -100,12 +103,13 @@ story_state.json (pass --force to reset)`.
 Optional: `--cover-url` to point at a cover image directly.
 
 If the skill ships a `config.local.json` (it is gitignored, so you will only
-ever have one if you created it), `init` deep-merges it into the new
-`config.json` automatically — your endpoint, model and auth land in every
-project without retyping them, and everything the overlay does not mention
-(languages, thresholds, the `version` stamp) is left as `init` wrote it.
-Nothing changes when the file is absent; a malformed one warns and is skipped
-without failing `init`. See `sync-config` below to re-apply it later.
+ever have one if you created it), every command resolves through it
+automatically — your endpoint, model and auth reach every project without
+retyping them, and it is never copied into a project's `config.json`, so
+editing it changes every project's behaviour at once. The project's own keys
+always win over the overlay. Nothing changes when the file is absent; a
+malformed one fails the command with exit 2 rather than silently leaving you
+on the wrong endpoint. See `sync-config` below to inspect the resolution.
 
 Downloading more chapters later? Drop them in `source/` and run
 `uv run "$SCRIPT" sync --project .` - it re-scans `source/`, backfills
@@ -120,31 +124,45 @@ commits `sync: rescan source`; run it after every download batch.
 uv run "$SCRIPT" sync-config --project .
 ```
 
-Deep-merges the skill's `config.local.json` into this project's
-`config.json` — the same pass `init` does — so a project created before you
-wrote the file (or one whose endpoint you have since changed) picks up your
-current settings. Overlay keys win; every other key in the project file is
-preserved, including the `version` stamp, so this is safe to re-run
-(idempotent: a second run reports `no changes`). An absent overlay is a
-clean no-op (`[ok] no local config at ... - nothing to sync`, exit 0); an
-unreadable or malformed one fails with exit 2 rather than silently leaving
-the project on the wrong endpoint. Commits as `sync-config: apply local
-config`.
+**Reports** what this project resolves to across its three layers — the code
+defaults, then the skill's `config.local.json`, then the project's own
+`config.json`, each overwriting the one below key-wise — and writes nothing:
+
+```
+[ok] config.local.json: 3 key(s) resolve from the overlay (config.json is not modified)
+[ok] translator https://api.minimax.io/v1 model=MiniMax-M3
+...
+[ok] layers: code defaults <- config.local.json <- config.json
+```
+
+Use it to see which layer is answering for which key. Exit 0 on success or when
+there is no overlay (`[ok] no local config at ... - nothing to sync`); exit 2
+when the overlay is unreadable/malformed, the project has no `config.json`, or
+the layers resolve no usable config. Nothing is committed — there is nothing to
+commit.
 
 Merge rules worth knowing: scalars and objects merge key-by-key, but a
 `providers.<job>` given as an **array** replaces that job's blocks
 wholesale, while a single block **object** merges into every existing block.
 So `{"providers": {"translator": {"model": "x"}}}` re-points only the model
-and keeps the project's `base_url`/auth, while a full array replaces the
-whole job (this is how a different endpoint gets swapped in). The overlay
-may not carry `version` — that stamp belongs to `init`/`migrate` alone and
-is rejected if present.
+and keeps the endpoint below it, while a full array replaces the whole job
+(this is how a different endpoint gets swapped in) — which is why an overlay's
+endpoint cannot override a project that authored an array of its own. The
+overlay may not carry `version` — that stamp belongs to `init`/`migrate` alone
+and is rejected if present.
 
-**Secrets:** an inline `"api_key": "sk-..."` in the overlay is gitignored in
-this repo, but merging it puts it into the project's `config.json`, which the
-project repository *does* commit — `sync-config` prints a `[warn]` naming
-every such key. Prefer `"api_key_env": "MY_KEY"` (the key then stays in the
-environment and never reaches any file).
+**`base_url` is required.** Every provider block must resolve a non-empty
+endpoint from `config.local.json` or the project; the shipped defaults no
+longer carry one, so a config that resolves none is refused at load with the
+job named (`[FAIL] cannot read config.json: providers.translator resolves no
+base_url: ...`, exit 2) instead of failing at the first API call. A project
+inited without `--api-base` gets its endpoint from the overlay.
+
+**Secrets:** an inline `"api_key": "sk-..."` in the overlay stays in that
+file and is never copied into a project, so it cannot reach a project
+repository — `init` and `sync-config` still print a `[warn]` naming every such
+key, because it is on disk in plaintext. Prefer `"api_key_env": "MY_KEY"` (the
+key then stays in the environment and never reaches any file).
 
 Re-run seeding with `uv run "$SCRIPT" seed --project .` after adding
 chapters or editing a catalogue; `--min-count N` overrides the seed

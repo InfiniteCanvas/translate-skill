@@ -1,4 +1,18 @@
-"""Configuration loading/saving and per-job LLM provider settings."""
+"""Configuration loading/saving and per-job LLM provider settings.
+
+A config resolves in three layers, lowest precedence first: DEFAULTS /
+PROVIDER_DEFAULTS (layer 0, this module), the skill's config.local.json
+(layer 1, located through SKILL_ROOT), and the project's own config.json
+(layer 2). load_config() composes them at READ time and never writes layer 0
+or layer 1 into layer 2, so a project's config.json holds only the keys a
+human put there.
+
+Two module constants exist for that layering. SKILL_ROOT is the skill package
+directory, which is where config.local.json lives -- lib modules reach the
+overlay through it without the CLI having to pass anything. RETIRED_BASE_URL
+is the private LAN address PROVIDER_DEFAULTS used to ship as a fallback; no
+code resolves it any more, and it is kept only so migration v016 can
+recognize the value in an existing project's config.json and strip it."""
 
 import json
 from pathlib import Path
@@ -34,21 +48,24 @@ DEFAULTS: dict = {
     "review_report_path": "review-report.md",
 }
 
-DEFAULT_BASE_URL = "http://100.85.218.125:8888/v1"
+SKILL_ROOT = Path(__file__).resolve().parent.parent.parent
+
 DEFAULT_MAX_TOKENS = 65536
+
+RETIRED_BASE_URL = "http://100.85.218.125:8888/v1"
 
 LOCAL_CONFIG_NAME = "config.local.json"
 
 LOCAL_CONFIG_FORBIDDEN = ("version",)
 
 PROVIDER_DEFAULTS: dict[str, dict] = {
-    "translator": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.7, "top_p": 1.0, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
-    "glossary": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
-    "reviewer": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.0, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
-    "annotator": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
-    "recap": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
-    "profile": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.3, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
-    "consensus": {"base_url": DEFAULT_BASE_URL, "model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "translator": {"model": None, "temperature": 0.7, "top_p": 1.0, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "glossary": {"model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "reviewer": {"model": None, "temperature": 0.0, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "annotator": {"model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "recap": {"model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "profile": {"model": None, "temperature": 0.3, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
+    "consensus": {"model": None, "temperature": 0.2, "max_tokens": DEFAULT_MAX_TOKENS, "thinking": False},
 }
 
 
@@ -145,8 +162,8 @@ def _normalize_providers(providers: dict) -> dict:
     it inherits only the translator's FIRST block: that block's authored
     keys win (base_url/model/auth from the project's endpoint, and its
     temperature if it sets one), with the consensus defaults (temperature
-    0.2) filling only what it leaves unset -- deliberately not the
-    hard-coded DEFAULT_BASE_URL. An explicitly authored consensus array
+    0.2) filling only what it leaves unset -- deliberately not an endpoint of
+    its own, since layer 0 ships none. An explicitly authored consensus array
     with more than one block is rejected; inherited consensus is always
     exactly one block, so legacy configs can never trip that check.
     An authored `consensus_<job>` key (a per-job arbitrator -- see
@@ -176,6 +193,7 @@ def _normalize_providers(providers: dict) -> dict:
         normalized[job] = [_with_defaults(job, element) for element in authored]
     _require_consensus_when_fanning_out(providers, normalized)
     _normalize_per_job_consensus(providers, normalized)
+    _require_base_url(normalized)
     for key, value in providers.items():
         if key not in normalized:
             normalized[key] = value
@@ -225,11 +243,72 @@ def _require_consensus_when_fanning_out(providers: dict,
         f"jobs a single provider block.")
 
 
-def load_config(project_dir: Path) -> dict:
-    """Read <project_dir>/config.json, deep-merge onto DEFAULTS, and
-    guarantee cfg["providers"] contains every job in PROVIDER_JOBS.
+def _require_base_url(normalized: dict[str, list[dict]]) -> None:
+    """Refuse a config whose resolved provider blocks leave an endpoint
+    unresolved, naming the offending job and block.
 
-    Raises FileNotFoundError with a clear message if config.json is absent.
+    Layer 0 ships no `base_url` -- the private LAN address it used to ship was
+    one machine's endpoint, and a config that omitted the key inherited it
+    silently and failed at the first call instead of at load. Every block must
+    therefore resolve a non-empty endpoint from layer 1 (config.local.json) or
+    layer 2 (the project), and a config that resolves none is refused here with
+    the job named, where the message can still be acted on.
+
+    Blocks run through here are post-inheritance, so a job left unconfigured
+    inherits the translator's endpoint and passes; only a config with no
+    endpoint anywhere fails. A per-job `consensus_<job>` arbitrator is NOT
+    checked here: those blocks are stored without defaults by design and are
+    resolved at read time by consensus_provider, which layers them onto the
+    already-validated global `consensus` block and so always inherits an
+    endpoint.
+
+    Raises ValueError, which load_config surfaces to the CLI as
+    `[FAIL] cannot read config.json: ...` (exit 2)."""
+    for job in PROVIDER_JOBS:
+        for index, block in enumerate(normalized.get(job) or ()):
+            if str(block.get("base_url") or "").strip():
+                continue
+            suffix = f"[{index}]" if len(normalized[job]) > 1 else ""
+            raise ValueError(
+                f"providers.{job}{suffix} resolves no base_url: set it in the "
+                f"project's config.json or in the skill's {LOCAL_CONFIG_NAME}")
+
+
+def _layer_base() -> dict:
+    """Layer 0 as a fresh dict: DEFAULTS, and nothing else.
+
+    `providers` is deliberately absent rather than pre-seeded with
+    PROVIDER_DEFAULTS. The two are applied at the same place by different
+    rules: PROVIDER_DEFAULTS fills the keys one block leaves unset
+    (_with_defaults), while the block a job gets when it is named in NO layer
+    is the translator's own list -- an inheritance decision that only exists
+    before normalization. Pre-seeding layer 0 would make every job present at
+    merge time, and _normalize_providers could then never tell "this job was
+    authored nowhere" from "this job was authored as a block", so an unconfigured
+    job would resolve to bare sampling defaults instead of inheriting the
+    project's endpoint."""
+    return dict(DEFAULTS)
+
+
+def load_config(project_dir: Path, skill_root: Path | None = None) -> dict:
+    """Compose the project's config.json over config.local.json over DEFAULTS
+    and guarantee cfg["providers"] contains every job in PROVIDER_JOBS.
+
+    Three layers, lowest precedence first: DEFAULTS/PROVIDER_DEFAULTS (layer 0),
+    the skill's config.local.json (layer 1) and this project's config.json
+    (layer 2). Each layer is applied onto the one below it through
+    merge_overlay, so a higher layer overwrites a lower one key-wise and the
+    project's own keys always win. The composition happens here, at READ time:
+    nothing below layer 2 is ever written to disk, which is what lets an edit
+    to config.local.json change every project's behaviour immediately.
+
+    skill_root is the skill package directory that holds config.local.json;
+    pass None for a config that must not see layer 1 at all. Every CLI command
+    passes SKILL_ROOT (migrations do not: a migration must never fold layer 1
+    into a project file).
+
+    Raises FileNotFoundError with a clear message if config.json is absent,
+    and ValueError for a malformed file or a config that resolves no endpoint.
     """
     cfg_path = Path(project_dir) / "config.json"
     if not cfg_path.is_file():
@@ -239,7 +318,9 @@ def load_config(project_dir: Path) -> dict:
     user = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     if not isinstance(user, dict):
         raise ValueError(f"{cfg_path} must contain a JSON object")
-    cfg = _deep_merge(DEFAULTS, user)
+    overlay = load_local_config(skill_root) if skill_root is not None else None
+    cfg = merge_overlay(_layer_base(), overlay or {})
+    cfg = merge_overlay(cfg, user)
     providers = cfg.get("providers")
     cfg["providers"] = _normalize_providers(providers if isinstance(providers, dict) else {})
     return cfg
@@ -292,24 +373,39 @@ def load_local_config(skill_root: Path) -> dict | None:
 def merge_overlay(base: dict, overlay: dict) -> dict:
     """Deep-merge the overlay ONTO base, overlay values winning.
 
-    The project's own keys survive anything the overlay does not mention --
-    which is the whole point: source_lang/target_lang, the version stamp and
-    every threshold the user set stay put while their endpoint, model and auth
-    are replaced from the overlay.
+    Generalized from "project <- overlay" to one step of the layering chain,
+    "layer N <- layer N-1", and applied once per adjacent pair: load_config
+    runs base=layer 0, overlay=layer 1 and then base=that result, overlay=layer
+    2. Each pair composes the same way, so a key a layer never mentions keeps
+    the value the layer below resolved.
+
+    Keys the overlay does not mention survive -- which is the whole point:
+    source_lang/target_lang, the version stamp and every threshold the user
+    set stay put while their endpoint, model and auth are replaced from the
+    layer above.
 
     Lists are replaced wholesale, never merged element-wise. providers.<job>
     is an array of blocks (the consensus fan-out), and splicing two arrays
     index-by-index would produce a Frankenstein of both machines' models with
-    no way to tell which block came from where; an overlay naming a job as an
-    ARRAY therefore takes the job over completely.
+    no way to tell which block came from where; a higher layer naming a job as
+    an ARRAY therefore takes the job over completely.
 
     The one deliberate exception is a providers job given as a single block
     object (the legacy shape, e.g. {"model": "x"}): that merges key-wise into
-    EVERY block the project already has. Replacing the array outright here
-    would drop the project's base_url and auth for the job, and the missing
-    endpoint would then fall back to PROVIDER_DEFAULTS' hard-coded
-    DEFAULT_BASE_URL -- silently sending the next run at a different server.
-    A partial overlay must never quietly un-point a working provider."""
+    EVERY block the base already has. Replacing the array outright here would
+    drop the lower layer's base_url and auth for the job, and -- now that layer
+    0 ships no endpoint of its own -- a partial overlay could leave the job
+    with no endpoint at all. A partial overlay must never quietly un-point a
+    working provider.
+
+    That rule composes across three layers exactly as it does across two, and
+    the result is intended rather than accidental: with layer 0's translator
+    replaced by the local overlay's [A, B] and the project naming only
+    {"model": "m"}, the composed translator is [{A, model}, {B, model}] -- the
+    project's single block spread across BOTH of the overlay's blocks. It is
+    what "a partial config changes the model everywhere" means, and it is the
+    case tests/test_provider_arrays.py pins.
+    """
     merged = _deep_merge(base, overlay)
     base_providers = base.get("providers") if isinstance(base, dict) else None
     over_providers = overlay.get("providers") if isinstance(overlay, dict) else None
@@ -328,6 +424,15 @@ def apply_overlay(project_dir: Path, overlay: dict) -> tuple[dict, list[str]]:
     """Merge the overlay onto the project's RAW config.json and save the
     result. Returns (changed_keys, report_lines).
 
+    NOT USED BY ANY COMMAND. Read-time layering removed both production call
+    sites (init and sync-config): copying the overlay into the project froze a
+    snapshot there, and the project key then out-ranked a later edit to the
+    overlay -- the opposite of what the layer is for. Kept as a library helper
+    because it still owns the write-side guarantees below (raw base, validate
+    before write), which a future command that deliberately wants a one-off
+    copy would otherwise have to re-derive. Do not wire a command back to it
+    without re-deciding that.
+
     Works from the raw on-disk file rather than load_config's merged form, so
     the write is minimal: the file keeps its shape and gains only the
     overlay's keys, instead of being rewritten with every DEFAULTS value
@@ -335,10 +440,10 @@ def apply_overlay(project_dir: Path, overlay: dict) -> tuple[dict, list[str]]:
     load_config would never fabricate, and which the overlay may not set)
     exactly as the project left it.
 
-    Validates the merged form through load_config BEFORE writing, so a
-    malformed overlay -- a providers block of the wrong shape, say -- fails
-    with a clear error instead of leaving a config.json that every later
-    command rejects.
+    Validates the merged provider form through _normalize_providers BEFORE
+    writing, so a malformed overlay -- a providers block of the wrong shape,
+    say -- fails with a clear error instead of leaving a config.json that every
+    later command rejects.
 
     The base is shape-checked too, not just the result: this reads the file
     RAW, and a config.json that is itself corrupt (a bare number or null
@@ -455,9 +560,10 @@ def consensus_provider(cfg: dict, job: str) -> dict:
     Why the layer is the RESOLVED global and not PROVIDER_DEFAULTS: a user who
     writes {"model": "big-arbiter"} and nothing else must keep their working
     base_url and auth. Filling from the defaults instead would silently re-point
-    the merge at the hard-coded DEFAULT_BASE_URL -- the exact failure
-    merge_overlay exists to prevent ("a partial overlay must never quietly
-    un-point a working provider").
+    the merge at an endpoint of the defaults' choosing -- layer 0 ships none,
+    so the merge would aim wherever the global block points, which is exactly
+    the failure merge_overlay exists to prevent ("a partial overlay must never
+    quietly un-point a working provider").
 
     Resolved at READ time rather than in _normalize_providers, because the test
     suite and any in-process caller hand consensus.chat a hand-built cfg that
@@ -471,8 +577,8 @@ def consensus_provider(cfg: dict, job: str) -> dict:
     instead of failing later as an IndexError. A cfg with no `consensus` key at
     all raises KeyError from provider() exactly as before: load_config
     guarantees the key, so that is reachable only from a hand-built cfg, where
-    falling back to the defaults would aim the merge at the hard-coded
-    DEFAULT_BASE_URL instead of failing loudly.
+    falling back to the defaults would strip the global block's endpoint and
+    aim the merge nowhere instead of failing loudly.
     """
     blocks = _provider_blocks(cfg["providers"], CONSENSUS_PREFIX + job)
     if not blocks:

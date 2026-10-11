@@ -192,7 +192,8 @@ def case_3_null_numeric_config_is_fail_exit_2() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "config.json").write_text(
-            '{"providers": {}, "min_term_occurrences": null}\n',
+            '{"providers": {"translator": {"base_url": "http://test.invalid/v1"}},'
+            ' "min_term_occurrences": null}\n',
             encoding="utf-8", newline="\n",
         )
         source = root / "source"
@@ -214,7 +215,8 @@ def case_3_null_numeric_config_is_fail_exit_2() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "config.json").write_text(
-            '{"providers": {}}\n', encoding="utf-8", newline="\n")
+            '{"providers": {"translator": {"base_url": "http://test.invalid/v1"}}}\n',
+            encoding="utf-8", newline="\n")
         (root / "glossary.json").write_text(
             '{"terms": [{"source": "灵根", "variants": [], '
             '"translation": "spirit root"}]}\n',

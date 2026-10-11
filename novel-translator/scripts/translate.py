@@ -49,7 +49,6 @@ ASSETS_DIR = SKILL_ROOT / "assets"
 CATALOGUES_DIR = ASSETS_DIR / "catalogues"
 TEMPLATES_SRC_DIR = ASSETS_DIR / "templates"
 
-DEFAULT_API_BASE = config.DEFAULT_BASE_URL
 MARK_STATUSES = ("translated", "pending", "needs-review")
 
 
@@ -111,7 +110,7 @@ def _run_end(project_dir: Path, command: str, outcome: str,
 
 def _load_config(project_dir: Path) -> dict:
     try:
-        return config.load_config(project_dir)
+        return config.load_config(project_dir, SKILL_ROOT)
     except FileNotFoundError as exc:
         raise CliError(f"{project_dir / 'config.json'} not found - run 'init' first") from exc
     except (OSError, ValueError) as exc:
@@ -140,7 +139,7 @@ def _load_config_lenient(project_dir: Path) -> dict | None:
     """Config for the epub auto-build only; util/glossary upkeep commands must
     run without one (None skips the build with a warning)."""
     try:
-        return config.load_config(project_dir)
+        return config.load_config(project_dir, SKILL_ROOT)
     except (OSError, ValueError):
         return None
 
@@ -277,25 +276,20 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     else:
         (project_dir / "style.md").unlink(missing_ok=True)
 
-    providers = {
-        job: [
-            {
-                "base_url": args.api_base,
-                "model": None,
-                "temperature": config.PROVIDER_DEFAULTS[job]["temperature"],
-                "max_tokens": config.PROVIDER_DEFAULTS[job]["max_tokens"],
-                "thinking": config.PROVIDER_DEFAULTS[job]["thinking"],
-            }
-        ]
-        for job in config.PROVIDER_JOBS
-    }
-    providers["translator"][0]["top_p"] = 1.0
+    try:
+        overlay = config.load_local_config(SKILL_ROOT)
+    except ValueError as exc:
+        raise CliError(
+            f"cannot read {config.local_config_path(SKILL_ROOT)}: {exc}") from exc
+
     cfg: dict[str, Any] = {
         "source_lang": args.source_lang,
         "target_lang": args.target_lang,
-        "providers": providers,
     }
-    cfg.update(config.DEFAULTS)
+    if args.api_base:
+        cfg["providers"] = {
+            job: [{"base_url": args.api_base}] for job in config.PROVIDER_JOBS
+        }
     try:
         cfg["version"] = migrations.current_version()
     except Exception as exc:
@@ -303,23 +297,19 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     config.save_config(project_dir, cfg)
     print(f"[init] wrote {paths['config'].name}")
 
-    try:
-        overlay = config.load_local_config(SKILL_ROOT)
-    except ValueError as exc:
-        overlay = None
-        print(f"[warn] local config ignored at init: {exc}")
+    cfg = _load_config(project_dir)
+    if args.api_base:
+        print(f"[init] providers: {args.api_base} (every job)")
+    else:
+        print("[init] providers: none authored - resolved through "
+              "config.local.json / PROVIDER_DEFAULTS")
     if overlay is not None:
         for path_key in config.inline_api_keys(overlay):
-            print(f"[warn] {path_key} is an inline key - it will be committed "
-                  "in this project's git history; prefer api_key_env")
-        try:
-            _changed, overlay_lines = config.apply_overlay(project_dir, overlay)
-        except (OSError, ValueError) as exc:
-            print(f"[warn] local config not applied: {exc}")
-        else:
-            for line in overlay_lines:
-                print(f"[init] {line}")
-            cfg = _load_config(project_dir)
+            print(f"[warn] {path_key} is an inline key - prefer api_key_env; "
+                  "config.local.json is gitignored, so the overlay itself never "
+                  "reaches this project's history")
+        print(f"[init] [ok] config.local.json: {len(overlay)} key(s) resolve "
+              "from the skill overlay (not copied into config.json)")
 
     novel_info: dict[str, Any] = {
         "title": args.title,
@@ -488,17 +478,20 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
 
 
 def cmd_sync_config(args: argparse.Namespace, project_dir: Path) -> int:
-    """Copy the skill's config.local.json into this project.
+    """Report what this project's config resolves to across its three layers.
 
-    The overlay is deep-merged ONTO the project's config.json, not written
-    over it: keys the overlay does not mention (languages, the version stamp,
-    hand-tuned thresholds) are preserved, so this is safe to re-run after
-    changing the overlay. An absent overlay is a clean no-op, not an error --
-    the file is optional, and a machine without one still works.
+    The overlay is no longer copied here: config.local.json is a layer that
+    load_config composes at read time (code defaults <- config.local.json <-
+    config.json), so this command writes nothing. Copying it would freeze a
+    snapshot into config.json and a later edit to the overlay would silently
+    lose to that stale project value -- the opposite of what the layer is for.
+    What it prints instead is the resolution: the overlay's keys, and each
+    provider job's endpoint and model as the three layers settle them.
 
     Exit 0 on success or no-op, 2 when the overlay is missing/unreadable/
-    malformed (a silent skip would point the next translate at a different
-    model, which is worse than a loud failure)."""
+    malformed, or when the layers do not resolve a usable config (a silent skip
+    would point the next translate at a different model, which is worse than a
+    loud failure)."""
     try:
         overlay = config.load_local_config(SKILL_ROOT)
     except ValueError as exc:
@@ -512,16 +505,23 @@ def cmd_sync_config(args: argparse.Namespace, project_dir: Path) -> int:
             f"{project_dir / 'config.json'} not found - run 'init' first")
 
     for path_key in config.inline_api_keys(overlay):
-        print(f"[warn] {path_key} is an inline key - it will be committed in "
-              "this project's git history; prefer api_key_env")
+        print(f"[warn] {path_key} is an inline key - prefer api_key_env; "
+              "config.local.json is gitignored, so it never reaches this "
+              "project's history")
 
-    try:
-        _changed, lines = config.apply_overlay(project_dir, overlay)
-    except (OSError, ValueError) as exc:
-        raise CliError(f"cannot sync config: {exc}") from exc
-    for line in lines:
-        print(line)
-    vcs.commit(project_dir, "sync-config: apply local config")
+    cfg = _load_config(project_dir)
+    keys = sorted(overlay)
+    print(f"[ok] config.local.json: {len(keys)} key(s) resolve from the overlay "
+          f"(config.json is not modified)")
+    for key in keys:
+        if key == "providers":
+            continue
+        print(f"[ok] {key} = {overlay[key]} (config.local.json)")
+    for job in config.PROVIDER_JOBS:
+        block = config.provider(cfg, job)
+        print(f"[ok] {job:<10} {block.get('base_url') or '(none)'} "
+              f"model={block.get('model') or '(unset)'}")
+    print("[ok] layers: code defaults <- config.local.json <- config.json")
     return 0
 
 
@@ -1570,7 +1570,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source-lang", default="zh", help="source language code (default: zh)")
     p.add_argument("--target-lang", default="en", help="target language code (default: en)")
     p.add_argument("--tags", default="", help="comma-separated tag list")
-    p.add_argument("--api-base", default=DEFAULT_API_BASE, help="OpenAI-compatible API base URL")
+    p.add_argument("--api-base", default="",
+                   help="OpenAI-compatible API base URL written into the new "
+                        "project (omit to resolve the endpoint through "
+                        "config.local.json or the project's own config.json)")
     p.add_argument("--cover-url", default=None, help="URL to download the cover image from")
     p.add_argument("--style", default="classic", metavar="NAME|PATH|auto",
                    help="style guide: a preset name, a path to a .md file, or 'auto' for a model-generated profile (default: classic)")

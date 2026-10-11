@@ -195,7 +195,8 @@ def case_1_bom_json_project_files() -> None:
         check("1j state: silent", out == "", f"out={out!r}")
 
         write_bom(root / "config.json",
-                  json.dumps({"max_attempts": 9, "providers": {}}, indent=2))
+                  json.dumps({"max_attempts": 9, "providers": {
+            "translator": {"base_url": "http://test.invalid/v1"}}}, indent=2))
         cfg, out, exc = capture(config.load_config, root)
         check("1k config: BOM'd config.json loads; user value wins, "
               "DEFAULTS still fill untouched keys",
@@ -340,7 +341,8 @@ def case_6_profile_template_bom() -> None:
                  "第一章 灵根\n\n林枫将手掌贴在水晶上。\n")
         write_lf(root / "config.json", json.dumps({
             "source_lang": "zh", "target_lang": "en",
-            "log_llm": False, "providers": {},
+            "log_llm": False,
+            "providers": {"translator": {"base_url": "http://test.invalid/v1"}},
         }, indent=2) + "\n")
         write_bom(root / "templates" / "style_profile.md",
                   "Analyze this {{source_lang}} novel for {{target_lang}}.\n\n"

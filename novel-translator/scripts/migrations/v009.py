@@ -20,7 +20,7 @@ a user who genuinely wanted 8192 cannot be distinguished from one who never
 touched it, and their 8192 is bumped -- the deliberate choice is recoverable
 by setting it back, and the next migrate is a no-op.
 
-No templates change, so sync_templates stays delegated to standard_step and
+No templates change, so this step only calls sync_templates and
 is silent on an up-to-date project. Idempotent: the second call matches the
 NEW default, the rewrite matches nothing, and migrate() reports [].
 """

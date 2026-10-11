@@ -15,11 +15,12 @@ mirroring how epubcheck tolerates a missing docker. All failures surface as
 one [warn] line at most.
 """
 
-import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
+
+from lib import config
 
 GITIGNORE = """\
 # Transient pipeline state and rebuildable artifacts (skill-managed).
@@ -79,16 +80,18 @@ def _first_line(text: str) -> str:
 
 
 def _enabled(project_dir: Path) -> bool:
-    """The raw config.json git_commits flag, defaulting to True (a missing or
-    unreadable config only exists outside an initialized project, where the
-    is_repo gate has already stopped us)."""
+    """The git_commits flag as the project's config layers resolve it (code
+    defaults <- config.local.json <- config.json), defaulting to True.
+
+    A missing or unreadable config only exists outside an initialized project,
+    where the is_repo gate has already stopped us; an incomplete one must not
+    turn a translation run into an unversioned one either, so both fall back
+    to the same True."""
     try:
-        raw = json.loads(
-            (Path(project_dir) / "config.json").read_text(encoding="utf-8-sig")
-        )
+        cfg = config.load_config(Path(project_dir), config.SKILL_ROOT)
     except (OSError, ValueError):
         return True
-    return bool(raw.get("git_commits", True)) if isinstance(raw, dict) else True
+    return bool(cfg.get("git_commits", True))
 
 
 def _managed(project_dir: Path) -> bool:

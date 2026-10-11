@@ -106,6 +106,22 @@ def _raw_config(project_dir: Path) -> dict:
         return {}
 
 
+def _layered_config(project_dir: Path) -> dict:
+    """The project's config as its layers resolve it -- code defaults, then the
+    skill's config.local.json, then the project's own config.json -- so a log
+    flag set in the overlay is honoured like any other config key.
+
+    Falls back to the raw file when the layers cannot be composed: a missing,
+    unreadable, malformed or incomplete config must never stop a run from
+    being logged, and every value read here has a DEFAULTS fallback anyway.
+    Callers resolve once per invocation and cache the answer, so composing the
+    layers here costs one file read per run, not one per event."""
+    try:
+        return config.load_config(project_dir, config.SKILL_ROOT)
+    except (OSError, ValueError):
+        return _raw_config(project_dir)
+
+
 def _as_count(value: Any, fallback: int) -> int:
     try:
         return max(0, int(value))
@@ -114,7 +130,7 @@ def _as_count(value: Any, fallback: int) -> int:
 
 
 def _keep_count(project_dir: Path) -> int:
-    return _as_count(_raw_config(project_dir).get("log_llm_keep_runs"),
+    return _as_count(_layered_config(project_dir).get("log_llm_keep_runs"),
                       config.DEFAULTS["log_llm_keep_runs"])
 
 
@@ -123,8 +139,9 @@ def _resolve_flags(project_dir: Path) -> dict[str, Any]:
 
     Reading them per event would be a real regression across ~50 events per
     chapter; every emitter and the trace hook reads no config of its own, so
-    this is the only place gating flags are resolved."""
-    raw = _raw_config(project_dir)
+    this is the only place gating flags are resolved. The three layers are
+    composed here, once, for the same reason."""
+    raw = _layered_config(project_dir)
     return {
         "orchestration": bool(raw.get("log_orchestration",
                                       config.DEFAULTS["log_orchestration"])),

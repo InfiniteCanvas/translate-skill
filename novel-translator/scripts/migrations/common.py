@@ -1,13 +1,18 @@
 """Shared building blocks for version scripts.
 
-All three helpers RETURN complete printable report lines (with their own
+Both helpers RETURN complete printable report lines (with their own
 [ok]/[warn] prefixes) and never print: cmd_migrate owns the console, and
-pure return values keep the steps unit-testable. All three are safe to
+pure return values keep the steps unit-testable. Both are safe to
 re-run:
 materialize_config writes only when the merged form actually differs from
 what is on disk, and sync_templates only touches missing templates (or,
 with user consent -- --force or an interactive confirm callback -- ones
 whose text drifted from the shipped copy).
+
+There is deliberately no combined helper. A step that materializes config
+says so in its own DESCRIPTION (v001-v004, v007, v008, v011) and one that
+does not (v009, v010, v012, v013, v015, v016) must never reach for it by
+accident, so every step composes the two helpers explicitly.
 
 `lib` is importable here because scripts/ -- the parent of this package --
 is on sys.path in every context that can import `migrations` (translate.py
@@ -28,7 +33,14 @@ def materialize_config(project_dir: Path, dry_run: bool) -> list[str]:
     """Fold config.DEFAULTS and normalized provider blocks into the project's
     config.json, preserving every user-set value (load_config deep-merges
     DEFAULTS underneath the file's own contents). Returns [] when the file is
-    already the merged form, so no-op runs stay quiet."""
+    already the merged form, so no-op runs stay quiet.
+
+    Calls load_config WITHOUT a skill root on purpose: a migration reads only
+    layers 0 and 2. Folding the machine's config.local.json into a project file
+    is exactly the materialization the layering removed -- it would pin one
+    machine's endpoint into every project it ever touched, and the project's
+    own key would then out-rank a later edit to the overlay. Steps that strip
+    the layer-1 values a pre-v016 project still carries are v016's job."""
     project_dir = Path(project_dir)
     raw = json.loads((project_dir / "config.json").read_text(encoding="utf-8-sig"))
     merged = config.load_config(project_dir)
@@ -97,19 +109,3 @@ def sync_templates(project_dir: Path, templates_src: Path,
             "yours (non-interactive; --force to overwrite)"
         )
     return lines
-
-
-def standard_step(project_dir: Path, templates_src: Path,
-                  dry_run: bool = False, force: bool = False,
-                  confirm: Callable[[str], bool] | None = None) -> list[str]:
-    """The shared body of the standard migration step -- materialize config
-    defaults, then sync templates -- for every step whose fix is exactly
-    that pair: runs materialize_config followed by sync_templates and
-    concatenates their report lines ([] on an already-current project, so a
-    step delegating here stays idempotent). v001 keeps its hand-written body
-    as the reference implementation; newer steps delegate here instead of
-    repeating the concatenation."""
-    return (
-        materialize_config(project_dir, dry_run)
-        + sync_templates(project_dir, templates_src, dry_run, force, confirm)
-    )

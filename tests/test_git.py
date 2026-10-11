@@ -252,9 +252,10 @@ def case_3_cmd_init() -> None:
               "[git] initialized repository" in out and "[git] committed" in out,
               f"out={out!r}")
         raw = json.loads((proj / "config.json").read_text(encoding="utf-8"))
-        check("3e init: raw config.json carries git_commits True",
-              raw.get("git_commits") is True, f"git_commits={raw.get('git_commits')!r}")
-        check("3f init: config.DEFAULTS has the git_commits default",
+        check("3e init: raw config.json does NOT carry git_commits (it "
+              "resolves through the layering instead)",
+              "git_commits" not in raw, f"keys={sorted(raw)}")
+        check("3f init: config.DEFAULTS still carries the git_commits default",
               config.DEFAULTS.get("git_commits") is True)
 
         (proj / "story_state.json").write_text(
@@ -307,7 +308,9 @@ def case_4_v003_direct() -> None:
         proj = root / "proj"
         proj.mkdir()
         (proj / "config.json").write_text(
-            json.dumps({"version": 2, "providers": {}}, indent=2) + "\n",
+            json.dumps({"version": 2, "providers": {
+                "translator": {"base_url": "http://test.invalid/v1"}}},
+                indent=2) + "\n",
             encoding="utf-8", newline="\n")
 
         orig_tpl = translate.TEMPLATES_SRC_DIR
@@ -355,7 +358,9 @@ def case_5_v003_dry_run() -> None:
         proj = root / "proj"
         proj.mkdir()
         (proj / "config.json").write_text(
-            json.dumps({"version": 2, "providers": {}}, indent=2) + "\n",
+            json.dumps({"version": 2, "providers": {
+                "translator": {"base_url": "http://test.invalid/v1"}}},
+                indent=2) + "\n",
             encoding="utf-8", newline="\n")
         before = (proj / "config.json").read_bytes()
 

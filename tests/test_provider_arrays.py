@@ -84,21 +84,45 @@ def case_list_passthrough() -> None:
     """An authored array passes through element-wise: each element merges
     onto PROVIDER_DEFAULTS[job] with authored keys winning, so a sparse
     block gets the defaults while a fully-specified sibling stays as
-    authored."""
+    authored.
+
+    A sparse block must still carry an endpoint: layer 0 ships no base_url
+    (PROVIDER_DEFAULTS deliberately does not), so a block that names no
+    endpoint is refused at load rather than left pointing at one."""
     norm = config._normalize_providers({
         "translator": [
-            {"model": "a"},
+            {"base_url": MINE, "model": "a"},
             {"base_url": OTHER, "model": "b", "temperature": 0.1},
         ],
-        "consensus": {"model": "arb"},
+        "consensus": {"base_url": MINE, "model": "arb"},
     })
     check("c1 list pass-through: both blocks kept in order with defaults filled",
           norm["translator"] == [
-              dict(config.PROVIDER_DEFAULTS["translator"], model="a"),
+              dict(config.PROVIDER_DEFAULTS["translator"],
+                   base_url=MINE, model="a"),
               dict(config.PROVIDER_DEFAULTS["translator"],
                    base_url=OTHER, model="b", temperature=0.1),
           ],
           f"translator={norm['translator']!r}")
+    check("c2 no default endpoint: PROVIDER_DEFAULTS ships no base_url",
+          not any("base_url" in block
+                  for block in config.PROVIDER_DEFAULTS.values()),
+          f"defaults={config.PROVIDER_DEFAULTS!r}")
+    empty_block = raises_value_error({
+        "translator": [{"base_url": MINE, "model": "a"}, {"model": "b"}],
+        "consensus": {"base_url": MINE, "model": "arb"},
+    })
+    check("c3 no default endpoint: the block with no base_url is refused, "
+          "naming the job and the index",
+          empty_block is not None and "providers.translator[1]" in empty_block,
+          f"message={empty_block!r}")
+    blank = raises_value_error({
+        "translator": [{"base_url": MINE, "model": "a"}, {"base_url": "   "}],
+        "consensus": {"base_url": MINE, "model": "arb"},
+    })
+    check("c4 no default endpoint: a whitespace-only base_url counts as unset",
+          blank is not None and "providers.translator[1]" in blank,
+          f"message={blank!r}")
 
 
 def case_inheritance() -> None:
@@ -221,12 +245,103 @@ def case_unknown_and_missing() -> None:
           norm.get("weird") == weird
           and sorted(norm) == sorted((*config.PROVIDER_JOBS, "weird")),
           f"weird={norm.get('weird')!r}")
-    empty = config._normalize_providers({})
-    check("f2 missing translator: every job at plain one-block defaults",
-          sorted(empty) == sorted(config.PROVIDER_JOBS)
-          and all(value == [dict(config.PROVIDER_DEFAULTS[job])]
-                  for job, value in empty.items()),
-          f"empty={ {k: v for k, v in empty.items()} !r}")
+    empty = raises_value_error({})
+    check("f2 missing translator: refused at load, naming the job and the key",
+          empty is not None and "providers.translator" in empty
+          and "base_url" in empty, f"message={empty!r}")
+    minimal = config._normalize_providers(
+        {"translator": {"base_url": MINE, "model": "m1"}})
+    check("f3 missing translator: one authored endpoint fills every job at "
+          "that job's own sampling defaults",
+          all(minimal[job] == [dict(config.PROVIDER_DEFAULTS[job],
+                                    base_url=MINE, model="m1")]
+              for job in config.PROVIDER_JOBS),
+          f"minimal={ {k: v for k, v in minimal.items()} !r}")
+
+
+def case_three_layer_composition() -> None:
+    """DEFAULTS -> config.local.json [A, B] -> project {model} resolves to
+    [{A, model}, {B, model}].
+
+    The single-block rule spreading the project's one block across BOTH of the
+    overlay's blocks is the composition working as designed, not a merge bug:
+    a partial layer changes the key everywhere rather than silently dropping a
+    block. Pinned here because it is the one result a later "fix" to
+    merge_overlay would quietly break.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        skill = Path(td) / "skill"
+        skill.mkdir()
+        (skill / config.LOCAL_CONFIG_NAME).write_text(json.dumps({
+            "seed_min_count": 9,
+            "providers": {"translator": [
+                {"base_url": "http://a:1/v1", "model": "A"},
+                {"base_url": "http://b:1/v1", "model": "B"}],
+                "consensus": {"base_url": "http://a:1/v1", "model": "ARB"}},
+        }), encoding="utf-8")
+        proj = Path(td) / "proj"
+        proj.mkdir()
+        (proj / "config.json").write_text(json.dumps({
+            "source_lang": "zh",
+            "providers": {"translator": {"model": "project-model"}},
+        }), encoding="utf-8")
+
+        cfg = config.load_config(proj, skill)
+        blocks = config.provider_list(cfg, "translator")
+        check("h1 three layers: the project's single block spreads across "
+              "both overlay blocks",
+              [(b["base_url"], b["model"]) for b in blocks]
+              == [("http://a:1/v1", "project-model"),
+                  ("http://b:1/v1", "project-model")],
+              f"blocks={blocks!r}")
+        check("h2 three layers: a layer-1 scalar the project never names still "
+              "resolves",
+              cfg["seed_min_count"] == 9, f"seed={cfg['seed_min_count']!r}")
+        check("h3 three layers: a key only layer 0 names still resolves",
+              cfg["max_attempts"] == config.DEFAULTS["max_attempts"],
+              f"max_attempts={cfg.get('max_attempts')!r}")
+        check("h4 three layers: an unconfigured job inherits the composed "
+              "translator, not layer 0",
+              config.provider(cfg, "glossary")["base_url"] == "http://a:1/v1",
+              f"glossary={config.provider(cfg, 'glossary')!r}")
+
+        proj2 = Path(td) / "proj2"
+        proj2.mkdir()
+        (proj2 / "config.json").write_text(
+            json.dumps({"providers": {}}), encoding="utf-8")
+        cfg2 = config.load_config(proj2, skill)
+        check("h5 three layers: a project that authors no provider resolves "
+              "the overlay's endpoint",
+              config.provider(cfg2, "translator")["base_url"]
+              == "http://a:1/v1",
+              f"translator={config.provider(cfg2, 'translator')!r}")
+
+        try:
+            config.load_config(proj2, None)
+            check("h6 three layers: with no skill root, layer 1 is invisible "
+                  "and the config is refused", False, "returned without raising")
+        except ValueError as exc:
+            check("h6 three layers: with no skill root, layer 1 is invisible "
+                  "and the config is refused",
+                  "providers.translator" in str(exc), f"message={exc}")
+
+        proj3 = Path(td) / "proj3"
+        proj3.mkdir()
+        (proj3 / "config.json").write_text(
+            json.dumps({"providers": {"translator": [
+                {"model": "p1"}, {"model": "p2"}]}}), encoding="utf-8")
+        wholesale = raises_value_error(
+            {"translator": [{"model": "p1"}, {"model": "p2"}]})
+        try:
+            config.load_config(proj3, skill)
+            spliced = "loaded with the overlay's endpoints"
+        except ValueError as exc:
+            spliced = str(exc)
+        check("h7 three layers: a project ARRAY takes the job over wholesale "
+              "instead of inheriting the overlay's endpoint",
+              "providers.translator[0]" in spliced
+              and wholesale is not None,
+              f"result={spliced!r}")
 
 
 def case_dict_tolerance() -> None:
@@ -281,7 +396,7 @@ def case_load_config() -> None:
                 {"base_url": MINE, "model": "m1"},
                 {"base_url": OTHER, "model": "m2"},
             ],
-                "consensus": {"model": "arb"}},
+                "consensus": {"base_url": MINE, "model": "arb"}},
         }, indent=2) + "\n", encoding="utf-8")
         cfg = config.load_config(proj)
         check("h4 load_config: authored 2-block translator list passes through",
@@ -427,6 +542,7 @@ def main() -> int:
     case_inheritance()
     case_errors()
     case_unknown_and_missing()
+    case_three_layer_composition()
     case_dict_tolerance()
     case_load_config()
     case_per_job_consensus()

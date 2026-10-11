@@ -188,7 +188,8 @@ MANIFEST = [
 
 def make_project(root: Path, name: str, cfg_extra: dict | None = None) -> Path:
     """Minimal project: the three fixture chapters under source/, an
-    accurate chapters.json manifest, and config.json {"providers": {}} +
+    accurate chapters.json manifest, and a config.json with a one-block
+    translator +
     cfg_extra (count reads only min_term_occurrences from it)."""
     proj = root / name
     proj.mkdir()
@@ -196,7 +197,7 @@ def make_project(root: Path, name: str, cfg_extra: dict | None = None) -> Path:
         write_source(proj, fname, body)
     (proj / "chapters.json").write_text(
         json.dumps(MANIFEST, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    cfg = {"providers": {}}
+    cfg = {"providers": {"translator": {"base_url": "http://test.invalid/v1"}}}
     cfg.update(cfg_extra or {})
     (proj / "config.json").write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -689,7 +690,7 @@ def case_10_gate_corpus_cache() -> None:
 def make_gate_project(root: Path, name: str) -> Path:
     """Pipeline-shaped fixture for the gate integration: three one-line
     source chapters (灵石 occurs exactly once, in ch1), an accurate
-    chapters.json manifest, config.json {"providers": {}}, an empty
+    chapters.json manifest, a config.json with a one-block translator, an empty
     glossary.json, and the draft/ + translated/ dirs run_chapter persists
     state and output into (test_retry_feedback's make_project shape)."""
     proj = root / name
@@ -707,7 +708,8 @@ def make_gate_project(root: Path, name: str) -> Path:
                     for i, f in enumerate(sorted(bodies))],
                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (proj / "config.json").write_text(
-        json.dumps({"providers": {}}, indent=2) + "\n", encoding="utf-8")
+        json.dumps({"providers": {"translator": {"base_url": "http://test.invalid/v1"}}},
+              indent=2) + "\n", encoding="utf-8")
     (proj / "glossary.json").write_text(
         json.dumps({"terms": []}, ensure_ascii=False) + "\n", encoding="utf-8")
     (proj / "draft").mkdir()

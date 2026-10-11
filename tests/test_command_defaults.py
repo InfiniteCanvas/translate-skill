@@ -110,11 +110,11 @@ def parse(argv: list[str]) -> argparse.Namespace | None:
 
 def make_project(root: Path, name: str, cfg_extra: dict | None = None,
                  entries: list | None = None) -> Path:
-    """Minimal project: config.json {"providers": {}} + cfg_extra and a
+    """Minimal project: a config.json with a one-block translator + cfg_extra and a
     non-empty glossary.json (probe guard + review need one on disk)."""
     proj = root / name
     proj.mkdir()
-    cfg = {"providers": {}}
+    cfg = {"providers": {"translator": {"base_url": "http://test.invalid/v1"}}}
     cfg.update(cfg_extra or {})
     (proj / "config.json").write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

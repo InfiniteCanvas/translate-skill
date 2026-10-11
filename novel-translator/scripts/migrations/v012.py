@@ -47,7 +47,7 @@ not touch values.
 Idempotent by construction: it reads, reports, and writes nothing. A second
 call reports the same lines.
 
-No templates change, so sync_templates stays delegated to standard_step and
+No templates change, so this step only calls sync_templates and
 is silent on an up-to-date project.
 """
 

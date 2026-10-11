@@ -31,7 +31,7 @@ def make_project(root: Path, name: str, bodies: dict[str, str] | None = None,
                  with_source: bool = True) -> Path:
     """Profile-shaped fixture (test_cleanup_flow's style): source/ chapters
     written verbatim (no frontmatter, no trailing newline), an accurate
-    chapters.json manifest, and config.json {"providers": {}} (the canned
+    chapters.json manifest, and a config.json with a one-block translator (the canned
     chat never touches a provider). with_source=False builds the no-source
     underflow fixture."""
     proj = root / name
@@ -47,7 +47,8 @@ def make_project(root: Path, name: str, bodies: dict[str, str] | None = None,
                     for i, f in enumerate(sorted(bodies or {}))],
                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (proj / "config.json").write_text(
-        json.dumps({"providers": {}}, indent=2) + "\n", encoding="utf-8")
+        json.dumps({"providers": {"translator": {"base_url": "http://test.invalid/v1"}}},
+              indent=2) + "\n", encoding="utf-8")
     return proj
 
 

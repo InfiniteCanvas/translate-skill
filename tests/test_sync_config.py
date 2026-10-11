@@ -40,10 +40,12 @@ via uv (deps declared inline below):
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -268,7 +270,8 @@ def case_4_inline_api_key_detection() -> None:
 
 
 def case_5_cmd_sync_config() -> None:
-    """cmd_sync_config: no overlay -> 0, uninitialized -> 2, success commits."""
+    """cmd_sync_config: no overlay -> 0, uninitialized -> 2, and a success
+    that REPORTS the composed layers without writing anything."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         skill = root / "skill"
@@ -313,29 +316,36 @@ def case_5_cmd_sync_config() -> None:
                 "providers": {"translator": [
                     {"base_url": "http://local:9999/v1", "api_key": "sk-secret"}]},
             })
-            rc = translate_mod.cmd_sync_config(args, project)
+            with _Capture() as cap:
+                rc = translate_mod.cmd_sync_config(args, project)
             on_disk = read_config(project)
+            out = cap.out
             check("5d success: exit 0", rc == 0, f"rc={rc}")
-            check("5e success: overlay provider landed",
+            check("5e report-only: the overlay is NOT written into config.json",
                   on_disk["providers"]["translator"][0]["base_url"]
-                  == "http://local:9999/v1",
+                  == "http://project:8888/v1",
                   f"got={on_disk['providers']['translator'][0]}")
-            check("5f success: project's own keys preserved",
+            check("5f report-only: the inline api_key is NOT copied into the "
+                  "project file",
+                  "api_key" not in on_disk["providers"]["translator"][0],
+                  f"block={on_disk['providers']['translator'][0]}")
+            check("5g report-only: the report names each resolved endpoint",
+                  out.count("http://project:8888/v1") == 7, f"out={out!r}")
+            check("5h report-only: the report names the layers it composed",
+                  "config.local.json <- config.json" in out, f"out={out!r}")
+            check("5i report-only: the project's own keys are untouched",
                   on_disk["source_lang"] == "zh"
                   and on_disk["target_lang"] == "en"
                   and on_disk["version"] == 8,
-                  f"got={ {k: on_disk.get(k) for k in ('source_lang','target_lang','version')} }")
-            check("5g success: inline api_key was copied through",
-                  on_disk["providers"]["translator"][0].get("api_key")
-                  == "sk-secret",
-                  "api_key missing from the merged config")
+                  f"got={ {k: on_disk.get(k) for k in ('source_lang', 'target_lang', 'version')} }")
         finally:
             translate_mod.SKILL_ROOT = REAL_SKILL_ROOT
 
 
-def case_6_init_applies_overlay() -> None:
-    """cmd_init copies the overlay into a fresh project, and the merged values
-    reach the in-memory cfg the seed pass reads below it."""
+def case_6_init_resolves_overlay_without_copying() -> None:
+    """cmd_init writes ONLY authored keys, and the overlay still reaches the
+    in-memory cfg the seed/profile passes below it read -- through the layers,
+    not through a copy in config.json."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         skill = root / "skill"
@@ -366,27 +376,55 @@ def case_6_init_applies_overlay() -> None:
         try:
             rc = translate_mod.cmd_init(args, project)
             on_disk = read_config(project)
-            loaded = config.load_config(project)
+            loaded = config.load_config(project, skill)
 
             check("6a init: exit 0", rc == 0, f"rc={rc}")
-            check("6b init: overlay provider beat the --api-base flag",
+            check("6b init: the overlay is NOT copied into config.json -- the "
+                  "authored --api-base value stays",
                   on_disk["providers"]["translator"][0]["base_url"]
-                  == "http://local:9999/v1",
+                  == "http://from-flag:1/v1",
                   f"got={on_disk['providers']['translator'][0]['base_url']}")
-            check("6c init: overlay scalar landed and loads",
+            check("6c init: config.json holds no DEFAULTS keys at all",
+                  not (set(config.DEFAULTS) & set(on_disk)),
+                  f"leaked={sorted(set(config.DEFAULTS) & set(on_disk))}")
+            check("6d init: the overlay's scalar resolves through the layers",
                   loaded["seed_min_count"] == 11,
                   f"seed_min_count={loaded['seed_min_count']}")
-            check("6d init: init's own keys survive the overlay",
+            check("6e init: the project's own endpoint outranks the overlay "
+                  "(layer 2 over layer 1)",
+                  config.provider(loaded, "translator")["base_url"]
+                  == "http://from-flag:1/v1",
+                  f"resolved={config.provider(loaded, 'translator')!r}")
+            check("6f init: init's own keys survive the layering",
                   on_disk["source_lang"] == "zh"
                   and on_disk["target_lang"] == "en",
                   f"langs={on_disk['source_lang']}/{on_disk['target_lang']}")
-            check("6e init: version stamped by init, not by the overlay",
+            check("6g init: version stamped by init, not by the overlay",
                   isinstance(on_disk.get("version"), int)
                   and on_disk["version"] > 0,
                   f"version={on_disk.get('version')!r}")
-            check("6f init: manifest still built after the overlay pass",
+            check("6h init: manifest still built after the overlay is read",
                   (project / "chapters.json").is_file(),
                   "chapters.json missing")
+
+            bare = root / "bare"
+            (bare / "source").mkdir(parents=True)
+            (bare / "source" / "CHAPTER_0001.md").write_text(
+                "第一章\nbody\n", encoding="utf-8", newline="\n")
+            args.api_base = ""
+            rc = translate_mod.cmd_init(args, bare)
+            bare_cfg = config.load_config(bare, skill)
+            check("6i init with no --api-base: config.json authors no "
+                  "providers section at all",
+                  "providers" not in read_config(bare),
+                  f"keys={sorted(read_config(bare))}")
+            check("6j init with no --api-base: the overlay's endpoint resolves "
+                  "for every job",
+                  rc == 0
+                  and all(config.provider(bare_cfg, job)["base_url"]
+                          == "http://local:9999/v1"
+                          for job in config.PROVIDER_JOBS),
+                  f"translator={config.provider(bare_cfg, 'translator')!r}")
         finally:
             translate_mod.SKILL_ROOT = REAL_SKILL_ROOT
             translate_mod.TEMPLATES_SRC_DIR = (REAL_SKILL_ROOT
@@ -488,9 +526,13 @@ def case_8_corrupt_base_config_is_a_clean_error() -> None:
             translate_mod.SKILL_ROOT = REAL_SKILL_ROOT
 
     for label, body in [
-        ("plain object", '{"source_lang": "zh", "version": 8}'),
-        ("empty object", "{}"),
-        ("providers present", '{"providers": {"translator": [{"base_url": "u"}]}}'),
+        ("plain object",
+         '{"source_lang": "zh", "version": 8, "providers": {"translator": '
+         '[{"base_url": "http://x/v1"}]}}'),
+        ("empty object",
+         '{"providers": {"translator": [{"base_url": "http://x/v1"}]}}'),
+        ("providers present",
+         '{"providers": {"translator": [{"base_url": "u"}]}}'),
     ]:
         with tempfile.TemporaryDirectory() as td:
             project = Path(td)
@@ -507,7 +549,8 @@ def case_8_corrupt_base_config_is_a_clean_error() -> None:
     with tempfile.TemporaryDirectory() as td:
         project = Path(td)
         (project / "config.json").write_text(
-            '{"version": 8, "seed_min_count": 1}', encoding="utf-8-sig")
+            '{"version": 8, "seed_min_count": 1, "providers": {"translator": '
+            '[{"base_url": "http://x/v1"}]}}', encoding="utf-8-sig")
         try:
             _changed, _lines = config.apply_overlay(project, {"seed_min_count": 9})
             check("8 BOM: utf-8-sig config.json still merges",
@@ -609,17 +652,27 @@ def case_9_corrupt_overlay_is_a_clean_error() -> None:
         translate_mod.TEMPLATES_SRC_DIR = skill / "assets" / "templates"
         try:
             rc = translate_mod.cmd_init(args, project)
-            check("9 init: a bad overlay warns but does NOT abort init",
-                  rc == 0 and (project / "config.json").is_file(),
-                  f"rc={rc}")
-            check("9 init: the flag endpoint survived the refused overlay",
-                  read_config(project)["providers"]["translator"][0]["base_url"]
-                  == "http://from-flag:1/v1",
-                  "overlay corrupted a config it was refused for")
-        finally:
-            translate_mod.SKILL_ROOT = REAL_SKILL_ROOT
-            translate_mod.TEMPLATES_SRC_DIR = (REAL_SKILL_ROOT
-                                               / "assets" / "templates")
+            check("9 init: a malformed overlay aborts init with exit 2, "
+                  "naming the file", False,
+                  f"rc={rc} -- init returned {rc} instead of raising")
+        except CliError as exc:
+            check("9 init: a malformed overlay aborts init with exit 2, "
+                  "naming the file",
+                  "config.local.json" in str(exc)
+                  and "providers" in str(exc),
+                  f"message={exc}")
+        except Exception as exc:
+            check("9 init: a malformed overlay aborts init with exit 2, "
+                  "naming the file", False,
+                  f"raised {type(exc).__name__}: {exc}")
+        check("9 init: the refused overlay left no half-written config.json",
+              not (project / "config.json").is_file()
+              or read_config(project)["providers"]["translator"][0]["base_url"]
+              == "http://from-flag:1/v1",
+              "overlay corrupted a config it was refused for")
+        translate_mod.SKILL_ROOT = REAL_SKILL_ROOT
+        translate_mod.TEMPLATES_SRC_DIR = (REAL_SKILL_ROOT
+                                           / "assets" / "templates")
 
 
 def _provider_blocks(job_value):
@@ -880,16 +933,36 @@ def case_11_per_job_consensus_overlay() -> None:
               "config.json was modified by a failed apply")
 
 
+class _Capture:
+    """Minimal stdout capture, for the checks that assert what a command
+    REPORTED rather than what it wrote to disk."""
+
+    def __enter__(self) -> "_Capture":
+        self._buf = io.StringIO()
+        self._old = sys.stdout
+        sys.stdout = self._buf
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        sys.stdout = self._old
+
+    @property
+    def out(self) -> str:
+        return self._buf.getvalue()
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    capsys = _Capture()
 
     case_1_load_absent_and_malformed()
     case_2_merge_semantics()
     case_3_apply_overlay_writes_raw_merged_form()
     case_4_inline_api_key_detection()
     case_5_cmd_sync_config()
-    case_6_init_applies_overlay()
+    case_6_init_resolves_overlay_without_copying()
     case_7_init_without_overlay_is_unchanged()
     case_8_corrupt_base_config_is_a_clean_error()
     case_9_corrupt_overlay_is_a_clean_error()

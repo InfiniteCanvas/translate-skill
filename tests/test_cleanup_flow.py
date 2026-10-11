@@ -153,7 +153,8 @@ def make_project(root: Path, name: str) -> Path:
     """Pipeline-shaped fixture (test_glossary_count's make_gate_project
     shape): one three-line source chapter (灵石 occurs 2x -> the drift
     signal's src >= 2), an accurate chapters.json manifest, config.json
-    {"providers": {}} (one provider block serves every job via inheritance;
+    config.json with a one-block translator (one provider block serves every job
+    via inheritance;
     glossary_auto_cleanup is on by default), a one-entry glossary written
     via glossary.save with NO other top-level keys -- category "item" is
     not guide-only and the multi-word translation avoids any fuzzy target
@@ -175,7 +176,8 @@ def make_project(root: Path, name: str) -> Path:
         "definition": "A spirit stone.",
     }]})
     (proj / "config.json").write_text(
-        json.dumps({"providers": {}}, indent=2) + "\n", encoding="utf-8")
+        json.dumps({"providers": {"translator": {"base_url": "http://test.invalid/v1"}}},
+              indent=2) + "\n", encoding="utf-8")
     return proj
 
 
@@ -264,7 +266,7 @@ def case_cleanup_flow() -> None:
 def make_cap_project(root: Path, name: str) -> Path:
     """Two one-line source chapters, NO glossary.json (empty glossary, so
     no drift/cleanup noise), an accurate chapters.json manifest, config.json
-    {"providers": {}}, and the draft/ + translated/ + notes/ dirs
+    a one-block translator, and the draft/ + translated/ + notes/ dirs
     run_chapter persists state and output into (make_project's shape)."""
     proj = root / name
     proj.mkdir()
@@ -279,7 +281,8 @@ def make_cap_project(root: Path, name: str) -> Path:
                     for i in (1, 2)],
                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (proj / "config.json").write_text(
-        json.dumps({"providers": {}}, indent=2) + "\n", encoding="utf-8")
+        json.dumps({"providers": {"translator": {"base_url": "http://test.invalid/v1"}}},
+              indent=2) + "\n", encoding="utf-8")
     return proj
 
 
@@ -384,7 +387,8 @@ def make_empty_source_project(root: Path, name: str) -> Path:
                      "order": 0, "status": "pending"}],
                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (proj / "config.json").write_text(
-        json.dumps({"providers": {}}, indent=2) + "\n", encoding="utf-8")
+        json.dumps({"providers": {"translator": {"base_url": "http://test.invalid/v1"}}},
+              indent=2) + "\n", encoding="utf-8")
     return proj
 
 

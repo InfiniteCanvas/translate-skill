@@ -111,7 +111,7 @@ actually changed:
 | fresh `init` | `init: scaffold project`, then `init: backfill and seed` |
 | `init --force` over an existing repository (history is kept) | `init: reinitialize project`, then `init: reseed after reinitialize` |
 | `sync` that changed anything | `sync: rescan source` |
-| `sync-config` that changed anything | `sync-config: apply local config` |
+| `sync-config` | never commits — it writes nothing (report-only) |
 | finished chapter — `translate` and `retry`; skipped chapters commit nothing | `translate: chapter NNNN (translated)` / `translate: chapter NNNN (needs-review)` |
 | `mark` | `mark: <file> -> <status>[, ...]` |
 | `tn` (when at least one chapter changed, or only `tn_history.json` drifted — kept notes bump `times`/`last_order` even when every sidecar is identical) | `tn: re-check notes` |
@@ -191,7 +191,44 @@ enters the pipeline: `[CHAPTER_NNNN] [warn] <file>: source chapter has no
 content - marked needs-review` — the chapter is marked `needs-review`, no
 LLM call.
 
+## Overlay layers
+
+A config resolves in **three layers, lowest precedence first**:
+
+| Layer | Where | Written by |
+|---|---|---|
+| 0 — code defaults | `DEFAULTS` / `PROVIDER_DEFAULTS` in `scripts/lib/config.py` | the skill |
+| 1 — machine overlay | `<skill>/config.local.json` (gitignored, optional) | you, once per machine |
+| 2 — project | `<project>/config.json` | `init` and you |
+
+A higher layer overwrites a lower one **key-wise**. `load_config()` composes
+all three at **read time** (`config.py: load_config`), and layers 0 and 1 are
+never written into layer 2 — so a project's `config.json` holds only the keys a
+human put there, and editing `config.local.json` changes every project's
+behaviour immediately: no `sync-config` run, no migration. Migrations read
+layers 0 and 2 only (`migrations/common.py: materialize_config`), so a step
+never freezes one machine's endpoint into a project.
+
+**`base_url` is REQUIRED (v016).** Layer 0 ships no endpoint — it used to ship
+one machine's private LAN address, which a config that omitted the key silently
+inherited and then failed at the first call. Every resolved provider block must
+therefore resolve a non-empty `base_url` from layer 1 or layer 2, or the load is
+REFUSED with the job named:
+
+```
+[FAIL] cannot read config.json: providers.translator resolves no base_url:
+set it in the project's config.json or in the skill's config.local.json
+```
+
+A job named nowhere inherits the translator's array whole, so a config that
+authored an endpoint anywhere passes. Exit 2. See § Exit codes.
+
 ## config.json
+
+The block below is the **resolved** view — what the three layers add up to.
+A project's own file holds only what was authored there (layer 2), which for a
+project created without `--api-base` is just the languages and the version
+stamp; `init` copies no defaults and no overlay values into it.
 
 ```jsonc
 {
@@ -199,11 +236,11 @@ LLM call.
   "target_lang": "en",
   "providers": {
     "translator": [
-      { "base_url": "http://100.85.218.125:8888/v1", "model": null,
+      { "base_url": "https://api.example.com/v1", "model": null,
         "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536,
         "max_tokens_limit": null,   // optional: the PROVIDER's hard ceiling (e.g. 131072 on Z.AI); bounds every call to this block, including the consensus merge. Omit = no declared limit
         "thinking": false },   // sglang chat_template_kwargs.enable_thinking; false = output budget spent on the answer, not a reasoning chain
-      { "base_url": "http://100.85.218.125:8889/v1", "model": "Qwen3-235B-A22B",
+      { "base_url": "http://192.168.1.20:8000/v1", "model": "Qwen3-235B-A22B",
         "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536,
         "thinking": false }    // 2nd block = 2nd model: multi-model consensus (see below)
     ],
@@ -249,7 +286,8 @@ LLM call.
 }
 ```
 
-- `base_url` includes `/v1` (OpenAI-compatible). `model: null` means "ask
+- `base_url` includes `/v1` (OpenAI-compatible) and is **required** — see §
+  Overlay layers. `model: null` means "ask
   `/models` and use the first model" — resolved at runtime (cached per
   base_url + resolved auth identity, so two jobs sharing a URL with
   different keys keep distinct resolutions), works with any sglang/vLLM
@@ -299,8 +337,8 @@ LLM call.
   candidates of its own). A partial block merges KEY-WISE onto the resolved
   global block, so `{"model": "big-arbiter"}` keeps the global's `base_url`,
   `api_key_env` and sampling knobs and overrides only the model — a partial
-  override can never quietly re-point a working provider at the hard-coded
-  `DEFAULT_BASE_URL`. **An absent `consensus_<job>` resolves to the global block
+  override can never quietly re-point a working provider at some other
+  endpoint. **An absent `consensus_<job>` resolves to the global block
   unchanged**, so a project that authors none behaves exactly as it did before
   v015. Resolution order, bottom-up: `PROVIDER_DEFAULTS["consensus"]` ← the
   resolved `providers.consensus` ← the authored `providers.consensus_<job>`.
@@ -338,8 +376,9 @@ LLM call.
     calls `provider(cfg, "consensus")` and a hand-built cfg bypasses
     `load_config` entirely; deleting it would trade a harmless fallback for a
     `KeyError`. Read it as a safety net, not a routing rule.
-  - No lockout: `sync-config` validates the MERGED config, so an overlay that
-    *adds* `providers.consensus` applies cleanly and repairs the project. `ping` probes each
+  - No lockout: the composed config is validated as it is read, so an overlay
+    that *adds* `providers.consensus` satisfies the requirement and repairs the
+    project on the next load, with no file to write. `ping` probes each
   in-force arbitrator under the label `consensus(<job>)`, deduplicated against
   the blocks already probed — a project with no per-job key prints exactly the
   same lines it always did. Note that the arbitrator is deliberately NOT part of
@@ -435,48 +474,59 @@ LLM call.
 auth) are written once instead of per novel. It is not part of any project
 and never appears in a project's file tree.
 
-It is applied in two places, both deep-merging it ONTO the project's
-`config.json` with overlay values winning and every unmentioned project key
-preserved (including `version`, which the overlay may not carry):
+It is **layer 1** of § Overlay layers: read at every config load, deep-merged
+onto layer 0 with overlay values winning, then deep-merged under layer 2 — so
+the project's own keys always win, and every key the overlay does not mention
+keeps the value the layer below resolved (including `version`, which the
+overlay may not carry). Nothing is written to the project:
 
-- `init` applies it automatically to the new project, before the scaffold
-  commit, so the merged config lands in the project's first commit. Absent
-  file → nothing happens and nothing is printed; unreadable/malformed file →
-  a `[warn]` line, and `init` continues (repair it and re-run `sync-config`).
-- `sync-config` applies it to an existing project, printing the changed
-  dotted key paths, e.g.
-  `[ok] config.local.json: applied 1 key(s): providers.translator`. Exit 0
-  on success or when there is no overlay file
+- `init` reads it and reports `[init] [ok] config.local.json: {n} key(s)
+  resolve from the skill overlay (not copied into config.json)`. Absent file →
+  nothing happens and nothing is printed.
+- `sync-config` is **report-only** — it prints what the layers resolve to and
+  writes nothing:
+
+  ```
+  [ok] config.local.json: 3 key(s) resolve from the overlay (config.json is not modified)
+  [ok] max_attempts = 3 (config.local.json)
+  [ok] translator https://api.minimax.io/v1 model=MiniMax-M3
+  [ok] glossary   https://api.minimax.io/v1 model=MiniMax-M3
+  ...
+  [ok] layers: code defaults <- config.local.json <- config.json
+  ```
+
+  Exit 0 on success or when there is no overlay file
   (`[ok] no local config at <path> - nothing to sync`); exit 2 when the file
-  is malformed or the project has no `config.json`. Idempotent — a second
-  identical run reports `no changes`.
+  is malformed, when the project has no `config.json`, or when the layers do
+  not resolve a usable config.
 
 Malformed input on EITHER side is a clean `[FAIL]` line and exit 2, never a
 traceback: an overlay that is not a JSON object, that carries `version`, or
 whose `providers` is not an object; and a project `config.json` that is not
 a JSON object or whose `providers` is not an object. Both are shape-checked
-before the merge, so a refused sync leaves the project's `config.json`
-byte-identical. A `providers.<job>` block of the wrong shape inside an
-otherwise well-formed overlay (an empty array, an array of non-objects, two
-`consensus` blocks) is likewise rejected before anything is written. A
-`consensus_<job>` key in an overlay is an ordinary provider key: absent in the
-project it is added whole, present as a single block OBJECT it merges key-wise
-into the existing block, and given as a two-block ARRAY it is rejected for the
-same exactly-one-arbitrator reason as `consensus` itself.
+before the merge, so a refused read leaves every file byte-identical. A
+`providers.<job>` block of the wrong shape inside an otherwise well-formed
+overlay (an empty array, an array of non-objects, two `consensus` blocks) is
+likewise rejected before anything runs. Because the overlay is consulted on
+every load, a malformed one now fails EVERY command, `init` included, rather
+than only `init`/`sync-config` — loud and early beats a silently wrong
+endpoint.
 
-Merge rules: objects and scalars merge key-by-key; a `providers.<job>`
-given as an ARRAY replaces that job's blocks wholesale, while a single block
-OBJECT merges into every block the project already has (so
-`{"model": "x"}` re-points the model without dropping the project's
-`base_url`/auth — replacing there would silently fall back to the
-hard-coded default endpoint). The written file is the raw project file plus
-the overlay's keys: `load_config`'s expanded `DEFAULTS` form is never
-written back, so the diff stays minimal.
+Merge rules (one step of the chain, applied per adjacent layer pair):
+objects and scalars merge key-by-key; a `providers.<job>` given as an ARRAY
+replaces that job's blocks wholesale, while a single block OBJECT merges into
+every block the layer below already has (so `{"model": "x"}` re-points the
+model without dropping that endpoint/auth). The single-block rule composes
+across three layers as designed: with the overlay supplying `[A, B]` and the
+project naming only `{"model": "m"}`, the resolved translator is
+`[{A, model}, {B, model}]` — the project's one block spread across BOTH of the
+overlay's blocks.
 
-Secrets: an inline `"api_key"` is safe in this file (gitignored) but is
-copied into the project's `config.json`, which the project repo COMMITS —
-both entry points print a `[warn]` naming each one. Use `"api_key_env"`
-instead to keep the key in the environment and out of every file.
+Secrets: an inline `"api_key"` stays in this file (gitignored) and is never
+copied into a project's `config.json`, so it cannot reach a project repo; both
+entry points still print a `[warn]` naming each one, because the key is on disk
+in plaintext. Use `"api_key_env"` to keep it in the environment and out of every
+file.
 
 Ready-made overlays for two hosted providers ship beside this section:
 `config.local.example.zai.json` (Z.AI/GLM) and
@@ -1123,6 +1173,48 @@ number that will go on the wire and the declared one beside it, says the shape
 is supported, and says nothing was rewritten. A block that already declares
 `max_tokens_limit` reports `[ok]` and is left alone, and so does a single-block
 translator, which never fans out and therefore never calls a consensus provider.
+`v016` (DESCRIPTION: `v2 config layering: strip the defaults and overlay
+values materialized into config.json, and the retired default endpoint`) is the
+migration for § Overlay layers. Every project written before it was written the
+other way — `init` copied `DEFAULTS` in and `apply_overlay` copied the overlay's
+endpoint, model and auth in — so each `config.json` carries a frozen snapshot of
+both layers. v016 unwrites that snapshot, and it does so in three classes:
+
+1. **The retired `base_url`.** A provider block whose `base_url` byte-equals the
+   retired private LAN address (`config.RETIRED_BASE_URL`) is stripped and
+   reported: `[warn] providers.translator.base_url was the retired default
+   http://100.85.218.125:8888/v1; set it in config.local.json or the project`.
+   This is the one key that cannot follow v009's value-identity rule. v009's
+   sentinel is safe because the value it strips still resolves through layer 0;
+   `base_url` is the one field layer 0 no longer has, so stripping it on
+   value-identity would leave the job with NO endpoint at all. It is stripped
+   only where it still carries the retired address — a project's own (or its
+   overlay's) endpoint keeps it, because that value was authored and layer 0
+   cannot supply a replacement. A project on a machine with no `config.local.json`
+   is left with no endpoint and is refused at the next load, with the job named
+   (§ Overlay layers); that is the intended, loud failure.
+2. **Default-valued provider keys**, stripped per job against THAT job's
+   `PROVIDER_DEFAULTS` block — `_with_defaults` fills a job-specific key set
+   (translator has `top_p`, the rest do not), so a flat comparison would either
+   miss a key or strip one the job never inherited.
+3. **Top-level keys** whose value equals the `DEFAULTS` value.
+
+Classes 2 and 3 can only lose a value that resolves identically through layer 0,
+so they are safe — with one consequence worth stating: when a project's frozen
+default and the machine's overlay disagree, stripping hands the key to the
+overlay, which is the point. A project that had never touched the key should
+follow the machine, not freeze layer 1's old snapshot. **A value the project
+actually chose is never touched**, and v016 never reads `config.local.json`: a
+migration that folded layer 1 into a project file would make the same project
+migrate differently on two machines. Every stripped key is named in the report.
+Idempotent: a second run matches nothing.
+
+Note the round-trip this creates in a single migrate run: a below-v016 project
+runs v006–v015 (which materialize) and then v016 (which strips), so the net
+result is the v2 shape. A below-v016 project whose blocks still carry the retired
+LAN endpoint loads fine through those earlier steps — the value is non-empty —
+and is corrected by v016 itself.
+
 `v015` (DESCRIPTION: `a fan-out job can name its own arbitrator:
 providers.consensus_<job> overrides providers.consensus for that job's merge;
 report which arbitrator each fan-out job resolves to`) is **report-only** and
@@ -1177,9 +1269,10 @@ log_prompt_bodies, log_chapter_keep_runs; log_llm_keep_runs 5->10)`) folds
 `config.DEFAULTS` in for the three NEW keys, and rewrites
 `log_llm_keep_runs` 5 → 10 in the **raw** config, not the merged form.
 That rewrite is not optional polish: `materialize_config` writes the entire
-merged config on every `init` and `migrate`, so with the old default at 5
-essentially every existing project already carries an explicit `5`, and a
-bare `standard_step()` would preserve it — delivering the retention bump to
+merged config on every `migrate`, so with the old default at 5
+essentially every existing project already carries an explicit `5`, and
+delegating to the `materialize_config` helper rather than rewriting the raw
+file would preserve it — delivering the retention bump to
 new projects only. The same ambiguity `v009` accepts applies to this number:
 a user who genuinely wanted exactly 5 cannot be told apart from one who
 never touched it, and their 5 is bumped; it is reversible by setting it back,
@@ -1888,7 +1981,7 @@ Every command exits 0 on success. The non-zero exits:
 | Exit | Meaning |
 |---|---|
 | 1 | `translate` / `retry` — at least one chapter ended `needs-review`; `build-epub` — epubcheck reported errors (the epub failed validation); `review glossary` — warns remain after the run; `review fix` — at least one command failed, or the report was refused as stale; `glossary search` — nothing found; `glossary count` — below the significance threshold; `tn` — failed chapters (annotator call or unreadable chapter) or no eligible chapters in range; `profile` — generation failed |
-| 2 | usage or setup error — bad arguments, missing files, corrupt project JSON (one `[FAIL]` line, never a traceback); `build-epub` — the builder subprocess crashed; `ping` — one or more providers unreachable; `sync-config` — the skill's `config.local.json` is unreadable/malformed, or the project has no `config.json` |
+| 2 | usage or setup error — bad arguments, missing files, corrupt project JSON (one `[FAIL]` line, never a traceback); a config that resolves no `base_url` (§ Overlay layers); `build-epub` — the builder subprocess crashed; `ping` — one or more providers unreachable; `sync-config` — the skill's `config.local.json` is unreadable/malformed, or the project has no `config.json` |
 | 3 | a provider call failed and the run stopped — see "Provider failure is fatal" below |
 | 130 | interrupted at the keyboard (`Ctrl-C`) — chapter state is saved, re-run to resume |
 

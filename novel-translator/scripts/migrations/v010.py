@@ -34,8 +34,8 @@ hand the decision to their agent with the TOC.
 Idempotent: a second run finds every name already canonical, defers the same
 extra chapters, and reports nothing beyond the delegated template sync.
 
-No config keys and no templates change, so this step does NOT delegate to
-standard_step -- there is nothing to materialize, and running
+No config keys and no templates change, so this step calls neither
+helper's config half -- there is nothing to materialize, and running
 materialize_config here would fold unrelated defaults into a rename's report.
 """
 

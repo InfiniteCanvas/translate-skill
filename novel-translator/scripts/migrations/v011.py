@@ -12,8 +12,8 @@ v009's "untouched default" rule: a project sitting on a number other than 5
 chose it on purpose and is left alone. This rewrite is not optional polish --
 materialize_config folds ALL of DEFAULTS into config.json on every init and
 migrate, so with the old default at 5 essentially every existing project
-already carries an explicit 5, and a bare standard_step would preserve it and
-deliver this bump to new projects only.
+already carries an explicit 5, and plain materialize_config would preserve it
+and deliver this bump to new projects only.
 
 The same ambiguity v009 accepted applies to this number: a user who genuinely
 wanted exactly 5 cannot be distinguished from one who never touched it, and

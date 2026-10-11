@@ -26,4 +26,7 @@ DESCRIPTION = ("materialize review command defaults "
 def migrate(project_dir: Path, templates_src: Path,
             dry_run: bool = False, force: bool = False,
             confirm: Callable[[str], bool] | None = None) -> list[str]:
-    return common.standard_step(project_dir, templates_src, dry_run, force, confirm)
+    return (
+        common.materialize_config(project_dir, dry_run)
+        + common.sync_templates(project_dir, templates_src, dry_run, force, confirm)
+    )

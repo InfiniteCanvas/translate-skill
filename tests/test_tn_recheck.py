@@ -516,7 +516,8 @@ def case_11_retry_wipe_sidecar() -> None:
             {"file": "CHAPTER_0001.md", "order": 0, "status": "needs-review",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
-        write_lf(root / "config.json", '{"providers": {}}\n')
+        write_lf(root / "config.json",
+                 '{"providers": {"translator": {"base_url": "http://test.invalid/v1"}}}\n')
         write_lf(root / "glossary.json", '{"terms": [], "retired": []}\n')
         write_lf(root / "draft" / "CHAPTER_0001.state.json", "{}\n")
         tn.save_notes(
@@ -846,7 +847,8 @@ def case_14_empty_annotation_guard() -> None:
             {"file": "CHAPTER_0001.md", "order": 0, "status": "translated",
              "source_md": SOURCE_MD, "translated_md": TRANSLATED_MD},
         ])
-        write_lf(root / "config.json", '{"providers": {}}\n')
+        write_lf(root / "config.json",
+                 '{"providers": {"translator": {"base_url": "http://test.invalid/v1"}}}\n')
         tn.save_notes(
             root, "CHAPTER_0001.md", ["Line zero body.", "Line one body."],
             [{"line": 0, "term": "旧词", "note": "Old note."}],

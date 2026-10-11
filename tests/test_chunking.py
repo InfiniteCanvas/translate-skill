@@ -184,7 +184,7 @@ def make_project(root: Path, name: str, lines: list[str],
     """Minimal project (test_retry_feedback's shape): one chapter under
     source/ built from plain body lines (no frontmatter, no trailing
     newline), an accurate chapters.json manifest, config.json
-    {"providers": {}} + cfg_extra, an empty glossary.json, and the draft/ +
+    config.json with a one-block translator + cfg_extra, an empty glossary.json,
     translated/ dirs run_chapter persists state and output into."""
     proj = root / name
     proj.mkdir()
@@ -196,7 +196,8 @@ def make_project(root: Path, name: str, lines: list[str],
         json.dumps([{"file": "CHAPTER_0001.md", "number": 1, "suffix": "",
                      "order": 0, "status": "pending"}],
                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    cfg = {"providers": {}, "translate_max_output_tokens": MAX_OUT}
+    cfg = {"providers": {"translator": {"base_url": "http://test.invalid/v1"}},
+           "translate_max_output_tokens": MAX_OUT}
     cfg.update(cfg_extra or {})
     (proj / "config.json").write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

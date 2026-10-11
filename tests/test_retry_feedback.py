@@ -38,7 +38,8 @@ recap entry is stored).
 Mechanics mirror the sibling suites: every fixture lives in a
 TemporaryDirectory sandbox built with test_sync's write_source pattern
 (one chapter under source/, plain body lines without frontmatter, plus
-an accurate chapters.json manifest, config.json {"providers": {}}, an
+an accurate chapters.json manifest, a config.json with a one-block
+    translator, an
 empty glossary.json, and the draft/ + translated/ dirs run_chapter
 persists state and output into), and all model calls go through a
 monkeypatched
@@ -156,7 +157,7 @@ MANIFEST = [
 
 def make_project(root: Path, name: str, cfg_extra: dict | None = None) -> Path:
     """Minimal project: the fixture chapter under source/, an accurate
-    chapters.json manifest, config.json {"providers": {}} + cfg_extra, an
+    chapters.json manifest, a config.json with a one-block translator + cfg_extra, an
     empty glossary.json, and the draft/ + translated/ dirs the pipeline
     persists state and output into."""
     proj = root / name
@@ -165,7 +166,7 @@ def make_project(root: Path, name: str, cfg_extra: dict | None = None) -> Path:
         write_source(proj, fname, body)
     (proj / "chapters.json").write_text(
         json.dumps(MANIFEST, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    cfg = {"providers": {}}
+    cfg = {"providers": {"translator": {"base_url": "http://test.invalid/v1"}}}
     cfg.update(cfg_extra or {})
     (proj / "config.json").write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

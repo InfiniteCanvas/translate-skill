@@ -70,6 +70,7 @@ lib modules import pyyaml, requests, ebooklib and pillow, so run via uv
 import argparse
 import builtins
 import contextlib
+import inspect
 import io
 import json
 import sys
@@ -83,7 +84,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config
 import migrations
-from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015, v016
 import translate
 
 PASSED = 0
@@ -230,9 +231,12 @@ def case_1_v001() -> None:
             check("1e v001: declined refresh reported as kept (your version)",
                   "[ok] templates ~ b.md kept (your version)" in out, f"out={out}")
             disk = json.loads((proj / "config.json").read_text(encoding="utf-8"))
-            missing = [k for k in config.DEFAULTS if k not in disk]
-            check("1f v001: every config.DEFAULTS key materialized on disk",
-                  not missing, f"missing={missing}")
+            leftover = [k for k, v in disk.items()
+                        if k in config.DEFAULTS and v == config.DEFAULTS[k]]
+            check("1f v001->v016: migrating to the head leaves no DEFAULTS key "
+                  "at its default value (v016 strips what the older steps "
+                  "materialized; an authored value is never touched)",
+                  not leftover, f"still_materialized={leftover}")
             check("1g v001: user value tn_gap_chapters preserved",
                   disk.get("tn_gap_chapters") == 5, f"tn_gap_chapters={disk.get('tn_gap_chapters')}")
             check("1h v001: user provider endpoint preserved",
@@ -1413,9 +1417,9 @@ def case_13_v011() -> None:
               isinstance(v011.DESCRIPTION, str)
               and "\n" not in v011.DESCRIPTION, "")
 
-        check("13k v015 is the chain head",
-              migrations.chain()[-1].VERSION == 15
-              and migrations.current_version() == 15,
+        check("13k v016 is the chain head",
+              migrations.chain()[-1].VERSION == 16
+              and migrations.current_version() == 16,
               f"chain_head={migrations.chain()[-1].VERSION} "
               f"current={migrations.current_version()}")
 
@@ -1436,6 +1440,15 @@ def case_13_v011() -> None:
         check("13s v015: DESCRIPTION is one line",
               isinstance(v015.DESCRIPTION, str)
               and "\n" not in v015.DESCRIPTION, "")
+        check("13t v016: VERSION matches the filename", v016.VERSION == 16, "")
+        check("13u v016: DESCRIPTION is one line",
+              isinstance(v016.DESCRIPTION, str)
+              and "\n" not in v016.DESCRIPTION, "")
+        check("13v v016: the four steps whose DESCRIPTION claims "
+              "materialization still call materialize_config directly",
+              all("materialize_config" in inspect.getsource(step)
+                  for step in (v002, v004, v007, v008)),
+              "a step delegated to a helper that no longer materializes")
 
 
 def case_14_v012() -> None:

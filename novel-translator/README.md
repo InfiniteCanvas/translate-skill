@@ -68,27 +68,31 @@ through uv automatically):
    descriptive subject, so `git log` is a labeled backup of the project.
 
    If you keep a `config.local.json` in the skill directory (optional, and
-   gitignored so it never gets committed), `init` deep-merges it into the
-   new `config.json` automatically -- your endpoint, model, and auth are
-   applied once and reused by every project you start, instead of being
-   retyped per novel. Keys the overlay does not mention (languages,
-   thresholds, the `version` stamp) are left exactly as `init` wrote them.
-   To apply it to a project that already exists:
+   gitignored so it never gets committed), every command resolves through it
+   automatically -- your endpoint, model, and auth are written once and reused
+   by every project you start, instead of being retyped per novel. It is
+   never copied into a project, so editing it changes every project's
+   behaviour at once. To see what a project resolves to:
 
        uv run scripts/translate.py sync-config --project .
 
-   `sync-config` is the same merge, safe to re-run (a second run with no
-   change reports `no changes`), and it prints the dotted key paths it
-   changed. An absent overlay file is a clean no-op, not an error; a
-   malformed one exits 2 with a `[FAIL]` line rather than leaving the
-   project pointed at the wrong endpoint. Merge rules: an overlay
-   `providers.<job>` given as an array replaces that job's blocks
-   wholesale, while a single block object merges into the existing blocks
-   (so `{"model": "x"}` keeps your `base_url` and auth). The overlay may
-   not carry `version`. Note that an inline `"api_key"` is safe in the
-   gitignored overlay but does get copied into the project's `config.json`,
-   which the project repo commits -- both commands print a `[warn]` naming
-   each one, and `"api_key_env": "MY_KEY"` avoids it entirely.
+   `sync-config` is report-only and writes nothing: it prints each provider
+   job's resolved endpoint and model, plus the layer order, so you can see
+   which layer is answering for which key. An absent overlay file is a clean
+   no-op, not an error; a malformed one exits 2 with a `[FAIL]` line rather
+   than leaving the project pointed at the wrong endpoint. Merge rules: an
+   overlay `providers.<job>` given as an array replaces that job's blocks
+   wholesale, while a single block object merges into the blocks below it
+   (so `{"model": "x"}` keeps the `base_url` and auth it merges onto). The
+   overlay may not carry `version`.
+
+   The shipped defaults carry no endpoint, so every provider block must
+   resolve a non-empty `base_url` from the overlay or the project; a config
+   that resolves none is refused at load with the job named (exit 2) rather
+   than failing at the first API call. An inline `"api_key"` stays in the
+   gitignored overlay and never reaches a project file -- both commands
+   still print a `[warn]` naming each one, and `"api_key_env": "MY_KEY"`
+   keeps it out of every file.
 
    After updating the skill itself, upgrade existing projects in place:
 
@@ -807,8 +811,10 @@ to exit`; details land in
   `response_format`; not sent by ping's minimal probe).
 - Don't want to re-enter the same settings for every new novel? Keep them
   in `config.local.json` beside the skill's `scripts/` directory (gitignored,
-  any subset of `config.json`'s keys). `init` merges it into each new
-  project and `sync-config --project .` applies it to an existing one; see
+  any subset of `config.json`'s keys). Every command resolves through it --
+  code defaults, then `config.local.json`, then the project's own
+  `config.json`, each overwriting the one below -- and
+  `sync-config --project .` prints what a project resolves to; see
   the setup section above and `references/file-formats.md`.
 - Thresholds: `min_term_coverage` (advisory usage floor; a term with >= 2
   source occurrences and zero renderings becomes a drift signal for the
