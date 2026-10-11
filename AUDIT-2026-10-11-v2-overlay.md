@@ -454,3 +454,75 @@ F3's suite was verified to actually bite:
 The first attempt at this check mutated the wrong thing and passed; the invariant
 guards the current revision, so the mutation had to target that. A test that
 cannot fail is worse than no test, and this one was made to fail on purpose.
+
+---
+
+## P3 D3 — whole-book `verify` (split D3a / D3b at the maintainer's request)
+
+The plan's original D3 was four lines. The maintainer answered three forks
+**before** dispatch, then the implementer stopped mid-phase on a fourth. Both
+hand-offs are the new policy working.
+
+### Decisions taken before implementation
+
+1. **Two stages.** Stage 1 deterministic (source matched against the glossary,
+   then the translation's rendering checked); stage 2 spends LLM calls **only on
+   chapters stage 1 flagged**.
+2. **Output JSONL**, one line per chapter examined, shaped for a later
+   visualization (which is out of scope).
+3. **Advisory but actionable** — flag chapters for human review, never rewrite
+   translated text.
+4. **Split into D3a (capability + command) and D3b (auto-trigger default-ON +
+   FAITH investigation)**, because the automation changes behaviour for existing
+   pipelines and must be able to fail without blocking a shippable phase.
+
+### The fourth fork — the implementer stopped, and was right
+
+Stage 2 cannot reuse an existing provider job. The D2 arbitration rubrics
+instruct the arbitrator to reject precisely the finding stage 2 asks for:
+
+- `consensus_reviewer.md` — *"pinned glossary renderings are project decisions
+  and are **not** translation errors"*
+- `consensus_glossary.md` — *"THE PINNED RENDERING, ABOVE ALL… the pinned one
+  wins"*
+
+Reuse would not have been merely imprecise — it would have instructed the merge
+to discard the verdict by construction. This is a direct consequence of what D2
+shipped: correct rubrics for their own jobs, wrong for verify. Maintainer
+decided: **own `verify` job + `consensus_verify.md`, plus `v018`** (the stricter
+reading over migration-free inheritance), and **status flip only on stage-2
+confirmation**.
+
+### D3a result — commit `35789b7`, 22 files, +1283/−46
+
+| Point | Result |
+|---|---|
+| gate before | 51 suites, 2435 checks |
+| gate after | **52 suites, 2479 checks**, 0 failed, 57.7s |
+| isolation | exit 0 |
+
+Orchestrator-verified structurally: `verify` present in `PROVIDER_JOBS` and
+`CONSENSUS_JOBS`; `PROVIDER_DEFAULTS["verify"]` = `temperature 0.0`;
+`consensus_verify.md` and `glossary_verify.md` recorded in `.history.json` (19
+templates) — **the D2 invariant test held**, which was the coupling flagged in
+advance; migration head is `v018`.
+
+**The money decision, verified structurally.** `verify.py` contains no status
+write at all ("the status flip and the JSONL are the caller's"). The flip lives
+in `cmd_verify` and iterates `result["confirmed_chapters"]` only, so a stage-1
+hit cannot reach it. `save_manifest` runs only when that list is non-empty.
+Live check on a project with no translated chapters: exit 0, empty JSONL,
+chapter status still `pending` — no silent flip.
+
+`_fail(...)` followed by `return 1` was checked because it looked like dead
+code; `_fail` only prints to stderr and returns `None`, so the exit code is
+live and correct.
+
+**`balance.py` shared-path refactor.** `classify()` is now the single owner of
+the usage-floor rule; `check()` and the new `underused()` both read it, so the
+pipeline's BALANCE stage and verify's stage 1 cannot drift apart. This is the
+highest-risk edit in the phase because `balance.py` is live pipeline code.
+
+**Open item carried to the audit:** `verify` has no chapter-range flag, so a
+book where stage 1 flags many chapters spends many LLM calls in one run. The
+implementer flagged it itself rather than adding a bound unasked.
