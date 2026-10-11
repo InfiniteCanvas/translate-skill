@@ -526,3 +526,50 @@ highest-risk edit in the phase because `balance.py` is live pipeline code.
 **Open item carried to the audit:** `verify` has no chapter-range flag, so a
 book where stage 1 flags many chapters spends many LLM calls in one run. The
 implementer flagged it itself rather than adding a bound unasked.
+
+### D3a audit round — verdict `goal_holds: false`, and the worst finding of the campaign
+
+**`glossary_verify.md` ships with zero `{{...}}` placeholders.** `verify.py`
+builds a mapping with `terms`, `chapter`, `source_lang`, `target_lang` and calls
+`pipeline.fill(...)`; the template references none of them, so `fill` returns
+the template unchanged.
+
+Orchestrator proof, filling the real template with sentinel data:
+
+```
+prompt length: 2466
+sentinel present in prompt: False
+chapter present: False
+```
+
+**Stage 2 was a no-op in production.** The model receives a 2,466-char rubric
+asking it to evaluate terms, and zero terms. A real run returns
+`{"verdicts": []}` every time — no findings, no status flips, no contamination
+ever detected — while the command reports success.
+
+**It survived a 2479-check green gate because every test stubs `consensus.chat`
+with canned verdicts.** A test that stubs the collaborator asserts nothing about
+the integration. This is the second instance of the self-confirming-test class
+in this campaign (the first was the D2 circular citation), and the more
+dangerous one: there the conclusion was right through invalid reasoning, here
+the whole feature was inert and the gate was green throughout.
+
+Three lesser findings: a silent `MAX_TERMS_PER_CALL = 40` drop with no warning
+in any mirror (proved with a 50-term probe — chapter not flipped even when the
+model confirmed an offered term); `v018`'s docstring says "writes nothing" while
+calling `sync_templates`, which writes; and v018 has no dedicated test case
+though every other report-only migration has one.
+
+Audited **correct** and worth recording: the `balance.py` refactor produces
+byte-identical output; the stage-2-only status flip holds under probe; stage 1
+applies `min_coverage` to source counts; `v015` deriving from
+`config.CONSENSUS_JOBS` is right because migrations do not re-run; nothing under
+`translated/` is ever rewritten.
+
+### Fix round dispatched
+
+Combines the F1-F4 fixes with the maintainer's batching decisions, rather than
+adding placeholders to a per-chapter template only to rewrite it for per-term
+batching in the next round. The brief **requires the implementer to paste a
+sentinel proof** that a real term now reaches the model, and forbids satisfying
+the new test by stubbing `consensus.chat`.
