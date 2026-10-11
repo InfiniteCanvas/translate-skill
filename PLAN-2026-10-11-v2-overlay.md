@@ -352,9 +352,30 @@ Two-stage capability, exposed as one command. **No auto-trigger, no FAITH hook.*
 - `lib/verify.py`: stage 1 deterministic scan; stage 2 LLM on flagged chapters.
 - `translate verify`: runs both, writes the JSONL, flags chapters for human
   review through the existing surface. Never mutates translated text.
-- One provider job for stage 2, routed through the existing provider/consensus
-  machinery — no new provider keys unless a new job is genuinely required (that
-  would be a schema change and therefore a migration).
+
+**Decisions taken with the maintainer on 2026-10-11 (the implementer stopped and
+asked rather than guessing — that was correct):**
+
+1. **Stage 2 gets its own `verify` provider job and its own
+   `consensus_verify.md`.** Reuse was ruled out by evidence, not preference:
+   `consensus_reviewer.md` instructs the arbitrator that *"pinned glossary
+   renderings are project decisions and are **not** translation errors"*, and
+   `consensus_glossary.md` that *"the pinned one wins"*. Reusing either would
+   instruct the merge to discard the very verdict stage 2 asks for.
+2. **That new job ships a `v018` migration — belt-and-braces.** Provider
+   inheritance would resolve `providers.verify` at read time without touching a
+   file, which reads as migration-free under the post-D1 rule; the maintainer
+   chose the stricter reading, so the upgrade is recorded.
+3. **Flagging flips chapter status, and ONLY on stage-2 confirmation.** A stage-1
+   heuristic hit must never flip a chapter, because a status flip makes it
+   eligible for `retry --failed`, i.e. it schedules a re-translation.
+4. **JSONL location: `logs/verify.jsonl`**, `--out` to override, one line per
+   chapter **examined** (clean chapters included with empty findings) so a later
+   visualization can be built from it.
+
+A coupling to watch: if `verify` joins `CONSENSUS_JOBS`, then `consensus_verify.md`
+must ship **and** be recorded in `.history.json` — `tests/test_template_assets.py`
+asserts every shipped template's current hash is present.
 
 #### D3b — auto-trigger and the FAITH investigation
 
