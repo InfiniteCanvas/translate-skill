@@ -23,6 +23,11 @@ Two things to know before following it:
   (Flash implements, `MiniMax-M3` audits) is applied by the orchestrator at
   `task`-dispatch time — the runtime pins no model, so a forgotten `model`
   argument silently runs an audit on the session default.
+- **Isolation is checked, not assumed.** An implementer that writes to the main
+  working tree breaks the loop's central promise without failing anything. Run
+  `python workflows/check_isolation.py --verify` at every phase boundary; it
+  exits 1 on contamination. It caught seven silently-modified test files during
+  the v2-overlay campaign that both implementers had reported as impossible.
 
 For a small, obviously-correct change, just run the gate and ship it; the loop
 earns its cost on changes whose failure modes a static read cannot catch.

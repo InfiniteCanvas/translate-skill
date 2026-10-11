@@ -116,10 +116,41 @@ git worktree add D:/Repos/vibed/translate-skill-wt-<topic> -b scratch/<topic>
 - No dependency install step is needed: scripts declare PEP 723 dependencies
   inline and `uv` materializes them per invocation.
 
+**Record the isolation baseline** once the bootstrap is done:
+
+```sh
+python workflows/check_isolation.py --record --repo D:/Repos/vibed/translate-skill
+```
+
+Isolation is a promise, not an instruction. An implementer that writes to the
+main tree breaks it silently: the files look like ordinary edits, the checkout's
+gate keeps passing, and nothing surfaces the leak until the merge. This was
+observed happening in the D1 round of the v2-overlay campaign — seven test files
+were modified in the main tree, both implementers reported the main tree
+untouched, and it was caught only by an incidental `git status`. Verify at every
+phase boundary instead:
+
+```sh
+python workflows/check_isolation.py --verify --repo D:/Repos/vibed/translate-skill
+```
+
+Exit 0 clean, exit 1 contamination. It also fails if the main branch advances
+mid-campaign, which would invalidate the branch point. Scope is `novel-translator/`
+and `tests/` only, so the orchestrator's own `PLAN-*.md` / `AUDIT-*.md` writes in
+the main tree are not reported.
+
+If it fires, do **not** blindly restore: confirm the checkout branch holds the
+authoritative version (`git -C <checkout> diff --stat`), then restore the main
+tree, so nothing is lost that exists only there.
+
 ### P3 — Dynamic audit rounds D1..Dn, one per plan phase
 
 Each phase must land independently — that is what makes a per-phase round
 meaningful.
+
+0. **Verify isolation** (`check_isolation.py --verify`) before and after every
+   phase. A contaminated main tree invalidates the round's evidence, because the
+   gate ran in the checkout while the leak sat unexamined in the main tree.
 
 1. **Implement** the phase in the checkout, from the phase brief embedded
    verbatim. The implementer never runs the gates.
@@ -275,7 +306,10 @@ file is addable as-is.
 files, so the loop is enforced by the orchestrator following this document —
 the doctrine is durable and reviewable, but not mechanically enforced the way a
 script-run workflow would be. That is the honest trade for tracked, reviewable
-files in a harness without a workflow runner.
+files in a harness without a workflow runner. `workflows/check_isolation.py`
+is the one exception: it is a real script, run directly, because tree isolation
+is the promise everything else rests on and it is the part an agent can break by
+accident.
 
 ---
 
