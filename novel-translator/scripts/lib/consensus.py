@@ -19,6 +19,13 @@ The arbitrator is resolved PER JOB by config.consensus_provider: an authored
 different models, and a project that authors no per-job key merges through the
 one global arbitrator exactly as before.
 
+Its PROMPT is per job too: a fanning-out job resolves consensus_<job>.md, so
+each of the six jobs in config.CONSENSUS_JOBS arbitrates on what makes a
+candidate better for that job rather than on one shared wording. consensus.md
+remains shipped as the fallback for any job with no per-job template. Both names
+resolve through pipeline._load_template, so a project's own copy of either
+wins under the same overlay every other prompt uses.
+
 Failure policy: TERMINAL. Every failure — a candidate that exhausted its
 retries, or a consensus call that exhausted its retries — stops the run with one
 [FAIL] line per failed candidate and a `fatal` event in the orchestration log.
@@ -46,6 +53,32 @@ _ANNOUNCED: set[tuple[str, int]] = set()
 _ACTIVE_FANS = 0
 
 _CONSENSUS_TEMPLATE = "consensus.md"
+
+_JOB_TEMPLATE_PREFIX = "consensus_"
+
+
+def _resolve_template(project_dir: Path, job: str) -> tuple[str, str]:
+    """The arbitration template for `job`, and the name it resolved to.
+
+    Every job that fans out merges its candidates through its OWN prompt --
+    consensus_<job>.md -- because what makes one candidate better is different
+    for each: a translation is judged on structure and pinned terminology, a
+    glossary entry on evidence, a reviewer finding on being grounded in the text
+    it reviews. consensus.md stays shipped as the general fallback and is used
+    whenever the per-job template is absent, so a project that overrides only
+    the general one keeps working.
+
+    Resolution goes through pipeline._load_template, so a project's own copy of
+    either name wins under the same two-layer overlay every other prompt uses.
+    """
+    from lib import pipeline
+
+    templates_dir = project.paths(project_dir)["templates"]
+    job_name = f"{_JOB_TEMPLATE_PREFIX}{job}.md"
+    try:
+        return pipeline._load_template(templates_dir, job_name), job_name
+    except pipeline.PipelineError:
+        return pipeline._load_template(templates_dir, _CONSENSUS_TEMPLATE), _CONSENSUS_TEMPLATE
 
 
 def _model_label(block: dict) -> str:
@@ -212,13 +245,12 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
         f"### Candidate {i} (model: {_model_label(blocks[i - 1])})\n\n{text}"
         for i, text in survivors
     ]
-    template = pipeline._load_template(
-        project.paths(project_dir)["templates"], _CONSENSUS_TEMPLATE)
+    template, template_name = _resolve_template(project_dir, job)
     c_prompt = pipeline.fill(
         template,
         {"task_prompt": prompt,
          "candidates_section": "\n\n".join(sections)},
-        _CONSENSUS_TEMPLATE)
+        template_name)
     c_max = max(max_tokens or 0, int(cblock.get("max_tokens") or 0)) or None
     return client.chat(
         cblock, c_prompt, json_schema=json_schema, max_tokens=c_max,

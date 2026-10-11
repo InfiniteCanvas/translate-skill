@@ -95,14 +95,19 @@ measurably improves output; report cost as a factor, not as a recommendation
 to downgrade. `novel-translator/config.local.EXAMPLES.md` carries the routing
 table, the credit math, and the documented cost model.
 
-## Config-key or template changes require a new migration
+## Project data-shape changes require a new migration
 
-Any change that adds, removes, renames, or re-keys entries in the project
-`config.json` schema (`DEFAULTS` or `PROVIDER_DEFAULTS` in
-`novel-translator/scripts/lib/config.py`), or that modifies the skill-shipped
-prompt templates in `novel-translator/assets/templates/`, must ship a new
-migration script in `novel-translator/scripts/migrations/` building on the
-latest one:
+A change to a **project data shape** (a file's naming scheme, a file the
+project itself owns, like `chapters.json` or `story_state.json`) requires a
+new `scripts/migrations/vNNN.py`. A change to a **shipped default** in
+`DEFAULTS` / `PROVIDER_DEFAULTS`, or to a **shipped prompt template** in
+`assets/templates/`, does **not**: both resolve through the overlay chain
+(§ file-formats.md "Overlay layers"), so the change reaches every project on
+its next run. One exception: editing `assets/templates/.history.json` itself
+requires a migration, because its correctness depends on the recorded
+revisions, not on the current text.
+
+A migration that does ship must:
 
 - Name it `vNNN.py`, with NNN = highest existing version + 1 — read the
   current head off `scripts/migrations/` rather than from this file, which
@@ -119,10 +124,9 @@ latest one:
   there is deliberately no combined helper, because a step that materializes
   config says so in its own DESCRIPTION and one that does not must never
   reach for it by accident).
-- `sync_templates()` already copies added templates and refreshes drifted
-  ones during migrate; the new migration is still required by this rule, and
-  it is also the place for anything that helper can't do (renames, removals,
-  config-side counterparts).
+- A migration that moves, renames or removes a project file does that itself:
+  `sync_templates()` only copies a missing template and overwrites a drifted
+  one with consent, so it cannot express a rename or a removal.
 - A change that alters only the *resolution rule* for existing keys — none
   added, removed, renamed or re-keyed — does not literally trigger this rule,
   but `v009` set the precedent of shipping one anyway to leave an upgrade

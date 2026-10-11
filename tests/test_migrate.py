@@ -1421,9 +1421,9 @@ def case_13_v011() -> None:
               isinstance(v011.DESCRIPTION, str)
               and "\n" not in v011.DESCRIPTION, "")
 
-        check("13k v016 is the chain head",
-              migrations.chain()[-1].VERSION == 16
-              and migrations.current_version() == 16,
+        check("13k v017 is the chain head",
+              migrations.chain()[-1].VERSION == 17
+              and migrations.current_version() == 17,
               f"chain_head={migrations.chain()[-1].VERSION} "
               f"current={migrations.current_version()}")
 

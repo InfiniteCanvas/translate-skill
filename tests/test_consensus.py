@@ -46,15 +46,22 @@ def block(model: str | None, base_url: str = "http://fake:1/v1",
 
 
 def make_project(root: Path, name: str,
-                 local_consensus: str | None = None) -> Path:
+                 local_consensus: str | None = None,
+                 local_job_templates: dict[str, str] | None = None) -> Path:
     """A sandbox project with a templates/ dir; consensus.md is left OUT so
     consensus.chat exercises the skill-assets fallback, unless
-    local_consensus text is given (then it becomes the project's copy)."""
+    local_consensus text is given (then it becomes the project's copy).
+    local_job_templates maps any further template file name to the project's
+    own text, e.g. a consensus_<job>.md override."""
     proj = root / name
     (proj / "templates").mkdir(parents=True)
+    files: dict[str, str] = {}
     if local_consensus is not None:
-        (proj / "templates" / "consensus.md").write_text(
-            local_consensus, encoding="utf-8", newline="\n")
+        files["consensus.md"] = local_consensus
+    files.update(local_job_templates or {})
+    for filename, text in files.items():
+        (proj / "templates" / filename).write_text(
+            text, encoding="utf-8", newline="\n")
     return proj
 
 
@@ -230,8 +237,9 @@ def case_b_two_blocks() -> None:
               and all(c["block"] is cblock for c in con),
               f"con={len(con)}")
         c = con[0]
-        check("b3 two blocks: consensus prompt renders the template with both candidates",
-              "You are the consensus arbitrator." in c["prompt"]
+        check("b3 two blocks: consensus prompt renders the translator's own "
+              "template with both candidates",
+              "You are the consensus arbitrator for the TRANSLATION job." in c["prompt"]
               and "### Candidate 1 (model: m1)\n\nreply-m1" in c["prompt"]
               and "### Candidate 2 (model: m2)\n\nreply-m2" in c["prompt"]
               and TASK_PROMPT in c["prompt"],
@@ -461,8 +469,56 @@ def case_i_unresolved_model_label() -> None:
 
 
 def case_local_template_wins() -> None:
-    """A project-local templates/consensus.md beats the skill-assets copy:
-    the consensus prompt is filled from the project's template."""
+    """The overlay applies to whichever arbitration NAME a fan-out job
+    resolves: a project-local consensus_<job>.md wins for that job, and the
+    general consensus.md stays the fallback a project-local copy still wins
+    for a job that ships no per-job template of its own."""
+    reset_globals()
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(
+            Path(td), "proj",
+            local_consensus="LOCAL arbitrator.\n{{task_prompt}}\n***\n"
+                            "{{candidates_section}}\n",
+            local_job_templates={
+                "consensus_translator.md": "LOCAL translator arbitrator.\n"
+                                           "{{task_prompt}}\n***\n"
+                                           "{{candidates_section}}\n"})
+        cfg = two_block_cfg(block("c-merge", temperature=0.2))
+        fake = FakeChat()
+        with patched_chat(fake):
+            consensus.chat(proj, cfg, "translator", TASK_PROMPT)
+        con = fake.consensus()
+        check("local template: the project's consensus_<job>.md wins over the "
+              "skill's copy of the same name",
+              len(con) == 1
+              and con[0]["prompt"].startswith("LOCAL translator arbitrator.")
+              and "You are the consensus arbitrator" not in con[0]["prompt"]
+              and TASK_PROMPT in con[0]["prompt"]
+              and "### Candidate 1 (model: m1)" in con[0]["prompt"],
+              f"prompt={con[0]['prompt'][:200] if con else None!r}")
+
+    reset_globals()
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(
+            Path(td), "proj",
+            local_consensus="LOCAL arbitrator.\n{{task_prompt}}\n***\n"
+                            "{{candidates_section}}\n")
+        cfg = {"providers": {"auditor": [block("m1"), block("m2")],
+                             "consensus": [block("c-merge", temperature=0.2)]},
+               "log_llm": True}
+        fake = FakeChat()
+        with patched_chat(fake):
+            consensus.chat(proj, cfg, "auditor", TASK_PROMPT)
+        con = fake.consensus()
+        check("fallback: a job with no per-job template resolves the general "
+              "consensus.md, and the project's copy of it still wins",
+              len(con) == 1
+              and con[0]["prompt"].startswith("LOCAL arbitrator.")
+              and "You are the consensus arbitrator" not in con[0]["prompt"]
+              and TASK_PROMPT in con[0]["prompt"]
+              and "### Candidate 1 (model: m1)" in con[0]["prompt"],
+              f"prompt={con[0]['prompt'][:200] if con else None!r}")
+
     reset_globals()
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(
@@ -474,11 +530,12 @@ def case_local_template_wins() -> None:
         with patched_chat(fake):
             consensus.chat(proj, cfg, "translator", TASK_PROMPT)
         con = fake.consensus()
-        check("local template: project's consensus.md wins over the skill assets",
-              len(con) == 1 and con[0]["prompt"].startswith("LOCAL arbitrator.")
-              and "You are the consensus arbitrator." not in con[0]["prompt"]
-              and TASK_PROMPT in con[0]["prompt"]
-              and "### Candidate 1 (model: m1)" in con[0]["prompt"],
+        check("precedence: a shipped per-job template beats a project-local "
+              "general consensus.md (the per-job name resolves first)",
+              len(con) == 1
+              and con[0]["prompt"].startswith(
+                  "You are the consensus arbitrator for the TRANSLATION job.")
+              and "LOCAL arbitrator." not in con[0]["prompt"],
               f"prompt={con[0]['prompt'][:200] if con else None!r}")
 
 

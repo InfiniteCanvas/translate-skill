@@ -70,8 +70,9 @@ Omit `--api-base` to leave the endpoint to `config.local.json` (below); it
 defaults to no endpoint at all, so a machine with no overlay must pass it.
 
 Creates the folder structure, `config.json`, `novel_info.json`,
-`chapters.json`, empty `glossary.json`/`tn_history.json`, copies the prompt
-templates into `templates/`, backfills frontmatter on bare source chapters,
+`chapters.json`, empty `glossary.json`/`tn_history.json`, an empty `templates/`
+over the skill's own prompts (nothing is copied into it — drop a file there to
+override one), backfills frontmatter on bare source chapters,
 scrapes a cover from the source URL (`og:image`) or generates one (title on a
 gradient background) into `covers/cover.jpg`, copies the chosen **style
 guide** to `style.md` (preset-based, zero LLM calls; see below), and seeds
@@ -581,10 +582,25 @@ background build too. Builds produce no git commits — `export/`,
   `api_key_env` (environment variable name) or `api_key` on the provider
   block.
 - **Templates are per project** (`templates/`). Tuning a prompt for a
-  specific novel is normal — edit, then `retry` the affected chapters.
-  Template files missing from a project's `templates/` dir fall back to
-  the skill's `assets/templates/`, so newly shipped templates work in old
-  projects.
+  specific novel is normal — drop your own `<name>.md` into the project's
+  `templates/`, then `retry` the affected chapters. The skill's
+  `assets/templates/` is the base layer and is resolved at read time, so a
+  project file wins, a missing one falls through, and a shipped prompt
+  improvement reaches an old project on its next run. One exception, and it is
+  the useful one: a project file whose bytes are byte-identical to a revision
+  the skill shipped is an **unmodified leftover**, not an override, so the
+  skill's current copy is used instead. Any real edit differs by a byte, keeps
+  winning, and is never overwritten. `style.md` is not an overlay — it is a
+  chosen project data shape copied from `assets/styles/`.
+- **Multi-model consensus arbitration is per job**: a job with two or more
+  provider blocks merges its candidates through its own
+  `consensus_<job>.md` (`consensus_translator.md`, `consensus_glossary.md`,
+  `consensus_reviewer.md`, `consensus_annotator.md`, `consensus_recap.md`,
+  `consensus_profile.md`), each written for what makes a candidate better at
+  *that* job — line-indexed structure and pinned terminology for a
+  translation, evidence for a glossary entry, being grounded in the reviewed
+  text for a finding. The general `consensus.md` is the fallback for a job with
+  no per-job template, and a single-block job loads no template at all.
 - **Upgrading projects (`migrate`)**: `uv run "$SCRIPT" migrate --project .
   [--dry-run] [--force]` upgrades an existing project to the current
   skill version — non-destructive, re-runnable, and it never resets
@@ -710,7 +726,14 @@ background build too. Builds produce no git commits — `export/`,
   with `[FAIL] cannot read config.json: providers.translator resolves no
   base_url`. `migrate` itself keeps working in that state — it makes no
   provider call and is how you would refresh templates or pick up a later
-  step. A template that
+  step. v017 is the template-layering counterpart (DESCRIPTION: `v2 template
+  layering: delete project template files that are unmodified shipped copies;
+  keep every customization`): `init` used to copy all eleven shipped templates
+  into every project, so v017 deletes each project copy that is byte-identical
+  to a revision the skill shipped (`assets/templates/.history.json`) and keeps
+  every customization untouched — the deletion is byte identity, not a judgement
+  about content, so `--force` and the interactive prompt never apply to it.
+  After it, `templates/` holds only prompts you actually wrote. A template that
   exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:

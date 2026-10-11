@@ -21,7 +21,6 @@ import argparse
 import json
 import os
 import shlex
-import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -392,13 +391,12 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         paths["story_state"].unlink(missing_ok=True)
         print(f"[init] initialized {paths['glossary'].name} and {paths['tn_history'].name}")
 
-    copied = 0
-    for tpl in sorted(TEMPLATES_SRC_DIR.glob("*.md")):
-        shutil.copy2(tpl, paths["templates"] / tpl.name)
-        copied += 1
-    if copied == 0:
+    shipped_templates = sorted(TEMPLATES_SRC_DIR.glob("*.md"))
+    if not shipped_templates:
         raise CliError(f"no *.md templates found in {TEMPLATES_SRC_DIR}")
-    print(f"[init] copied {copied} template(s) into templates/")
+    print(f"[init] templates: {len(shipped_templates)} shipped template(s) "
+          "resolve as the base layer - nothing is copied into templates/; "
+          "drop a file there to override one")
 
     was_repo = vcs.is_repo(project_dir)
     for line in vcs.ensure_repo(project_dir):

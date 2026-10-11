@@ -50,9 +50,10 @@ through uv automatically):
            --source-url "<url>" --source-lang zh --target-lang en
 
    This writes `config.json`, `novel_info.json`, an empty `glossary.json`
-   and `tn_history.json`, copies prompt templates into `templates/`,
-   copies a style guide to `style.md`, seeds the glossary from any
-   matching asset catalogues, and prepares a cover (scraped from the
+   and `tn_history.json`, creates an empty `templates/` that overlays the
+   skill's own prompt templates (nothing is copied in — drop a file there to
+   override one), copies a style guide to `style.md`, seeds the glossary from
+   any matching asset catalogues, and prepares a cover (scraped from the
    source URL or generated; `--cover-url URL` points at a cover image
    directly). `init` refuses to overwrite an existing `config.json`;
    `--force` reinitializes, resetting `glossary.json` and

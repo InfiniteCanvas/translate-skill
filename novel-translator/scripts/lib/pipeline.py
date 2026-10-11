@@ -22,6 +22,7 @@ rides the [Background Information] frame into every prompt that fills
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -388,11 +389,58 @@ def background_section(*parts: str) -> str:
 
 _SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
 
+HISTORY_FILE = ".history.json"
+
+
+def _shipped_revisions(name: str) -> set[str]:
+    """Every sha256 the skill has ever shipped for `name`, read from
+    assets/templates/.history.json.
+
+    An absent, unreadable or malformed history file classifies NOTHING: an
+    unknown hash stays a customization and keeps winning, which is the
+    pre-overlay behaviour, so a broken file degrades to "no fall-through"
+    rather than to "everything is a leftover"."""
+    path = _SKILL_TEMPLATES / HISTORY_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    revisions = data.get(name)
+    if not isinstance(revisions, list):
+        return set()
+    return {str(rev) for rev in revisions}
+
+
+def _is_shipped_leftover(path: Path, name: str) -> bool:
+    """True when `path`'s bytes are byte-identical to a revision the skill has
+    shipped for `name` -- an unmodified copy the project never edited.
+
+    Hashing raw bytes is what makes the classification honest: a project file
+    a human touched differs, however slightly, and then keeps winning. A file
+    that cannot be read is never treated as a leftover."""
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return digest in _shipped_revisions(name)
+
 
 def _load_template(templates_dir: Path, name: str, *,
                    error: Callable[[str], Exception] = PipelineError) -> str:
+    """Resolve one prompt template through the two-layer overlay: the project's
+    templates/ wins, the skill's shipped assets/templates/ is the base.
+
+    A project file falls through to the shipped copy when it is MISSING, or
+    when its bytes are byte-identical to a revision the skill has shipped --
+    an unmodified leftover from the era when `init` copied templates into every
+    project. That second case is what lets a shipped prompt improvement reach
+    an existing project: the copy is provably not the author's, so the skill's
+    current text is the one they meant to run. Any other difference is a
+    customization and always wins."""
     path = templates_dir / name
-    if not path.is_file():
+    if not path.is_file() or _is_shipped_leftover(path, name):
         path = _SKILL_TEMPLATES / name
     if not path.is_file():
         raise error(f"missing template: {name} (looked in {templates_dir} and {_SKILL_TEMPLATES})")

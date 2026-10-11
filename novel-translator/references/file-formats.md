@@ -223,6 +223,47 @@ set it in the project's config.json or in the skill's config.local.json
 A job named nowhere inherits the translator's array whole, so a config that
 authored an endpoint anywhere passes. Exit 2. See § Exit codes.
 
+A **prompt template** resolves in **two layers, lowest precedence first**:
+
+| Layer | Where | Written by |
+|---|---|---|
+| 0 — shipped | `<skill>/assets/templates/<name>.md` | the skill |
+| 1 — project | `<project>/templates/<name>.md` | you, only when you want an override |
+
+A project file **wins** — with one exception. If its bytes are byte-identical
+to a revision the skill has shipped for that name, it is an unmodified
+leftover from the era when `init` copied every template into the project, and
+the skill's current copy is used instead (`pipeline._load_template`). Hashing
+raw bytes is what makes the exception honest: a file you touched differs,
+however slightly, and then keeps winning. A missing project file falls through
+too, so a newly shipped template works in an old project.
+
+The known-shipped revisions live in `assets/templates/.history.json`:
+
+```json
+{
+  "translation.md": ["<sha256>", "<sha256>"],
+  "consensus.md": ["<sha256>"]
+}
+```
+
+**One entry per template name, every revision it has ever shipped**, seeded
+from git history — not just the current bytes. A list holding only the current
+revision would classify every pre-v017 project's identical copy as a
+customization and strand it permanently. A maintainer authoring a prompt edit
+appends that revision's hash in the same change; `AGENTS.md` requires a
+migration for any `.history.json` edit, because the file's correctness depends
+on the revisions recorded rather than on the text of any one template. The
+file is data owned by the skill, so a project carries no bookkeeping: an
+unreadable or malformed `.history.json` classifies nothing, which degrades to
+today's behaviour (every project file wins) rather than to "everything is a
+leftover".
+
+`style.md` is **not** an overlay. It is a chosen project data shape copied from
+`assets/styles/` at `init`, and the preset name is recorded in
+`novel_info.json`; there is no honest signal separating "you edited this guide"
+from "this is the unmodified preset".
+
 ## config.json
 
 The block below is the **resolved** view — what the three layers add up to.
@@ -1247,6 +1288,32 @@ result is the v2 shape. A below-v016 project whose blocks still carry the retire
 LAN endpoint loads fine through those earlier steps — the value is non-empty —
 and is corrected by v016 itself.
 
+`v017` (DESCRIPTION: `v2 template layering: delete project template files that are
+unmodified shipped copies; keep every customization`) is the migration for § Overlay
+layers' **template** half. Every project written before it was written the other way:
+`init` copied all eleven shipped templates into `templates/`, so each project carried
+a snapshot of the skill's prompts as they stood the day it was scaffolded. Those
+copies are exactly what the new resolution rule already ignores — a file whose sha256
+is listed for that name in `assets/templates/.history.json` is an unmodified
+leftover, and the skill's current copy is what runs — so v017 deletes them and makes
+the project's real state visible: whatever remains is an author-written customization,
+and it keeps winning.
+
+The distinction is **byte identity, not judgement about content**, so there is nothing
+to consent to: `force` and `confirm` are accepted and unused, and a deletion here can
+never be the loss of an edit. Each deletion is reported
+(`[ok] templates - <name>.md (unmodified shipped copy; the skill's template is used
+from now on)`); customizations are left alone and silent, which is what makes the
+step idempotent — a second run matches nothing and reports nothing. A project with no
+`.history.json` visible to the migration reports one `[warn]` and keeps everything,
+the conservative direction: an unknown revision must not authorize a delete.
+
+Round-trip note, same shape as v016's: a below-v017 project's earlier steps still call
+`sync_templates()`, which materializes any template it is missing and refreshes drifted
+ones. Those materialized copies are byte-identical to the shipped file by construction,
+so v017 deletes exactly the ones that step wrote and keeps every customization —
+including one `--force` did not overwrite.
+
 `v015` (DESCRIPTION: `a fan-out job can name its own arbitrator:
 providers.consensus_<job> overrides providers.consensus for that job's merge;
 report which arbitrator each fan-out job resolves to`) is **report-only** and
@@ -1793,18 +1860,19 @@ false`.
 
 ## Prompt templates (`templates/`)
 
-Copied from the skill's `assets/templates/` at `init`; edit freely per project.
-A template file missing from the project's `templates/` dir falls back to
-the skill's `assets/templates/`, so newly shipped templates work in
-existing projects. `migrate` materializes missing templates onto disk
-and prompts for each copy that differs from the shipped one —
-`templates ~ <name>.md differs from the shipped copy - overwrite it?
-[y/N]` (Enter/n keeps the project's copy, y overwrites; `--force`
-answers y to all prompts, and non-interactive runs keep differing
-copies with a `[warn]`); this template maintenance pass runs on
-already-current
-projects too, leaving the version stamp untouched. Plain
-`{{placeholder}}` substitution. The pipeline
+The project's `templates/` holds only the prompts **you** wrote. `init` copies
+nothing into it and creates it empty; the skill's `assets/templates/` is the
+base layer, resolved at read time (§ Overlay layers). A project file wins, a
+missing one falls through, and one that is byte-identical to a revision the
+skill shipped is an unmodified leftover and falls through too — so a shipped
+prompt improvement reaches an existing project on its next run, while a prompt
+you edited is never overwritten. `migrate` still runs the template maintenance
+pass — missing templates materialized onto disk, differing ones prompted
+(`templates ~ <name>.md differs from the shipped copy - overwrite it? [y/N]`;
+Enter/n keeps the project's copy, y overwrites; `--force` answers y to all
+prompts, and non-interactive runs keep differing copies with a `[warn]`). That
+pass runs on already-current projects too, leaving the version stamp untouched.
+Plain `{{placeholder}}` substitution. The pipeline
 errors out if a template still contains an unknown/leftover `{{...}}`
 after filling — typos fail fast.
 
@@ -1820,7 +1888,25 @@ after filling — typos fail fast.
 | `glossary_review.md` | `review glossary` model tier | `source_lang target_lang entries` |
 | `notes_review.md` | `review notes` model tier | `source_lang target_lang entries` |
 | `style_profile.md` | `--style auto` init / `profile` (legacy) | `source_lang target_lang sample_text` |
-| `consensus.md` | the consensus call of any multi-model job | `task_prompt candidates_section` |
+| `consensus.md` | arbitration fallback for any multi-model job | `task_prompt candidates_section` |
+| `consensus_translator.md` | arbitration for a `translator` fan-out | `task_prompt candidates_section` |
+| `consensus_glossary.md` | arbitration for a `glossary` fan-out | `task_prompt candidates_section` |
+| `consensus_reviewer.md` | arbitration for a `reviewer` fan-out | `task_prompt candidates_section` |
+| `consensus_annotator.md` | arbitration for an `annotator` fan-out | `task_prompt candidates_section` |
+| `consensus_recap.md` | arbitration for a `recap` fan-out | `task_prompt candidates_section` |
+| `consensus_profile.md` | arbitration for a `profile` fan-out | `task_prompt candidates_section` |
+
+Each of the six jobs in `CONSENSUS_JOBS` that fans out (two or more provider
+blocks) resolves **its own** `consensus_<job>.md`, because what makes one
+candidate better is not the same question for each: a translation is judged on
+line-indexed structure and pinned terminology, a glossary entry on being
+grounded in the source, a reviewer finding on being grounded in the text it
+reviews. The general `consensus.md` is the fallback, used when no per-job
+template resolves — so a project that overrides only `consensus.md` keeps
+working for any job it has no per-job template for, and a project-local
+`consensus_<job>.md` beats the shipped one under the same overlay as every
+other prompt. A job with a **single** provider block returns before any
+template is loaded, so it loads none.
 
 `source_lines` / `translation_lines` are substituted as JSON arrays (compact,
 `ensure_ascii=False`); `glossary_review.md`'s and `notes_review.md`'s
