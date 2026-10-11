@@ -316,12 +316,56 @@ subcommand gains a template).
 **Gate:** suite green, plus a live check that a customized project template
 still wins, and that a shipped prompt edit reaches an unmodified project.
 
-### D3 — Whole-book `verify`
+### D3 — Whole-book `verify` (split into D3a and D3b)
 
-New `translate verify`: scan `translated/` against the final glossary and
-report cross-chapter drift, which the per-chapter BALANCE stage structurally
-cannot see (it sees one chapter at a time and is advisory-only). Advisory
-output, exit 0 unless nothing was scanned.
+The original one-liner — *"scan `translated/` against the final glossary"* —
+understated the work. Resolved with the maintainer on 2026-10-11 before
+implementation; the decisions are recorded here rather than left to the
+implementer.
+
+**Definition of drift (maintainer):** everything that would **infect future
+translations with a contaminated glossary item** — a term that would force a
+translation to match the glossary entry where doing so would mistranslate,
+because the word means different things in different contexts.
+
+**Shape:** two stages. Stage 1 is deterministic and free — match a chapter's
+**source** against the glossary, then check how the **translation** rendered
+those terms (the BALANCE shape). Stage 2 spends LLM calls **only on the chapters
+stage 1 flagged**, and asks specifically the semantic question: does forcing this
+glossary term here produce a mistranslation?
+
+**Output:** JSONL, one line per chapter, shaped for later visualization.
+Visualization is out of scope.
+
+**Advisory, but actionable:** verify flags chapters into the existing human
+review surface. It never rewrites translated text.
+
+**Split rationale:** D3a is the capability and the command — standalone,
+auditable, no automation risk. D3b is the automation, which adds default-on LLM
+spend and touches FAITH. Splitting keeps the first shippable and means the
+second can fail loudly without blocking anything.
+
+#### D3a — `lib/verify.py` + `translate verify`
+
+Two-stage capability, exposed as one command. **No auto-trigger, no FAITH hook.**
+
+- `lib/verify.py`: stage 1 deterministic scan; stage 2 LLM on flagged chapters.
+- `translate verify`: runs both, writes the JSONL, flags chapters for human
+  review through the existing surface. Never mutates translated text.
+- One provider job for stage 2, routed through the existing provider/consensus
+  machinery — no new provider keys unless a new job is genuinely required (that
+  would be a schema change and therefore a migration).
+
+#### D3b — auto-trigger and the FAITH investigation
+
+- **Auto-trigger, default ON:** after a glossary-changing operation —
+  `review --fix`, and the glossary retire / merge / replace paths — verify runs
+  over the chapters the change could have affected.
+- **FAITH investigation:** when the FAITH gate rejects a chapter for a reason
+  that looks like glossary over-binding, run the stage-2 investigation on it.
+
+Both change behaviour for existing pipelines, which is why they land after D3a
+has proven the capability.
 
 ### D4 — Dashboard data/render split
 
