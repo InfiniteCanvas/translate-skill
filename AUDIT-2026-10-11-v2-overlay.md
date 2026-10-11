@@ -349,3 +349,25 @@ plan/audit/workflow docs.
 guarantee. Every phase boundary should re-check `git status` in the main tree.
 The check that caught it was incidental — run to inspect branch state, not to
 look for contamination.
+
+### Fix — isolation made checkable (`4b4edae`)
+
+Rather than rely on the orchestrator noticing, `workflows/check_isolation.py`
+records the main tree's HEAD plus the porcelain status of `novel-translator/`
+and `tests/`, and verifies it at phase boundaries. Exit 0 clean, exit 1
+contamination; it also fails on a main-branch advance mid-campaign, which would
+invalidate the branch point.
+
+Four behaviours verified live against the real trees:
+
+| Behaviour | Result |
+|---|---|
+| simulated leak (`Add-Content` on `tests/test_git.py`) | **exit 1**, names the path |
+| same leak restored | **exit 0** |
+| orchestrator doc writes in the main tree (`AUDIT-probe-temp.md`) | **exit 0** — correctly ignored |
+| baseline tampered to a different HEAD | **exit 1**, "main tree HEAD moved" |
+
+Scope is `novel-translator/` + `tests/` only, so the orchestrator's own
+`PLAN-*.md` / `AUDIT-*.md` writes in the main tree never false-positive.
+Wired into `workflows/verification-loop.md` (§P2 record, §P3 step 0 verify) and
+`AGENTS.md`. Gate re-confirmed at 2399 checks after the addition.
