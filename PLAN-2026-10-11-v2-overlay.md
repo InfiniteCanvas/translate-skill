@@ -377,6 +377,30 @@ A coupling to watch: if `verify` joins `CONSENSUS_JOBS`, then `consensus_verify.
 must ship **and** be recorded in `.history.json` — `tests/test_template_assets.py`
 asserts every shipped template's current hash is present.
 
+#### D3a-follow-up — stage-2 batching and contamination flagging
+
+**Must land before D3b.** D3b makes verify run automatically after every
+glossary change, so stage 2's cost shape stops being opt-in and becomes default
+behaviour. Fixing it after D3b would ship the unbounded shape first.
+
+Raised by the maintainer after D3a landed (stage 2 was one call per flagged
+chapter). Decisions taken 2026-10-11:
+
+1. **Batch stage 2 by TERM, not by chapter.** The drift definition is *"words
+   meaning different things in different contexts"* — detecting that requires
+   seeing a term's usages against each other. Per-chapter calls cannot see the
+   contradiction between a chapter that says "fine" and one that says
+   "mistranslation". It is also cheaper where it matters: a novel's recurring
+   names would otherwise pay the rubric once per chapter. The verdict structure
+   stays per-`(term, chapter)`, so status flipping is unaffected.
+2. **Cap contexts per term; when the cap is exceeded, split into follow-up
+   calls until every context is covered.** No silent gap (a dropped context can
+   hide the contaminating one), and no unbounded single request.
+3. **A contaminated term is flagged as well as the chapter.** Flipping a
+   chapter fixes the past; leaving the glossary entry in place means the next
+   chapter hits it again, which is what the drift definition actually targets.
+   The maintainer chose **both**.
+
 #### D3b — auto-trigger and the FAITH investigation
 
 - **Auto-trigger, default ON:** after a glossary-changing operation —
