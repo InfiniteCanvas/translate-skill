@@ -212,16 +212,40 @@ were untracked in the main tree and do not travel to a checkout otherwise
 exit 0, **59.4s**. Matches the main-tree baseline (2362 checks), confirming the
 checkout is a faithful branch point and not a degraded one.
 
-### Untracked state (§6) — checked, nothing to copy
+### Untracked state (§6) — layer 1 provisioned
 
-- `novel-translator/config.local.json` — **absent in both trees.** Nothing to
-  copy. **Carry into D1:** the phase touches provider resolution, and this file
-  is the only untracked state that can affect it. Whoever implements D1 should
-  create one before the round, or state explicitly that D1 is verified without
-  layer 1 exercised (the `apply_overlay` removal and the raw-reader fix are then
-  only covered by the migrated-project checks, not by a live layer-1 run).
-- `probe-artifacts/`, `.zcode/` — absent in the checkout, expected, and no suite
-  depends on either.
+`novel-translator/config.local.json` — **created in the checkout only**, copied
+verbatim from the shipped `config.local.example.minimax.json` (no hand-written
+config, no invented endpoint). Verified ignored via `git check-ignore -v`
+(`.gitignore:21`) and absent from `git status`, so it cannot reach a commit.
+
+Fixture project at `%TEMP%\nt-d1-layer1`, two synthetic chapters, `--skip-profile`.
+
+### Pre-D1 baseline — the layering defects, captured live
+
+`init` against the layer-1 overlay, at `913dc01`:
+
+```
+[init] wrote config.json
+[init] [ok] config.local.json: applied 8 key(s): providers.annotator,
+  providers.consensus, providers.glossary, providers.profile, providers.recap,
+  providers.reviewer, providers.translator, translate_max_output_tokens
+[init] copied 11 template(s) into templates/
+```
+
+| Observable | Value | D1/D2 target |
+|---|---|---|
+| project `config.json` top-level keys | **27** | authored keys only |
+| layer-1 values present in the project file | **yes** — `base_url`/`model`/`api_key_env` all point at MiniMax (`config.json:7,8,13`) | gone; read at run time |
+| templates copied into the project | **11** | **0** — no copy at `init` |
+
+This is the materialization the pinned goal forbids, observed rather than
+inferred. It is the concrete D1/D2 acceptance target.
+
+`ping` against the same project: **all 7 jobs `[ok]`, "all providers
+reachable"**, credential resolved from `$MINIMAX_API_KEY`. Layer 1 is therefore
+fully exercisable in D1 — the round can verify a real overlay read, not only the
+migration path.
 
 The checkout working tree is clean at `f5d7525`; the main tree is untouched by
 this bootstrap (`scripts/` and `tests/` still byte-identical to `913dc01`).
