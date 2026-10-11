@@ -4,6 +4,29 @@ Additional instructions for agents working in this repository, on top of the
 behavior docs in `novel-translator/` (`SKILL.md`, `README.md`,
 `references/*.md`).
 
+## Verification loop (for non-trivial changes)
+
+`workflows/verification-loop.md` defines how a non-trivial change gets planned,
+audited and landed here: implement each phase once in an isolated `git worktree`,
+verify it there by running `uv run tests/run_all.py` live, adversarially audit
+the *executed* code against the plan's pinned goal, then fast-forward merge that
+branch and delete the checkout. The branch that is verified is the branch that is
+merged, so nothing experimental reaches the working tree and implementation is
+paid once.
+
+Two things to know before following it:
+
+- **The audit reference is the pinned goal, never the plan's internal
+  consistency.** That is the rule that makes the loop worth running; a test that
+  mirrors the plan does not catch a plan-level error.
+- **The role agents are `vt-auditor` and `vt-implementer`**, and the model split
+  (Flash implements, `MiniMax-M3` audits) is applied by the orchestrator at
+  `task`-dispatch time — the runtime pins no model, so a forgotten `model`
+  argument silently runs an audit on the session default.
+
+For a small, obviously-correct change, just run the gate and ship it; the loop
+earns its cost on changes whose failure modes a static read cannot catch.
+
 ## After finishing a task: check the changed files for stale docs and code
 
 When a task is done, re-read every file you changed plus its doc mirrors, and
