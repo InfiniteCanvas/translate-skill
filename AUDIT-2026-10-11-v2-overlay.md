@@ -573,3 +573,55 @@ adding placeholders to a per-chapter template only to rewrite it for per-term
 batching in the next round. The brief **requires the implementer to paste a
 sentinel proof** that a real term now reaches the model, and forbids satisfying
 the new test by stubbing `consensus.chat`.
+
+### D3a fix round — commit `04d9d98`, 12 files
+
+| Point | Result |
+|---|---|
+| gate before | 52 suites, 2479 checks |
+| gate after | **52 suites, 2523 checks**, 0 failed, 60.4s |
+| isolation | exit 0 |
+
+**Sentinel proof, reproduced independently by the orchestrator** (not taken
+from the implementer's report) — filling the real template through the real
+`pipeline.fill`:
+
+```
+prompt length        : 3801
+term present         : True
+chapter present      : True
+paired src/tgt lines : True
+language names       : True
+unfilled placeholders: []
+```
+
+**The structural fix matters more than the content fix.** `pipeline.fill` now
+**raises** `PipelineError` on an unfilled placeholder. That was discovered
+accidentally during verification — the orchestrator's first probe used the old
+variable names and the fill refused rather than silently returning the template.
+The original defect was possible *only* because an unfilled template was
+returned silently; that failure mode is now impossible, not merely absent.
+
+**A latent bug the new parity guard exposed.** The implementer added a
+source/translation line-count guard, which fired on the repo's own fixture. Root
+cause: `read_chapter` trims trailing blank lines from the source body (the list
+`VALIDATE` counts against), but verify read the translation raw — so verify's
+"line N" disagreed with VALIDATE's. `_chapter_lines()` now trims both ends
+symmetrically, and a genuine mismatch is reported as an error rather than
+guessed at. This is exactly the class of off-by-one that would have made every
+verdict cite the wrong line.
+
+**Implemented as specified, not as the implementer preferred.** It noted that
+per-occurrence context windows overlap heavily and that merging overlapping
+windows into blocks would cut cost roughly 6x with no coverage loss — and
+implemented the orchestrator's stated ±2 window instead, flagging the
+improvement rather than substituting its own reading.
+
+Other settled items: `MAX_TERMS_PER_CALL`'s silent drop is gone (cap is now
+`MAX_CONTEXTS_PER_CALL = 8`, split into follow-up calls until coverage is
+complete, call count printed and logged); contamination records carry
+`kind: "contamination"` so the JSONL stays uniformly parseable; `v018`'s
+docstring and mirror no longer claim it writes nothing; `case_20_v018` added.
+No `v019` was created because main has none of v016-v018 or either verify
+template — the whole set is one unreleased phase, so the template edit rides on
+v018's existing `sync_templates` call.
