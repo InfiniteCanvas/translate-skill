@@ -1888,7 +1888,7 @@ after filling — typos fail fast.
 | `glossary_review.md` | `review glossary` model tier | `source_lang target_lang entries` |
 | `notes_review.md` | `review notes` model tier | `source_lang target_lang entries` |
 | `style_profile.md` | `--style auto` init / `profile` (legacy) | `source_lang target_lang sample_text` |
-| `consensus.md` | arbitration fallback for any multi-model job | `task_prompt candidates_section` |
+| `consensus.md` | arbitration for a job with no `consensus_<job>.md` in either layer | `task_prompt candidates_section` |
 | `consensus_translator.md` | arbitration for a `translator` fan-out | `task_prompt candidates_section` |
 | `consensus_glossary.md` | arbitration for a `glossary` fan-out | `task_prompt candidates_section` |
 | `consensus_reviewer.md` | arbitration for a `reviewer` fan-out | `task_prompt candidates_section` |
@@ -1901,12 +1901,17 @@ blocks) resolves **its own** `consensus_<job>.md`, because what makes one
 candidate better is not the same question for each: a translation is judged on
 line-indexed structure and pinned terminology, a glossary entry on being
 grounded in the source, a reviewer finding on being grounded in the text it
-reviews. The general `consensus.md` is the fallback, used when no per-job
-template resolves — so a project that overrides only `consensus.md` keeps
-working for any job it has no per-job template for, and a project-local
-`consensus_<job>.md` beats the shipped one under the same overlay as every
-other prompt. A job with a **single** provider block returns before any
-template is loaded, so it loads none.
+reviews. A project-local `consensus_<job>.md` beats the shipped one under the
+same overlay as every other prompt.
+
+The general `consensus.md` is reached only when `consensus_<job>.md` resolves
+in neither layer — when the project and the skill both have no file of that
+name, which is the `PipelineError` path. The skill ships
+`consensus_<job>.md` for every job in `CONSENSUS_JOBS`, so for all six of them
+the per-job name resolves and `consensus.md` is not read: a project's
+customized general `consensus.md` is bypassed for those six jobs. A job with a
+**single** provider block returns before any template is loaded, so it loads
+none.
 
 `source_lines` / `translation_lines` are substituted as JSON arrays (compact,
 `ensure_ascii=False`); `glossary_review.md`'s and `notes_review.md`'s

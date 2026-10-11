@@ -21,8 +21,8 @@ missing-project CliError, v002's direct add-only materialize (user-set
 values -- including ones already sitting under the new key names -- survive
 verbatim, a file missing exactly the new keys gets them reported and
 defaulted, a second identical run reports [] and writes nothing), and the
-real package's chain() == [v001, v002, v003, v004, v005, v006, v007, v008,
-v009, v010] with current_version() == 10 (v003's own behavior tests live in
+real package's chain() == [v001 ... vNNN] with current_version() == NNN, the
+chain head (case 13k pins 17, the v017 head; v003's own behavior tests live in
 tests/test_git.py; only the chain shape is pinned here, plus v004's
 direct add-only materialize of min_term_occurrences mirroring the v002
 cases, and v005's direct templates-only sync -- config.json never
@@ -31,7 +31,10 @@ exact DESCRIPTION are pinned; v007's recap-job materialize plus the
 three-template sync has its own direct case AND a chain-walked v6-era
 end-to-end case; v008's provider-array/consensus normalization plus the
 consensus.md ship has its own direct case, and the case-1 full-chain
-walk now ends at version 8 with array-shaped providers), plus direct
+walk now ends at version 8 with array-shaped providers; v017's
+delete-unmodified-leftovers contract has its own direct case in case 19,
+because the chain-head check alone proves only that the step is discovered),
+plus direct
 sync_templates BOM cases: a dest whose only
 difference from the shipped copy is a leading BOM is NOT drift (no prompt,
 no report line, bytes untouched), while a genuinely drifted BOM'd dest
@@ -74,6 +77,7 @@ lib modules import pyyaml, requests, ebooklib and pillow, so run via uv
 import argparse
 import builtins
 import contextlib
+import hashlib
 import inspect
 import io
 import json
@@ -88,7 +92,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config
 import migrations
-from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015, v016
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015, v016, v017
 import translate
 
 PASSED = 0
@@ -1994,6 +1998,136 @@ def case_18_migrate_never_requires_the_endpoint_it_repairs() -> None:
               f"exc={exc!r}")
 
 
+def case_19_v017() -> None:
+    """v017.migrate called directly (no cmd_migrate, no version stamping): the
+    delete-unmodified-leftovers contract, which no existing case reached.
+
+    Case 13's chain-head assertion proves v017 is DISCOVERED, not what it does
+    once found, and this is the one step whose job is to delete: a step that
+    removed every project template, or one that removed nothing, both passed the
+    gate. The classifier is byte identity against assets/templates/.history.json,
+    so the fixture hashes real bodies into its own history rather than reading
+    the shipped file -- what is under test is the matching, not the asset.
+    A project file whose bytes match ANY recorded revision is deleted and
+    reported; a file the history does not know is kept and silent; --dry-run
+    reports the same lines and deletes nothing; a missing, malformed or
+    non-dict .history.json classifies nothing and keeps every file; a second run
+    reports nothing; --force, documented as accepted and unused, changes nothing.
+    """
+    def digest(body: str) -> str:
+        return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+    SHIPPED_NOW = "shipped translation\n"
+    SHIPPED_OLDER = "shipped tn_generate, second revision\n"
+    MINE = "my own wording\n"
+    MINE_RECAP = "my recap wording\n"
+
+    HISTORY = {
+        "translation.md": [digest(SHIPPED_NOW)],
+        "tn_generate.md": [digest("shipped tn_generate, first revision\n"),
+                           digest(SHIPPED_OLDER)],
+        "recap.md": [digest("shipped recap\n")],
+    }
+    DELETED = ("[ok] templates - {} (unmodified shipped copy; "
+               "the skill's template is used from now on)")
+    EXPECTED_LINES = [DELETED.format("tn_generate.md"), DELETED.format("translation.md")]
+    PRESERVED = {"recap.md": MINE_RECAP, "my_notes.md": MINE}
+
+    def make_src(root: Path, name: str, history: object) -> Path:
+        """A skill-side templates_src. A str history is written as-is, so a
+        caller can supply malformed JSON verbatim; anything else is serialized
+        with json.dumps."""
+        src = root / name
+        src.mkdir()
+        if history is None:
+            return src
+        body = history if isinstance(history, str) else json.dumps(history, indent=2) + "\n"
+        (src / ".history.json").write_text(body, encoding="utf-8")
+        return src
+
+    def make_project(root: Path, name: str) -> Path:
+        """A project as the pre-overlay era left it: a templates/ full of
+        copies. Two match a recorded revision, two do not -- and one of those
+        two is a name the history DOES know, which is what pins the classifier
+        to byte identity rather than to the filename."""
+        proj = root / name
+        (proj / "templates").mkdir(parents=True)
+        for tpl, body in (("translation.md", SHIPPED_NOW),
+                          ("tn_generate.md", SHIPPED_OLDER),
+                          ("recap.md", MINE_RECAP),
+                          ("my_notes.md", MINE)):
+            (proj / "templates" / tpl).write_text(body, encoding="utf-8", newline="\n")
+        return proj
+
+    def all_preserved(proj: Path) -> bool:
+        return all((proj / "templates" / name).read_text(encoding="utf-8") == body
+                   for name, body in PRESERVED.items())
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = make_src(root, "ship", HISTORY)
+
+        proj = make_project(root, "real")
+        lines = v017.migrate(proj, src)
+        check("19a v017: every file matching a recorded revision is deleted and "
+              "reported in sorted order (a non-current revision counts too)",
+              lines == EXPECTED_LINES
+              and not (proj / "templates" / "tn_generate.md").exists()
+              and not (proj / "templates" / "translation.md").exists(),
+              f"lines={lines!r}")
+        check("19b v017: a name the history knows but whose bytes differ is kept "
+              "verbatim and unreported (byte identity, not filename)",
+              all_preserved(proj)
+              and not any("recap.md" in line for line in lines),
+              f"lines={lines!r}")
+        check("19c v017: a file whose name the history never knew is kept "
+              "verbatim and unreported",
+              (proj / "templates" / "my_notes.md").read_text(encoding="utf-8") == MINE
+              and len(lines) == 2,
+              f"lines={lines!r}")
+        second_run = v017.migrate(proj, src)
+        check("19d v017: the second run reports nothing and writes nothing",
+              second_run == []
+              and all_preserved(proj),
+              f"second_run={second_run!r}")
+
+        dry = make_project(root, "dry")
+        before_dry = snapshot(dry)
+        lines_dry = v017.migrate(dry, src, dry_run=True)
+        check("19e v017: --dry-run reports exactly the real run's lines",
+              lines_dry == lines == EXPECTED_LINES,
+              f"dry={lines_dry!r} real={lines!r}")
+        check("19f v017: --dry-run deletes nothing",
+              snapshot(dry) == before_dry,
+              "a file changed under --dry-run")
+
+        forced = make_project(root, "forced")
+        lines_force = v017.migrate(forced, src, force=True, confirm=refuse_confirm)
+        check("19g v017: --force classifies and deletes identically and never "
+              "asks (force and confirm are documented as unused)",
+              lines_force == EXPECTED_LINES and all_preserved(forced),
+              f"lines={lines_force!r}")
+
+        broken_histories = (("missing", None),
+                            ("malformed", "{not json"),
+                            ("not a mapping", "[1, 2]"))
+        for idx, (label, broken) in enumerate(broken_histories):
+            slug = label.replace(" ", "-")
+            src_broken = make_src(root, f"ship-{slug}", broken)
+            kept = make_project(root, f"kept-{slug}")
+            before_broken = snapshot(kept)
+            out_broken = v017.migrate(kept, src_broken)
+            tag = "19hijk"[idx]
+            check(f"{tag} v017: a {label} .history.json classifies "
+                  "nothing -- every project template is preserved and the reason "
+                  "is reported once",
+                  len(out_broken) == 1
+                  and out_broken[0].startswith("[warn] templates: no .history.json in ")
+                  and "kept every project template" in out_broken[0]
+                  and snapshot(kept) == before_broken,
+                  f"lines={out_broken!r}")
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -2016,6 +2150,7 @@ def main() -> int:
     case_16_v014()
     case_17_v015()
     case_18_migrate_never_requires_the_endpoint_it_repairs()
+    case_19_v017()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
