@@ -282,7 +282,7 @@ stamp; `init` copies no defaults and no overlay values into it.
   "log_chapter_keep_runs": 3,    // retention per chapter directory, independent of every other chapter
   "review_batch_size": 40,       // entries per `review glossary` / `review notes` model review call; `--batch-size` overrides per run
   "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary` / `review notes`, read back by `review fix`)
-  "version": 11                  // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
+  "version": 16                  // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
 
@@ -508,9 +508,39 @@ before the merge, so a refused read leaves every file byte-identical. A
 `providers.<job>` block of the wrong shape inside an otherwise well-formed
 overlay (an empty array, an array of non-objects, two `consensus` blocks) is
 likewise rejected before anything runs. Because the overlay is consulted on
-every load, a malformed one now fails EVERY command, `init` included, rather
+every load, a malformed one fails EVERY command, `init` included, rather
 than only `init`/`sync-config` — loud and early beats a silently wrong
 endpoint.
+
+That "every command" includes the file-only upkeep commands (`review fix`,
+`util replace`, `glossary replace|search|count`), which tolerate exactly one
+thing: a project with **no `config.json` at all**. They read chapters and
+`glossary.json` and need no provider endpoint, so they fall back to
+`DEFAULTS` for the one threshold each wants (`review_report_path`,
+`fuzzy_max_distance`, `min_term_occurrences`) and still exit 0/1. A config
+that is *present but broken* — malformed JSON, or blocks that resolve no
+`base_url` — is not in that exemption: those six commands report `[FAIL]`
+and exit 2 like every other command, rather than silently running against
+defaults the user never asked for.
+
+`init` resolves the same three layers **before it writes anything**: with no
+`--api-base` and no overlay that resolves an endpoint it refuses up front and
+the project directory is left exactly as it was found (no `config.json`, no
+`scaffold dirs`, no `novel_info.json`, no repository), rather than half-built.
+The message names the job and both remedies:
+
+```
+[FAIL] init: providers.translator resolves no base_url:
+set it in the project's config.json or in the skill's config.local.json
+```
+
+`migrate` is the one command that deliberately does **not** require a
+resolvable endpoint: no step makes a provider call, and the projects it
+exists to repair — the ones v016 strips the retired endpoint out of, and the
+ones whose endpoint lives only in the overlay — are exactly the projects
+that would otherwise be unable to run the repair. Every other refusal
+(no `config.json`, unparseable JSON, a malformed `providers` block) still
+stops it before a step runs.
 
 Merge rules (one step of the chain, applied per adjacent layer pair):
 objects and scalars merge key-by-key; a `providers.<job>` given as an ARRAY
@@ -1176,9 +1206,11 @@ translator, which never fans out and therefore never calls a consensus provider.
 `v016` (DESCRIPTION: `v2 config layering: strip the defaults and overlay
 values materialized into config.json, and the retired default endpoint`) is the
 migration for § Overlay layers. Every project written before it was written the
-other way — `init` copied `DEFAULTS` in and `apply_overlay` copied the overlay's
-endpoint, model and auth in — so each `config.json` carries a frozen snapshot of
-both layers. v016 unwrites that snapshot, and it does so in three classes:
+other way — `init` copied `DEFAULTS` in, and `init`/`sync-config` copied the
+overlay's endpoint, model and auth in — so each `config.json` carries a frozen
+snapshot of both layers. (No command copies the overlay into a project any
+more, and the helper that used to do it has been removed rather than left
+callable.) v016 unwrites that snapshot, and it does so in three classes:
 
 1. **The retired `base_url`.** A provider block whose `base_url` byte-equals the
    retired private LAN address (`config.RETIRED_BASE_URL`) is stripped and

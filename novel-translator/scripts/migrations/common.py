@@ -40,10 +40,16 @@ def materialize_config(project_dir: Path, dry_run: bool) -> list[str]:
     is exactly the materialization the layering removed -- it would pin one
     machine's endpoint into every project it ever touched, and the project's
     own key would then out-rank a later edit to the overlay. Steps that strip
-    the layer-1 values a pre-v016 project still carries are v016's job."""
+    the layer-1 values a pre-v016 project still carries are v016's job.
+
+    That read therefore cannot see the endpoint a layer-1-only project resolves,
+    so it opts out of the endpoint requirement (require_base_url=False). A
+    migration must never be blocked by the very thing it repairs: a project
+    whose blocks carry no base_url is one v016 exists to normalize, and the
+    folded form written here is exactly what v016 then strips back out."""
     project_dir = Path(project_dir)
     raw = json.loads((project_dir / "config.json").read_text(encoding="utf-8-sig"))
-    merged = config.load_config(project_dir)
+    merged = config.load_config(project_dir, require_base_url=False)
     if raw == merged:
         return []
     if not dry_run:

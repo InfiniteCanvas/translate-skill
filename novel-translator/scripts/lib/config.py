@@ -146,7 +146,7 @@ def _normalize_per_job_consensus(providers: dict, normalized: dict) -> None:
         normalized[key] = blocks
 
 
-def _normalize_providers(providers: dict) -> dict:
+def _normalize_providers(providers: dict, require_base_url: bool = True) -> dict:
     """Guarantee every job in PROVIDER_JOBS exists as a LIST of provider
     blocks with every default key filled.
 
@@ -193,7 +193,8 @@ def _normalize_providers(providers: dict) -> dict:
         normalized[job] = [_with_defaults(job, element) for element in authored]
     _require_consensus_when_fanning_out(providers, normalized)
     _normalize_per_job_consensus(providers, normalized)
-    _require_base_url(normalized)
+    if require_base_url:
+        _require_base_url(normalized)
     for key, value in providers.items():
         if key not in normalized:
             normalized[key] = value
@@ -225,10 +226,10 @@ def _require_consensus_when_fanning_out(providers: dict,
     out, and the message must name all six.
 
     Mutates nothing; raises ValueError, which load_config already surfaces as
-    `[FAIL] cannot read config.json: ...` (exit 2) and which apply_overlay
-    already validates before writing anything -- so this both refuses the run
-    and leaves the no-lockout repair path open: an overlay that ADDS `consensus`
-    merges into a valid config and applies cleanly.
+    `[FAIL] cannot read config.json: ...` (exit 2) -- so this both refuses the
+    run and leaves the no-lockout repair path open: an overlay that ADDS
+    `consensus` composes into a valid config, which is the only way the refusal
+    is escapable without hand-editing the project.
     """
     if "consensus" in providers:
         return
@@ -290,7 +291,35 @@ def _layer_base() -> dict:
     return dict(DEFAULTS)
 
 
-def load_config(project_dir: Path, skill_root: Path | None = None) -> dict:
+def resolve_config(user: dict, overlay: dict | None,
+                   require_base_url: bool = True) -> dict:
+    """Compose layers 0, an overlay and an IN-MEMORY project layer, and return
+    the resolved config -- the body of load_config with the disk read lifted out.
+
+    load_config is exactly this plus reading <project_dir>/config.json, so the
+    two can never disagree about how the layers compose: cmd_init validates the
+    config it is ABOUT to write through here, before a single file exists, and
+    then writes the same bytes the validation resolved. `overlay` is the already
+    parsed layer 1 (None for a machine that has none), never re-read here.
+
+    `user` must be the project layer as a dict (a JSON object); anything else
+    raises ValueError, as the on-disk read does. require_base_url=False skips
+    _require_base_url ONLY, leaving every other guard (block shape, the
+    fan-out consensus requirement) in force -- see load_config for who needs
+    that and why.
+    """
+    if not isinstance(user, dict):
+        raise ValueError("the project config layer must be a JSON object")
+    cfg = merge_overlay(_layer_base(), overlay or {})
+    cfg = merge_overlay(cfg, user)
+    providers = cfg.get("providers")
+    cfg["providers"] = _normalize_providers(
+        providers if isinstance(providers, dict) else {}, require_base_url)
+    return cfg
+
+
+def load_config(project_dir: Path, skill_root: Path | None = None,
+                require_base_url: bool = True) -> dict:
     """Compose the project's config.json over config.local.json over DEFAULTS
     and guarantee cfg["providers"] contains every job in PROVIDER_JOBS.
 
@@ -307,8 +336,18 @@ def load_config(project_dir: Path, skill_root: Path | None = None) -> dict:
     passes SKILL_ROOT (migrations do not: a migration must never fold layer 1
     into a project file).
 
+    require_base_url=False drops the endpoint requirement and nothing else.
+    Its one caller is the migration path, where the requirement is the thing
+    being repaired rather than a precondition for working: v016 strips the
+    retired endpoint out of a project and may leave it with none, and an older
+    project may legitimately keep its endpoint in layer 1 alone -- which
+    materialize_config cannot see, because a migration reads layers 0 and 2
+    only. Requiring an endpoint there would make `migrate` -- the documented way
+    to repair exactly that state -- the one command that cannot run in it.
+
     Raises FileNotFoundError with a clear message if config.json is absent,
-    and ValueError for a malformed file or a config that resolves no endpoint.
+    and ValueError for a malformed file or (unless the caller opts out) a
+    config that resolves no endpoint.
     """
     cfg_path = Path(project_dir) / "config.json"
     if not cfg_path.is_file():
@@ -319,11 +358,7 @@ def load_config(project_dir: Path, skill_root: Path | None = None) -> dict:
     if not isinstance(user, dict):
         raise ValueError(f"{cfg_path} must contain a JSON object")
     overlay = load_local_config(skill_root) if skill_root is not None else None
-    cfg = merge_overlay(_layer_base(), overlay or {})
-    cfg = merge_overlay(cfg, user)
-    providers = cfg.get("providers")
-    cfg["providers"] = _normalize_providers(providers if isinstance(providers, dict) else {})
-    return cfg
+    return resolve_config(user, overlay, require_base_url)
 
 
 def save_config(project_dir: Path, cfg: dict) -> None:
@@ -420,90 +455,14 @@ def merge_overlay(base: dict, overlay: dict) -> dict:
     return merged
 
 
-def apply_overlay(project_dir: Path, overlay: dict) -> tuple[dict, list[str]]:
-    """Merge the overlay onto the project's RAW config.json and save the
-    result. Returns (changed_keys, report_lines).
-
-    NOT USED BY ANY COMMAND. Read-time layering removed both production call
-    sites (init and sync-config): copying the overlay into the project froze a
-    snapshot there, and the project key then out-ranked a later edit to the
-    overlay -- the opposite of what the layer is for. Kept as a library helper
-    because it still owns the write-side guarantees below (raw base, validate
-    before write), which a future command that deliberately wants a one-off
-    copy would otherwise have to re-derive. Do not wire a command back to it
-    without re-deciding that.
-
-    Works from the raw on-disk file rather than load_config's merged form, so
-    the write is minimal: the file keeps its shape and gains only the
-    overlay's keys, instead of being rewritten with every DEFAULTS value
-    expanded into it. That keeps the diff reviewable and keeps `version` (which
-    load_config would never fabricate, and which the overlay may not set)
-    exactly as the project left it.
-
-    Validates the merged provider form through _normalize_providers BEFORE
-    writing, so a malformed overlay -- a providers block of the wrong shape,
-    say -- fails with a clear error instead of leaving a config.json that every
-    later command rejects.
-
-    The base is shape-checked too, not just the result: this reads the file
-    RAW, and a config.json that is itself corrupt (a bare number or null
-    body, or a `providers` that is not an object) would otherwise reach
-    _deep_merge and raise AttributeError/TypeError, which main() does not
-    catch -- the CLI would die with a traceback and exit 1 instead of the
-    documented exit 2. Mirrors load_config's own guards, raising the same
-    ValueError shape so the caller reports it identically."""
-    project_dir = Path(project_dir)
-    cfg_path = project_dir / "config.json"
-    raw = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
-    if not isinstance(raw, dict):
-        raise ValueError(f"{cfg_path} must contain a JSON object")
-    if "providers" in raw and not isinstance(raw["providers"], dict):
-        raise ValueError(f"{cfg_path}: 'providers' must be a JSON object")
-    if not isinstance(overlay, dict):
-        raise ValueError("config.local.json overlay must be a JSON object")
-    if "providers" in overlay and not isinstance(overlay["providers"], dict):
-        raise ValueError("config.local.json: 'providers' must be a JSON object")
-    merged = merge_overlay(raw, overlay)
-    _normalize_providers(merged.get("providers") or {})
-    changed = sorted(_changed_keys(raw, merged))
-    if merged != raw:
-        save_config(project_dir, merged)
-    lines = [f"[ok] config.local.json: applied {len(changed)} key(s): "
-             + ", ".join(changed)] if changed else [
-        "[ok] config.local.json: no changes (project already matches)"]
-    return changed, lines
-
-
-def _changed_keys(before: dict, after: dict) -> list[str]:
-    """Dotted paths whose values differ between two config dicts.
-
-    Reports the paths the overlay actually moved, so the command can name the
-    settings it changed instead of making the user diff the file. A container
-    that was replaced (a providers array, say) reports as its own leaf rather
-    than as every index inside it."""
-    keys: set[str] = set()
-
-    def walk(prefix: str, old: object, new: object) -> None:
-        if isinstance(old, dict) and isinstance(new, dict):
-            for key in set(old) | set(new):
-                walk(f"{prefix}.{key}" if prefix else str(key),
-                     old.get(key), new.get(key))
-            return
-        if old != new:
-            keys.add(prefix)
-
-    walk("", before, after)
-    return sorted(keys)
-
-
 def inline_api_keys(overlay: dict) -> list[str]:
     """Dotted paths of every inline api_key in the overlay.
 
     An inline key is a credential written to disk in a file the skill git
-    IGNORES -- but `sync-config` merges it into the project's config.json,
-    which the project repo DOES commit. Callers warn about these so the user
-    can move to api_key_env (or drop the key) before the secret reaches a
-    project history."""
+    IGNORES, and the read-time layering keeps it there: `init` and
+    `sync-config` both only WARN about one, and copy it nowhere, so it cannot
+    reach a project repo at all. Callers still warn, because the key sits in
+    plaintext on disk and `api_key_env` keeps it out of every file."""
     found: list[str] = []
 
     def walk(prefix: str, node: object) -> None:

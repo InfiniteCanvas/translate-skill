@@ -109,7 +109,12 @@ retyping them, and it is never copied into a project's `config.json`, so
 editing it changes every project's behaviour at once. The project's own keys
 always win over the overlay. Nothing changes when the file is absent; a
 malformed one fails the command with exit 2 rather than silently leaving you
-on the wrong endpoint. See `sync-config` below to inspect the resolution.
+on the wrong endpoint — the only commands that tolerate an *unreadable* config
+are the file-only upkeep ones (`review fix`, `util replace`, `glossary
+replace|search|count`), and only when the project has no `config.json` at all.
+With no `--api-base` at `init` and no overlay, `init` refuses before writing
+anything rather than leaving a half-built project. See `sync-config` below to
+inspect the resolution.
 
 Downloading more chapters later? Drop them in `source/` and run
 `uv run "$SCRIPT" sync --project .` - it re-scans `source/`, backfills
@@ -683,7 +688,29 @@ background build too. Builds produce no git commits — `export/`,
   usable credential`): it rewrites nothing and only reports a provider block
   with no usable credential, which would now stop the run at its first call.
   An unset `api_key_env` in the shell running `migrate` is a `[warn]`, not a
-  refusal — the operator's real shell usually has it. A template that
+  refusal — the operator's real shell usually has it. v015 is report-only
+  (DESCRIPTION: `a fan-out job can name its own arbitrator:
+  providers.consensus_<job> overrides providers.consensus for that job's
+  merge; report which arbitrator each fan-out job resolves to`): it adds an
+  optional per-job arbitrator key and reports which one each fan-out job
+  resolves to, rewriting nothing. v016 is the **breaking** one (DESCRIPTION:
+  `v2 config layering: strip the defaults and overlay values materialized
+  into config.json, and the retired default endpoint`): it hands a project
+  back its authored keys. Every project written before it had `DEFAULTS` —
+  and the machine overlay's endpoint, model and auth — copied into its own
+  `config.json`, and v016 strips both back out, so from v016 a project's file
+  holds only what a human put there. Three classes are stripped: a `base_url`
+  byte-equal to the retired default private LAN address (reported as
+  `[warn] ... was the retired default ...; set it in config.local.json or the
+  project`), every provider key still equal to that job's shipped default,
+  and every top-level key still equal to a `DEFAULTS` value — a value you
+  actually chose is never touched. **A migrated project may therefore need an
+  endpoint it does not have any more**: layer 0 ships none, so set one in
+  `config.local.json` (or the project) or every command will refuse the load
+  with `[FAIL] cannot read config.json: providers.translator resolves no
+  base_url`. `migrate` itself keeps working in that state — it makes no
+  provider call and is how you would refresh templates or pick up a later
+  step. A template that
   exists but
   differs from the shipped one is
   prompted for interactively, one prompt per template:

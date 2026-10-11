@@ -136,12 +136,44 @@ def _probe_glossary(project_dir: Path) -> None:
 
 
 def _load_config_lenient(project_dir: Path) -> dict | None:
-    """Config for the epub auto-build only; util/glossary upkeep commands must
-    run without one (None skips the build with a warning)."""
+    """Config for the upkeep commands that must also work on a project with no
+    config.json at all, and for the epub auto-build they trigger (None skips
+    the build with a warning).
+
+    ONLY an absent file is tolerated, because only an absent file is a normal
+    state here: the file-only commands (`review fix`, `util replace`,
+    `glossary replace|search|count`) read chapters and glossary.json and fall
+    back to config.DEFAULTS for the one threshold each wants. A config that is
+    PRESENT but malformed, or that resolves no provider endpoint, is a setup
+    error exactly as it is for every strict command -- swallowing it would run
+    the command against defaults the user never asked for while their overlay
+    sits broken on disk, so it is raised as CliError ([FAIL], exit 2)."""
     try:
         return config.load_config(project_dir, SKILL_ROOT)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError) as exc:
+        raise CliError(f"cannot read config.json: {exc}") from exc
+
+
+def _load_config_for_migrate(project_dir: Path) -> dict:
+    """cmd_migrate's pre-flight read: strict about a missing or malformed
+    config.json, silent about an unresolved endpoint.
+
+    `migrate` is the documented repair for a project whose config no longer
+    resolves one -- v016 strips the retired default endpoint, and an
+    overlay-only project resolves its endpoint in a layer a migration
+    deliberately does not read. No step makes a provider call, so demanding an
+    endpoint here would make the repair unreachable in exactly the state it
+    exists to fix. Every other refusal (no config.json, unparseable JSON, a
+    malformed providers block) still stops the run before a step runs."""
+    try:
+        return config.load_config(project_dir, SKILL_ROOT, require_base_url=False)
+    except FileNotFoundError as exc:
+        raise CliError(
+            f"{project_dir / 'config.json'} not found - run 'init' first") from exc
+    except (OSError, ValueError) as exc:
+        raise CliError(f"cannot read config.json: {exc}") from exc
 
 
 def _maybe_autobuild(project_dir: Path, cfg: dict | None, reason: str, changed: bool) -> None:
@@ -262,6 +294,29 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     if not TEMPLATES_SRC_DIR.is_dir():
         raise CliError(f"skill templates not found: {TEMPLATES_SRC_DIR}")
 
+    try:
+        overlay = config.load_local_config(SKILL_ROOT)
+    except ValueError as exc:
+        raise CliError(
+            f"cannot read {config.local_config_path(SKILL_ROOT)}: {exc}") from exc
+
+    authored: dict[str, Any] = {
+        "source_lang": args.source_lang,
+        "target_lang": args.target_lang,
+    }
+    if args.api_base:
+        authored["providers"] = {
+            job: [{"base_url": args.api_base}] for job in config.PROVIDER_JOBS
+        }
+    try:
+        authored["version"] = migrations.current_version()
+    except Exception as exc:
+        raise CliError(f"invalid migration chain: {exc}") from exc
+    try:
+        cfg = config.resolve_config(authored, overlay)
+    except ValueError as exc:
+        raise CliError(f"init: {exc}") from exc
+
     for key in ("draft", "translated", "export", "covers", "templates"):
         paths[key].mkdir(parents=True, exist_ok=True)
     print("[init] created directories: draft translated export covers templates")
@@ -276,33 +331,14 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     else:
         (project_dir / "style.md").unlink(missing_ok=True)
 
-    try:
-        overlay = config.load_local_config(SKILL_ROOT)
-    except ValueError as exc:
-        raise CliError(
-            f"cannot read {config.local_config_path(SKILL_ROOT)}: {exc}") from exc
-
-    cfg: dict[str, Any] = {
-        "source_lang": args.source_lang,
-        "target_lang": args.target_lang,
-    }
-    if args.api_base:
-        cfg["providers"] = {
-            job: [{"base_url": args.api_base}] for job in config.PROVIDER_JOBS
-        }
-    try:
-        cfg["version"] = migrations.current_version()
-    except Exception as exc:
-        raise CliError(f"invalid migration chain: {exc}") from exc
-    config.save_config(project_dir, cfg)
+    config.save_config(project_dir, authored)
     print(f"[init] wrote {paths['config'].name}")
 
-    cfg = _load_config(project_dir)
     if args.api_base:
         print(f"[init] providers: {args.api_base} (every job)")
     else:
         print("[init] providers: none authored - resolved through "
-              "config.local.json / PROVIDER_DEFAULTS")
+              "config.local.json")
     if overlay is not None:
         for path_key in config.inline_api_keys(overlay):
             print(f"[warn] {path_key} is an inline key - prefer api_key_env; "
@@ -687,8 +723,11 @@ def cmd_migrate(args: argparse.Namespace, project_dir: Path) -> int:
     deliberately never enters config.DEFAULTS for exactly that reason).
     An already-current project still gets the interactive template
     maintenance pass (missing copies, differing prompts); the version
-    stamp never moves."""
-    _load_config(project_dir)
+    stamp never moves. The pre-flight read tolerates a config that resolves
+    no endpoint (_load_config_for_migrate): a migration makes no provider
+    call, and refusing here would block the repair of the very state that
+    leaves a project without one."""
+    _load_config_for_migrate(project_dir)
     if not TEMPLATES_SRC_DIR.is_dir():
         raise CliError(f"skill templates not found: {TEMPLATES_SRC_DIR}")
 

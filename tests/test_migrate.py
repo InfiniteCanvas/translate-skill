@@ -35,7 +35,11 @@ walk now ends at version 8 with array-shaped providers), plus direct
 sync_templates BOM cases: a dest whose only
 difference from the shipped copy is a leading BOM is NOT drift (no prompt,
 no report line, bytes untouched), while a genuinely drifted BOM'd dest
-still refreshes to the shipped bytes after an accepted prompt.
+still refreshes to the shipped bytes after an accepted prompt, plus the
+case a migration must never brick itself on: a project whose provider
+blocks resolve no endpoint -- the state v016 itself writes, and the shape
+an overlay-only project is in from the start -- still migrates to the
+head, while an unparseable config.json is still refused.
 
 cmd_migrate reads translate.TEMPLATES_SRC_DIR, migrations.chain, and (all
 as module-global lookups at call time) translate._confirm_template_refresh,
@@ -1887,6 +1891,109 @@ def case_17_v015() -> None:
                   for line in out_bad), f"out={out_bad}")
 
 
+@contextlib.contextmanager
+def patched_skill(skill_root: Path):
+    """Point the module globals cmd_migrate resolves layer 1 and the shipped
+    templates through at a fixture, so a case can run on a machine shape the
+    real skill root does not have -- notably one with NO config.local.json.
+    Both are read as module globals at call time; both are restored in
+    finally."""
+    orig_root = translate.SKILL_ROOT
+    orig_tpl = translate.TEMPLATES_SRC_DIR
+    translate.SKILL_ROOT = skill_root
+    translate.TEMPLATES_SRC_DIR = skill_root / "assets" / "templates"
+    try:
+        yield
+    finally:
+        translate.SKILL_ROOT = orig_root
+        translate.TEMPLATES_SRC_DIR = orig_tpl
+
+
+def _fixture_skill(root: Path, overlay: dict | None) -> Path:
+    skill = root / "skill"
+    (skill / "assets" / "templates").mkdir(parents=True)
+    (skill / "assets" / "templates" / "translation.md").write_text(
+        "shipped translation\n", encoding="utf-8", newline="\n")
+    if overlay is not None:
+        (skill / config.LOCAL_CONFIG_NAME).write_text(
+            json.dumps(overlay, indent=2) + "\n", encoding="utf-8")
+    return skill
+
+
+def case_18_migrate_never_requires_the_endpoint_it_repairs() -> None:
+    """`migrate` must run in exactly the state a migration leaves behind.
+
+    v016 strips the retired default endpoint out of a project, and a project
+    whose endpoint lives only in the machine overlay resolves it in a layer a
+    migration deliberately never reads. Both leave a config.json whose blocks
+    carry no base_url -- and the pre-flight read used to refuse exactly that
+    with `providers.translator resolves no base_url` and exit 2, making the
+    documented repair unreachable in the state it exists to fix. Two fixtures,
+    one per way in:
+      * v016 with `[{}]` blocks and NO overlay (what v016 writes),
+      * v005 with a project block and the endpoint only in the overlay (the
+        shape the layering is for, whose materialize steps read layers 0+2).
+    """
+    HEAD = migrations.current_version()
+    ns = argparse.Namespace(dry_run=False, force=False)
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        skill = _fixture_skill(root, None)
+        proj = root / "stripped"
+        (proj / "templates").mkdir(parents=True)
+        (proj / "config.json").write_text(json.dumps({
+            "source_lang": "zh", "target_lang": "en", "version": HEAD,
+            "providers": {job: [{}] for job in config.PROVIDER_JOBS},
+        }, indent=2) + "\n", encoding="utf-8")
+
+        with patched_skill(skill), patched_confirm(refuse_confirm):
+            code, out, exc = run_migrate(ns, proj)
+        check("18a v016 [{}]-blocks, no overlay: migrate exits 0",
+              code == 0 and exc is None, f"code={code} exc={exc!r} out={out}")
+        check("18b the maintenance pass still ran",
+              "[ok] templates + translation.md (new)" in out, f"out={out}")
+        check("18c no endpoint failure on the way in",
+              "resolves no base_url" not in out, f"out={out}")
+        after = json.loads((proj / "config.json").read_text(encoding="utf-8"))
+        check("18d the version stamp is left alone",
+              after["version"] == HEAD, f"version={after['version']}")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        skill = _fixture_skill(root, {"providers": {"translator": [
+            {"base_url": "http://overlay:9999/v1", "model": "m-overlay"}]}})
+        proj = root / "overlayonly"
+        (proj / "templates").mkdir(parents=True)
+        (proj / "config.json").write_text(json.dumps({
+            "source_lang": "zh", "target_lang": "en", "version": 5,
+            "providers": {"translator": {"model": "m-project"}},
+        }, indent=2) + "\n", encoding="utf-8")
+
+        with patched_skill(skill), patched_confirm(refuse_confirm):
+            code, out, exc = run_migrate(ns, proj)
+        check("18e v005 with an overlay-only endpoint: the chain runs to the "
+              "head", code == 0 and exc is None,
+              f"code={code} exc={exc!r} out={out}")
+        after = json.loads((proj / "config.json").read_text(encoding="utf-8"))
+        check("18f stamped at the chain head", after["version"] == HEAD,
+              f"version={after['version']}")
+        check("18g the materialize step reported instead of raising",
+              "applying v007" in out, f"out={out}")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        skill = _fixture_skill(root, None)
+        proj = root / "broken"
+        proj.mkdir()
+        (proj / "config.json").write_text("{ not json", encoding="utf-8")
+        with patched_skill(skill), patched_confirm(refuse_confirm):
+            code, out, exc = run_migrate(ns, proj)
+        check("18h control: an UNPARSEABLE config.json is still refused",
+              exc is not None and "cannot read config.json" in str(exc),
+              f"exc={exc!r}")
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1908,6 +2015,7 @@ def main() -> int:
     case_15_v013()
     case_16_v014()
     case_17_v015()
+    case_18_migrate_never_requires_the_endpoint_it_repairs()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

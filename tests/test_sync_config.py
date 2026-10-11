@@ -1,7 +1,6 @@
-"""Tests for the config.local.json overlay: `sync-config` and the init pass.
+"""Tests for the config.local.json overlay: read-time layering and the init pass.
 
-Covers the skill-level overlay that `init` copies into a new project and
-`sync-config` merges into an existing one:
+Covers the skill-level overlay that every command resolves through:
 
   - load_local_config: absent file -> None (a silent no-op, never an error);
     malformed JSON / non-object body -> ValueError; a `version` key is
@@ -9,18 +8,22 @@ Covers the skill-level overlay that `init` copies into a new project and
   - merge semantics: the overlay WINS on the keys it names and the project's
     other keys survive -- languages, thresholds, and the version stamp.
     Lists (providers.<job> arrays) are replaced wholesale, never spliced.
-  - apply_overlay writes the raw merged file (not load_config's expanded
-    form), and validates BEFORE writing so a bad overlay cannot leave a
-    config.json that every later command rejects.
   - cmd_sync_config: no overlay -> exit 0 no-op; uninitialized project ->
-    CliError (exit 2); inline api_key warns; success commits.
-  - cmd_init: applies the overlay, and the merged values reach the
+    CliError (exit 2); inline api_key warns; a success is REPORT-ONLY (it
+    writes nothing at all into the project).
+  - cmd_init: the overlay is read, never copied; the merged values reach the
     in-memory cfg the seed/profile passes below it read.
-  - a CORRUPT project config.json (a non-object body, or a `providers`
-    that is not an object) is refused with a clean ValueError -> exit 2
-    and an untouched file, never the AttributeError/TypeError traceback
-    that main() does not catch; and every legitimate shape (plain, empty,
-    providers-bearing, BOM'd) still merges.
+  - a CORRUPT project config.json (a non-object body, or a `providers` that
+    is not an object) is refused with a clean ValueError -> exit 2, never the
+    AttributeError/TypeError traceback that main() does not catch; and every
+    legitimate shape (plain, empty, providers-bearing, BOM'd) still resolves.
+  - the overlay's endpoint requirement is enforced everywhere: a config that
+    resolves no base_url is refused by load_config, and cmd_init validates it
+    BEFORE writing anything, so a failed init leaves the project untouched.
+  - `_load_config_lenient` is lenient about ONE thing only -- an absent
+    config.json, which the file-only upkeep commands tolerate. A malformed
+    overlay or an unresolvable endpoint fails those commands too, with
+    `[FAIL]` and exit 2, instead of being swallowed.
 
 All fixtures live in tempfile.TemporaryDirectory() sandboxes per case. The
 overlay path is derived from translate.SKILL_ROOT, so a fake skill root is
@@ -40,6 +43,7 @@ via uv (deps declared inline below):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import sys
@@ -85,6 +89,16 @@ def write_config(project_dir: Path, payload: dict) -> Path:
 
 def read_config(project_dir: Path) -> dict:
     return json.loads((project_dir / "config.json").read_text(encoding="utf-8"))
+
+
+def _run_main_capturing(argv: list[str]) -> tuple[str, str, int]:
+    """translate.main() with both streams captured; returns (stdout, stderr,
+    code). main() RETURNS the exit code -- sys.exit only fires under __main__ --
+    so the return value is what the CLI contract is asserted on."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = translate_mod.main(argv)
+    return out.getvalue(), err.getvalue(), code
 
 
 def case_1_load_absent_and_malformed() -> None:
@@ -189,59 +203,6 @@ def case_2_merge_semantics() -> None:
           == [{"base_url": "http://a/v1", "model": "shared"},
               {"base_url": "http://b/v1", "model": "shared"}],
           f"got={partial_fanout['providers']['translator']}")
-
-
-def case_3_apply_overlay_writes_raw_merged_form() -> None:
-    """The written file is raw+overlay, not load_config's expanded form, and
-    a bad overlay is rejected before it can replace a working config."""
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        project = root / "proj"
-        project.mkdir()
-        write_config(project, {
-            "source_lang": "zh",
-            "version": 8,
-            "providers": {"translator": [
-                {"base_url": "http://project:8888/v1", "model": None}]},
-        })
-        overlay = {"providers": {"translator": [
-            {"base_url": "http://local:9999/v1"}]}}
-
-        changed, lines = config.apply_overlay(project, overlay)
-        on_disk = read_config(project)
-
-        check("3a apply: changed keys name the provider path",
-              any("translator" in key for key in changed),
-              f"changed={changed}")
-        check("3b apply: report line is [ok] and names the count",
-              lines and lines[0].startswith("[ok] config.local.json:"),
-              f"lines={lines}")
-        check("3c apply: overlay values landed on disk",
-              on_disk["providers"]["translator"][0]["base_url"]
-              == "http://local:9999/v1",
-              f"got={on_disk['providers']['translator'][0]}")
-        check("3d apply: version stamp preserved verbatim",
-              on_disk["version"] == 8, f"version={on_disk['version']}")
-        check("3e apply: no DEFAULTS keys expanded into the file",
-              "auto_build_epub" not in on_disk,
-              f"keys={sorted(on_disk)}")
-
-        again, lines2 = config.apply_overlay(project, overlay)
-        check("3f idempotent: re-applying the same overlay changes nothing",
-              again == [] and "no changes" in lines2[0],
-              f"changed={again}, lines={lines2}")
-
-        before = read_config(project)
-        try:
-            config.apply_overlay(project, {
-                "providers": {"translator": ["not-a-block"]}})
-            check("3g invalid: bad providers shape raises ValueError", False,
-                  "returned without raising")
-        except ValueError:
-            check("3g invalid: bad providers shape raises ValueError", True)
-        check("3h invalid: the working config survived the rejected merge",
-              read_config(project) == before,
-              "config.json was modified by a failed apply")
 
 
 def case_4_inline_api_key_detection() -> None:
@@ -473,12 +434,13 @@ def case_7_init_without_overlay_is_unchanged() -> None:
 def case_8_corrupt_base_config_is_a_clean_error() -> None:
     """A corrupt project config.json must fail cleanly, never with a traceback.
 
-    apply_overlay reads the RAW file and feeds it to _deep_merge, so a
-    config.json that is not a JSON object (a bare number, null, an array)
-    -- or whose `providers` is not an object -- used to raise
-    AttributeError/TypeError. main() catches CliError/ValueError but NOT
-    those, so the CLI died with a traceback and exit 1 instead of the
-    documented exit 2. The base is now shape-checked up front.
+    Every command resolves the project file through load_config, which shape-
+    checks the body it parsed: a config.json that is not a JSON object (a bare
+    number, null, an array) is refused outright, and a `providers` that is not
+    an object leaves nothing to normalize, which the endpoint requirement then
+    refuses. Either way main() turns it into a clean `[FAIL]` line and exit 2
+    instead of the AttributeError/TypeError traceback it does not catch, and
+    the file is never rewritten on the way out.
     """
     bad_bodies = [
         ("array body", "[]"),
@@ -494,7 +456,7 @@ def case_8_corrupt_base_config_is_a_clean_error() -> None:
             (project / "config.json").write_text(body, encoding="utf-8")
             before = (project / "config.json").read_bytes()
             try:
-                config.apply_overlay(project, {"seed_min_count": 3})
+                config.load_config(project)
                 check(f"8 corrupt ({label}): raises ValueError", False,
                       "returned without raising")
             except ValueError as exc:
@@ -505,7 +467,7 @@ def case_8_corrupt_base_config_is_a_clean_error() -> None:
                       False, f"raised {type(exc).__name__}: {exc}")
             check(f"8 corrupt ({label}): file left byte-identical",
                   (project / "config.json").read_bytes() == before,
-                  "config.json was modified by a refused merge")
+                  "config.json was modified by a refused read")
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -537,39 +499,42 @@ def case_8_corrupt_base_config_is_a_clean_error() -> None:
         with tempfile.TemporaryDirectory() as td:
             project = Path(td)
             (project / "config.json").write_text(body, encoding="utf-8")
+            write_overlay(Path(td), {"seed_min_count": 3})
             try:
-                _changed, lines = config.apply_overlay(
-                    project, {"seed_min_count": 3})
-                check(f"8 legit ({label}): still merges cleanly",
-                      lines and lines[0].startswith("[ok]"), f"lines={lines}")
+                cfg = config.load_config(project, Path(td))
+                check(f"8 legit ({label}): the overlay still resolves onto it",
+                      cfg["seed_min_count"] == 3,
+                      f"seed_min_count={cfg.get('seed_min_count')!r}")
             except Exception as exc:
-                check(f"8 legit ({label}): still merges cleanly", False,
-                      f"{type(exc).__name__}: {exc}")
+                check(f"8 legit ({label}): the overlay still resolves onto it",
+                      False, f"{type(exc).__name__}: {exc}")
 
     with tempfile.TemporaryDirectory() as td:
         project = Path(td)
         (project / "config.json").write_text(
             '{"version": 8, "seed_min_count": 1, "providers": {"translator": '
             '[{"base_url": "http://x/v1"}]}}', encoding="utf-8-sig")
+        write_overlay(Path(td), {"seed_min_count": 3})
         try:
-            _changed, _lines = config.apply_overlay(project, {"seed_min_count": 9})
-            check("8 BOM: utf-8-sig config.json still merges",
-                  config.load_config(project)["seed_min_count"] == 9,
-                  "BOM'd file was not handled")
+            cfg = config.load_config(project, Path(td))
+            check("8 BOM: utf-8-sig config.json still resolves, project key wins",
+                  cfg["seed_min_count"] == 1
+                  and config.provider(cfg, "translator")["base_url"]
+                  == "http://x/v1",
+                  f"seed_min_count={cfg.get('seed_min_count')!r}")
         except Exception as exc:
-            check("8 BOM: utf-8-sig config.json still merges", False,
-                  f"{type(exc).__name__}: {exc}")
+            check("8 BOM: utf-8-sig config.json still resolves, project key wins",
+                  False, f"{type(exc).__name__}: {exc}")
 
 
 def case_9_corrupt_overlay_is_a_clean_error() -> None:
     """A malformed OVERLAY must fail cleanly too.
 
-    Mirror of case 8: the base guard does not cover the overlay, and the
-    providers merge special case reaches into `providers` directly, so an
-    overlay whose `providers` is not an object raised AttributeError inside
-    merge_overlay -- which main() does not catch, so a typo in the user's own
-    config.local.json surfaced as a traceback and exit 1 instead of the
-    documented exit 2.
+    Mirror of case 8: load_local_config shape-checks the overlay before the
+    providers merge ever reaches into `providers`, so an overlay whose
+    `providers` is not an object is refused with a ValueError naming the file
+    -- a typo in the user's own config.local.json must not surface as a
+    traceback and exit 1 instead of the documented exit 2.
     """
     for label, payload in [
         ("providers is a list", '{"providers": ["x"]}'),
@@ -596,19 +561,20 @@ def case_9_corrupt_overlay_is_a_clean_error() -> None:
             (project / "config.json").write_text(
                 '{"version": 8}', encoding="utf-8")
             before = (project / "config.json").read_bytes()
+            write_overlay(Path(td), over)
             try:
-                config.apply_overlay(project, over)
-                check(f"9 apply ({label}): raises ValueError", False,
+                config.load_config(project, Path(td))
+                check(f"9 load ({label}): raises ValueError", False,
                       "returned without raising")
             except ValueError as exc:
-                check(f"9 apply ({label}): raises ValueError", True,
+                check(f"9 load ({label}): raises ValueError", True,
                       f"message={exc}")
             except Exception as exc:
-                check(f"9 apply ({label}): raises ValueError", False,
+                check(f"9 load ({label}): raises ValueError", False,
                       f"raised {type(exc).__name__}: {exc}")
-            check(f"9 apply ({label}): file untouched",
+            check(f"9 load ({label}): file untouched",
                   (project / "config.json").read_bytes() == before,
-                  "config.json modified by a refused merge")
+                  "config.json modified by a refused read")
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -841,60 +807,63 @@ def case_10_shipped_examples_are_valid() -> None:
 
 
 def case_11_per_job_consensus_overlay() -> None:
-    """A `consensus_<job>` key behaves like any other provider key under
-    `sync-config` (v015) -- which is the point of putting it in `providers`
+    """A `consensus_<job>` key behaves like any other provider key under the
+    layering (v015) -- which is the point of putting it in `providers`
     rather than in a new top-level section.
 
-    Three paths, all of which the merge already had to handle for every other
-    job, so none of them needed special-casing:
+    Three paths, all of which the read-time merge already had to handle for
+    every other job, so none of them needed special-casing:
 
-    * absent in the project -> the overlay's block is added wholesale
+    * absent in the project -> the overlay's block is added whole
     * present in the project -> the single-dict form merges KEY-WISE into the
-      existing block, so a partial overlay still cannot un-point a working
+      project's block, so a partial overlay still cannot un-point a working
       endpoint (merge_overlay's "must never quietly un-point" rule)
-    * a two-block overlay ARRAY -> rejected before anything is written, because
-      an arbitrator is exactly one model
+    * a two-block overlay ARRAY -> rejected at load, before anything runs,
+      because an arbitrator is exactly one model
     """
     with tempfile.TemporaryDirectory() as td:
-        project = Path(td) / "add"
+        root = Path(td)
+        project = root / "add"
         project.mkdir()
         write_config(project, {
             "source_lang": "zh", "version": 8,
             "providers": {"translator": [
                 {"base_url": "http://project:8888/v1", "model": None}]},
         })
-        changed, lines = config.apply_overlay(project, {"providers": {
+        write_overlay(root, {"providers": {
             "consensus_translator": {"base_url": "http://local:9999/v1",
                                      "model": "translator-arb"}}})
-        on_disk = read_config(project)
-        check("11a add: a per-job arbitrator in the overlay is added whole",
-              on_disk["providers"]["consensus_translator"]
-              == {"base_url": "http://local:9999/v1", "model": "translator-arb"},
-              f"got={on_disk['providers'].get('consensus_translator')}")
-        check("11b add: the changed key names the per-job path",
-              any("consensus_translator" in key for key in changed),
-              f"changed={changed}")
+        added = config.load_config(project, root)
+        block = added["providers"]["consensus_translator"]
+        check("11a add: a per-job arbitrator absent from the project resolves "
+              "whole from the overlay",
+              block == [{"base_url": "http://local:9999/v1",
+                         "model": "translator-arb"}],
+              f"got={block!r}")
 
-        project2 = Path(td) / "merge"
+        project2 = root / "merge"
         project2.mkdir()
         write_config(project2, {
             "source_lang": "zh", "version": 8,
             "providers": {
                 "translator": [{"base_url": "http://project:8888/v1",
                                 "model": None}],
-                "consensus_translator": {"base_url": "http://project:8888/v1",
-                                         "model": "old-arb"},
+                "consensus_translator": {"model": "old-arb",
+                                         "api_key_env": "OLD_ARB_KEY"},
             },
         })
-        config.apply_overlay(project2, {"providers": {
-            "consensus_translator": {"model": "new-arb"}}})
-        merged = read_config(project2)["providers"]["consensus_translator"]
-        check("11c merge: a partial overlay overrides only the key it names "
-              "and keeps the working base_url",
-              merged == {"base_url": "http://project:8888/v1", "model": "new-arb"},
-              f"got={merged}")
+        write_overlay(root, {"providers": {
+            "consensus_translator": {"base_url": "http://local:9999/v1",
+                                     "model": "new-arb"}}})
+        merged = config.load_config(project2, root)["providers"]["consensus_translator"]
+        check("11c merge: a partial project block keeps its own keys and takes "
+              "the endpoint it did not name (a partial layer never un-points a "
+              "working provider)",
+              merged[0] == {"model": "old-arb", "api_key_env": "OLD_ARB_KEY",
+                            "base_url": "http://local:9999/v1"},
+              f"got={merged!r}")
 
-        project3 = Path(td) / "repair"
+        project3 = root / "repair"
         project3.mkdir()
         write_config(project3, {
             "source_lang": "zh", "version": 8,
@@ -907,30 +876,176 @@ def case_11_per_job_consensus_overlay() -> None:
             loads = "loaded anyway"
         except ValueError as exc:
             loads = str(exc)
-        check("11f repair: the project is refused before the overlay",
+        check("11f repair: the project is refused without the overlay",
               "providers.consensus is required" in loads, f"got {loads!r}")
-        _changed, _lines = config.apply_overlay(project3, {"providers": {
+        write_overlay(root, {"providers": {
             "consensus": {"base_url": "http://project:8888/v1",
                           "model": "arbiter"}}})
-        repaired = config.load_config(project3)
-        check("11g repair: an overlay that adds consensus applies cleanly and "
-              "the project loads afterwards (no lockout)",
+        repaired = config.load_config(project3, root)
+        check("11g repair: an overlay that adds consensus composes into a "
+              "valid config and the project loads (no lockout)",
               config.provider(repaired, "consensus")["model"] == "arbiter"
               and len(config.provider_list(repaired, "translator")) == 2,
               f"consensus={config.provider(repaired, 'consensus')!r}")
 
-        before = read_config(project2)
+        before = (project2 / "config.json").read_bytes()
+        write_overlay(root, {"providers": {
+            "consensus_translator": [{"model": "a"}],
+            "consensus_annotator": [{"model": "a"}, {"model": "b"}]}})
         try:
-            config.apply_overlay(project2, {"providers": {
-                "consensus_annotator": [{"model": "a"}, {"model": "b"}]}})
+            config.load_config(project2, root)
             check("11d reject: a two-block per-job arbitrator is rejected",
                   False, "returned without raising")
         except ValueError as exc:
             check("11d reject: a two-block per-job arbitrator is rejected",
                   "consensus_annotator" in str(exc), f"message={exc}")
-        check("11e reject: the working config survived the rejected merge",
-              read_config(project2) == before,
-              "config.json was modified by a failed apply")
+        check("11e reject: the working config survived the rejected load",
+              (project2 / "config.json").read_bytes() == before,
+              "config.json was modified by a refused load")
+
+
+def _upkeep_project(root: Path, with_config: bool) -> Path:
+    """A project shaped for the file-only upkeep commands (glossary count /
+    util replace): one source chapter and a manifest, so neither stops on a
+    missing file before reaching the config load under test."""
+    project = root / "proj"
+    source = project / "source"
+    source.mkdir(parents=True)
+    (source / "CHAPTER_0001.md").write_text(
+        "第一章\nbody\n", encoding="utf-8", newline="\n")
+    (project / "chapters.json").write_text(
+        json.dumps([{"file": "CHAPTER_0001.md", "number": 1,
+                     "status": "pending", "title": "第一章"}], indent=2) + "\n",
+        encoding="utf-8")
+    if with_config:
+        write_config(project, {
+            "source_lang": "zh", "target_lang": "en", "version": 16,
+            "providers": {"translator": [
+                {"base_url": "http://local:9999/v1", "model": "m"}]},
+        })
+    return project
+
+
+def case_12_lenient_config_is_lenient_only_about_a_missing_file() -> None:
+    """`_load_config_lenient` swallows ONE state: no config.json at all.
+
+    `review fix`, `util replace` and `glossary replace|search|count` read
+    chapters and glossary.json and need no provider endpoint, so an absent
+    config.json is benign -- they fall back to config.DEFAULTS for the one
+    threshold each wants. A config that is PRESENT but broken is not: a
+    malformed overlay, or a project whose blocks resolve no endpoint, used to
+    be caught by `except (OSError, ValueError)` and turned into a silent None,
+    so those six commands reported success against defaults the user never
+    asked for while their endpoint sat broken on disk. Both are now a clean
+    `[FAIL]` and exit 2, exactly as every strict command already reported.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        skill = root / "skill"
+        skill.mkdir()
+        write_overlay(skill, "{ broken json")
+        project = _upkeep_project(root, with_config=True)
+
+        translate_mod.SKILL_ROOT = skill
+        try:
+            for label, argv in (
+                ("glossary count", ["glossary", "count", "TERM", "--min", "0"]),
+                ("glossary search", ["glossary", "search", "TERM"]),
+                ("util replace",
+                 ["util", "replace", "--source", "旧", "--target", "new"]),
+            ):
+                out, err, code = _run_main_capturing(
+                    [*argv, "--project", str(project)])
+                check(f"12 {label}: malformed overlay exits 2",
+                      code == 2, f"code={code} err={err!r}")
+                check(f"12 {label}: [FAIL] names config.local.json",
+                      "[FAIL]" in err and config.LOCAL_CONFIG_NAME in err,
+                      f"err={err!r}")
+                check(f"12 {label}: no traceback",
+                      "Traceback" not in out + err, f"out={out!r} err={err!r}")
+        finally:
+            translate_mod.SKILL_ROOT = REAL_SKILL_ROOT
+
+        no_config = _upkeep_project(root / "empty", with_config=False)
+        for label, argv in (
+            ("glossary count", ["glossary", "count", "TERM", "--min", "0"]),
+            ("glossary search", ["glossary", "search", "TERM"]),
+            ("util replace",
+             ["util", "replace", "--source", "旧", "--target", "new"]),
+        ):
+            _out, err, code = _run_main_capturing(
+                [*argv, "--project", str(no_config)])
+            check(f"12 missing config.json ({label}): still a clean run, not a "
+                  f"setup error", code in (0, 1) and "[FAIL]" not in err,
+                  f"code={code} err={err!r}")
+
+
+def case_13_init_without_any_endpoint_writes_nothing() -> None:
+    """`init` with NEITHER --api-base NOR a resolvable overlay must leave the
+    project exactly as it found it.
+
+    The pre-flight used to run AFTER the writes: directories, style.md and a
+    bare config.json were on disk before the load that refuses a config with
+    no endpoint, so a failed init left a half-built project -- no
+    novel_info.json, no glossary.json, no manifest, no repository -- that a
+    second `init` then refused ('already exists'). Endpoint resolvability is
+    now checked before the first write, so init either completes or writes
+    nothing.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        skill = root / "skill"
+        (skill / "assets" / "templates").mkdir(parents=True)
+        (skill / "assets" / "templates" / "translation.md").write_text(
+            "placeholder\n", encoding="utf-8")
+
+        project = root / "proj"
+        source = project / "source"
+        source.mkdir(parents=True)
+        (source / "CHAPTER_0001.md").write_text(
+            "第一章\nbody\n", encoding="utf-8", newline="\n")
+
+        args = argparse.Namespace(
+            project=str(project), title="测试小说", author="测试作者",
+            source_url="", source_lang="zh", target_lang="en", tags="",
+            api_base="", cover_url=None, style="classic",
+            background=None, skip_profile=True, force=False,
+        )
+
+        translate_mod.SKILL_ROOT = skill
+        translate_mod.TEMPLATES_SRC_DIR = skill / "assets" / "templates"
+        try:
+            try:
+                translate_mod.cmd_init(args, project)
+                check("13 init with no endpoint anywhere: raises CliError",
+                      False, "returned without raising")
+            except CliError as exc:
+                message = str(exc)
+                check("13 init with no endpoint anywhere: raises CliError",
+                      True, f"message={exc}")
+                check("13 the message names the offending job",
+                      "providers.translator" in message, f"message={message}")
+                check("13 the message names both remedies",
+                      "project's config.json" in message
+                      and config.LOCAL_CONFIG_NAME in message,
+                      f"message={message}")
+        finally:
+            translate_mod.SKILL_ROOT = REAL_SKILL_ROOT
+            translate_mod.TEMPLATES_SRC_DIR = (REAL_SKILL_ROOT
+                                               / "assets" / "templates")
+
+        leftovers = sorted(
+            str(p.relative_to(project)) for p in project.rglob("*")
+            if p.relative_to(project).parts[0] != "source")
+        check("13 nothing was written: only the user's own source/ remains",
+              not leftovers, f"created by the failed init: {leftovers}")
+        check("13 no half-built config.json",
+              not (project / "config.json").is_file(),
+              "config.json exists")
+        check("13 no project directory was scaffolded",
+              not (project / "draft").exists() and not (project / "translated").exists()
+              and not (project / "novel_info.json").is_file(),
+              "init created part of the project")
 
 
 class _Capture:
@@ -959,7 +1074,6 @@ def main() -> int:
 
     case_1_load_absent_and_malformed()
     case_2_merge_semantics()
-    case_3_apply_overlay_writes_raw_merged_form()
     case_4_inline_api_key_detection()
     case_5_cmd_sync_config()
     case_6_init_resolves_overlay_without_copying()
@@ -968,6 +1082,8 @@ def main() -> int:
     case_9_corrupt_overlay_is_a_clean_error()
     case_10_shipped_examples_are_valid()
     case_11_per_job_consensus_overlay()
+    case_12_lenient_config_is_lenient_only_about_a_missing_file()
+    case_13_init_without_any_endpoint_writes_nothing()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
