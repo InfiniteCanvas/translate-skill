@@ -765,3 +765,88 @@ written.
 
 These are exactly the repo's documented rot mode, so they fold into **D5**, whose
 subject is documentation drift, rather than getting their own round.
+---
+
+## P3 D5 round — verdict `goal_holds: true`; 2 of 3 findings refuted by the orchestrator
+
+Commit `c807d09`. Gate observed live: **54 suites / 2672 checks / 0 failed**,
+`gen_cli_doc.py --check` returns `[ok]`, `test_cli_doc.py` 22/22.
+
+**Drift-test soundness — proved, not assumed.** The auditor monkey-patched
+`translate._build_parser` to bolt on a synthetic subcommand and re-ran both the
+byte-compare and the row-count check against a stale file: **both failed**
+(`committed=23440B generated=22643B`; `rows=26 commands=25`). The new command
+landed in the summary table *and* its own detail section, so the walk cannot
+drop a subcommand. There is no allowlist, no `startswith` filter and no
+`try/except` on the walk; `_commands()` follows `sub.choices` recursively
+(`gen_cli_doc.py:215-244`), and `build()` is the *same* function `--check` and
+every test call, so the two cannot diverge in leniency.
+
+`case_a_new_subcommand_changes_the_document` (`test_cli_doc.py:126`) makes this
+a permanent property rather than a one-time manual check: it patches the parser,
+asserts the rendered document changes in both places, and asserts the parser was
+restored and the committed file still matches.
+
+**The generated doc is true, not merely self-consistent.** Both the generator and
+the test read one parser, so both could agree while disagreeing with runtime.
+Five commands were spot-checked against `translate.py` — `glossary set
+--category`'s choices, `translate`'s exit set, the exit-3 trigger, and both
+distinct `--no-verify` flags. **No mismatches.** The two `--no-verify` rows are
+a good sign rather than a lucky one: they share a spelling but are *different
+action objects* (`translate.py:1940` vs the `cascade` parent at `:2047`), and
+the generator correctly kept them out of each other's sections by object
+identity, not by spelling.
+
+**All four carried D4 findings closed**, each with `file:line` on both sides.
+
+### Refuted by the orchestrator
+
+**F1 — "5 × (N+1) is the chapter-1 figure; the steady state is 6" — REFUTED.**
+The auditor inferred an LLM call from `pipeline.py:1185` calling
+`story.ensure_recap(...)` without following its control flow. `story.py:233-235`
+returns the predecessor's stored entry and makes **no** call when that entry
+exists:
+
+```
+existing = _entry_recap(state, Path(prev).stem)
+if existing is not None:
+    return existing
+```
+
+In steady state every chapter writes its own entry via `record_recap`
+(unconditional, `story.py:17-18`), so chapter N's predecessor *always* has one.
+Chapter 1 has no predecessor at all and returns `""` at `:230-231` — also no
+call. The backfill at `:242` fires only when the entry is **missing**: chapters
+translated before the feature existed, or a crash between ASSEMBLE and record —
+and `SKILL.md:433-434` already documents that case in the adjacent recap prose.
+So **5 is the steady-state figure and 6 the self-heal figure**, which is what the
+doc says. No change made.
+
+**F2 — "`maintenance.md:1-7` still restates a partial inventory" — REFUTED.**
+`AGENTS.md` *requires* that file to name the maintenance commands it covers:
+"restates subcommand semantics, defaults, and console markers for the maintenance
+commands (`review glossary|notes|fix`, `tn`, `glossary set|merge|retire|replace|
+search|count`, `util replace`)". The lead paragraph is a **scope declaration
+mirroring the repo's own description of the file**, immediately followed by the
+`cli.md` pointer D5 added. It duplicates no flag, default or marker — the things
+that can drift out of sync with the parser. Deleting the list to satisfy the
+finding would contradict `AGENTS.md`. No change made.
+
+### Accepted
+
+**F3 (orchestrator's own, not the auditor's) — `README.md:26-29` claimed cli.md
+"cannot go stale".** It can: a subcommand added without regenerating leaves a
+stale file, and the *test* is what catches it. That is a false invariant claim —
+exactly the rot mode `AGENTS.md` exists to prevent, and it would lead a reader to
+believe no regeneration discipline is needed. Rewritten to state the actual
+mechanism ("`tests/test_cli_doc.py` fails the gate when the committed file no
+longer matches that tree"). Gate re-run after the edit: **54 / 2672, exit 0**.
+
+**F4 (orchestrator's, PEP 723 repair).** The truncated `dependencies` array in
+`test_logs_cli.py` was repaired by the orchestrator, not the implementer. The
+auditor confirmed independently that the change is a single `dependencies=` line
+with no test logic touched. Noted for the record, no action.
+
+No blocking and no major findings. No migration required: D5 touches no
+`DEFAULTS`/`PROVIDER_DEFAULTS` key and no `assets/templates/` file, and the head
+stays `v018`.

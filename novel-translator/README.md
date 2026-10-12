@@ -26,7 +26,9 @@ the subcommand.
 `references/cli.md` is the full command surface — every subcommand (including
 the nested `glossary` actions), every flag with its default and requiredness,
 and the exit codes. It is generated from the script's argparse tree by
-`scripts/gen_cli_doc.py`, so it cannot go stale; the sections below cover what
+`scripts/gen_cli_doc.py`, and `tests/test_cli_doc.py` fails the gate when the
+committed file no longer matches that tree, so a command added without
+regenerating it is caught rather than published. The sections below cover what
 each command *does*.
 
 On Linux you can put it on your PATH instead (the script's shebang runs it
