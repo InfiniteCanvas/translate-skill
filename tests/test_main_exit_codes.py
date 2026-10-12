@@ -176,7 +176,8 @@ def case_3_null_numeric_config_is_fail_exit_2() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "config.json").write_text(
-            '{"providers": {}, "fuzzy_max_distance": null}\n',
+            '{"providers": {"translator": {"base_url": "http://test.invalid/v1"}}, '
+            '"fuzzy_max_distance": null}\n',
             encoding="utf-8", newline="\n",
         )
         proc = run_cli(["glossary", "search", TERM, "--project", str(root)])

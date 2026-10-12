@@ -98,7 +98,8 @@ def seed_config(root: Path, **extra: object) -> None:
     fixture that is exercised through `translate logs` needs it."""
     base = {"version": 14, "log_orchestration": True, "log_llm": True,
             "log_prompt_bodies": True, "log_llm_keep_runs": 10,
-            "log_chapter_keep_runs": 3, "source_lang": "zh", "target_lang": "en"}
+            "log_chapter_keep_runs": 3, "source_lang": "zh", "target_lang": "en",
+            "providers": {"translator": {"base_url": "http://test.invalid/v1"}}}
     base.update(extra)
     root.mkdir(parents=True, exist_ok=True)
     (root / "config.json").write_text(json.dumps(base, ensure_ascii=False),

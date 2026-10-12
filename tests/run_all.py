@@ -29,6 +29,19 @@ materializes them for this interpreter, which the spawned children inherit.
 Run from anywhere:
 
     uv run tests/run_all.py
+
+The run is hermetic against the machine's own config.local.json. Layer 1 of
+the overlay chain is looked up by file existence under the skill root, so a
+suite whose fixture omits something the maintainer's overlay happens to
+supply loads on their machine and fails on everyone else's -- a gate that
+reports green for one machine only. Hiding the file for the duration of the
+run (restored in a finally) is what makes that impossible: a suite that
+depends on ambient layer 1 now fails here too, and a suite that does not
+loses nothing, because the suites that exercise the overlay compose it from
+a fake skill root inside a sandbox instead. The rename is atomic and
+same-directory; a hard kill (not Ctrl-C, which the finally catches) can strand
+the overlay at the .runall-hidden name beside it, and the next run recovers it
+on entry rather than hiding nothing and leaving the maintainer with no layer 1.
 """
 
 # /// script
@@ -36,14 +49,45 @@ Run from anywhere:
 # dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
 # ///
 
+import contextlib
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
+SKILL_ROOT = TESTS_DIR.parent / "novel-translator"
+LOCAL_CONFIG = SKILL_ROOT / "config.local.json"
+HIDDEN_NAME = LOCAL_CONFIG.name + ".runall-hidden"
 
 SUMMARY_RE = re.compile(r"^\s*(\d+)\s+passed,\s+(\d+)\s+failed", re.MULTILINE)
+
+
+@contextlib.contextmanager
+def ambient_overlay_hidden():
+    """Move the machine's config.local.json aside for the run, always putting
+    it back; a no-op when the machine has none.
+
+    A hard kill (not Ctrl-C, which the finally catches) can strand the overlay
+    at the .runall-hidden name, and the next run would then find nothing at
+    LOCAL_CONFIG and skip the restore entirely -- leaving the maintainer with no
+    layer 1 at all and every command failing with "resolves no base_url". A
+    stranded file is therefore recovered on entry, before anything else looks
+    for it."""
+    hidden = LOCAL_CONFIG.with_name(HIDDEN_NAME)
+    if not LOCAL_CONFIG.is_file() and hidden.is_file():
+        os.replace(hidden, LOCAL_CONFIG)
+        print(f"note: recovered {HIDDEN_NAME} from an interrupted run")
+    if not LOCAL_CONFIG.is_file():
+        yield
+        return
+    os.replace(LOCAL_CONFIG, hidden)
+    print(f"note: {LOCAL_CONFIG.name} hidden for this run; restored on exit")
+    try:
+        yield
+    finally:
+        os.replace(hidden, LOCAL_CONFIG)
 
 
 def _checks(output: str) -> int | None:
@@ -76,24 +120,25 @@ def main() -> int:
         return 1
 
     results: list[tuple[str, int, int]] = []
-    for script in scripts:
-        proc = subprocess.run(
-            [sys.executable, str(script)],
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            cwd=str(TESTS_DIR),
-        )
-        output = (proc.stdout or "") + (proc.stderr or "")
-        checks = _checks(output)
-        code = proc.returncode if checks else 1
-        results.append((script.name, code, checks or 0))
-        print(f"{'PASS' if code == 0 else 'FAIL'}  {script.name}")
-        if code != 0:
-            if checks is None and proc.returncode == 0:
-                print(f"----- {script.name} reported no check summary -----")
-            if output.strip():
-                print(f"----- {script.name} output -----")
-                print(output.rstrip())
+    with ambient_overlay_hidden():
+        for script in scripts:
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                cwd=str(TESTS_DIR),
+            )
+            output = (proc.stdout or "") + (proc.stderr or "")
+            checks = _checks(output)
+            code = proc.returncode if checks else 1
+            results.append((script.name, code, checks or 0))
+            print(f"{'PASS' if code == 0 else 'FAIL'}  {script.name}")
+            if code != 0:
+                if checks is None and proc.returncode == 0:
+                    print(f"----- {script.name} reported no check summary -----")
+                if output.strip():
+                    print(f"----- {script.name} output -----")
+                    print(output.rstrip())
 
     passed = sum(1 for _name, code, _checks_run in results if code == 0)
     failed = len(results) - passed

@@ -155,7 +155,12 @@ def case_2_commit() -> None:
     """commit() fires only for a dirty tree inside an enabled repository:
     dirty -> sha + console line + git-log entry; clean tree, git_commits
     false, and a non-repo directory are all silent None no-ops (the
-    non-repo check holds with or without a git binary, so it always runs)."""
+    non-repo check holds with or without a git binary, so it always runs).
+
+    The git_commits false fixture must itself resolve: _enabled reads the
+    layers with load_config and falls back to True for a config that cannot
+    load, so an unloadable one would disable the very branch under test. The
+    check pins that, distinguishing the flag from the is_repo gate above it."""
     with tempfile.TemporaryDirectory() as td:
         proj = Path(td)
         if not vcs.available():
@@ -182,9 +187,14 @@ def case_2_commit() -> None:
                   sha2 is None and buf.getvalue() == "",
                   f"sha={sha2!r} out={buf.getvalue()!r}")
 
-            (proj / "config.json").write_text(
-                json.dumps({"git_commits": False}), encoding="utf-8", newline="\n")
+            (proj / "config.json").write_text(json.dumps(
+                {"git_commits": False,
+                 "providers": {"translator": {"base_url": "http://test.invalid/v1"}}}),
+                encoding="utf-8", newline="\n")
             (proj / "more.txt").write_text("beta\n", encoding="utf-8", newline="\n")
+            check("2e config: the git_commits false fixture resolves enabled=False",
+                  vcs.is_repo(proj) and not vcs._enabled(proj),
+                  f"is_repo={vcs.is_repo(proj)} enabled={vcs._enabled(proj)}")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 sha3 = vcs.commit(proj, "test: disabled")
@@ -217,7 +227,13 @@ def case_3_cmd_init() -> None:
     was never tracked, so its removal is invisible to git -- nothing else
     tracked changes after that commit, so the trailing reseed stays a
     silent no-op), and a re-scraped bare chapter makes that trailing commit
-    land under the distinct 'init: reseed after reinitialize' subject."""
+    land under the distinct 'init: reseed after reinitialize' subject.
+
+    init_argv names --api-base so the three cmd_init runs are hermetic: with
+    the flag absent, init resolves every provider block from the skill's
+    config.local.json, so the whole case passed only on a machine that
+    happened to have one. The flag is init's documented way to be handed an
+    endpoint; which providers get seeded is not what this case is about."""
     if not vcs.available():
         print("note: git not found on PATH; skipping the cmd_init git checks")
         return
@@ -231,7 +247,8 @@ def case_3_cmd_init() -> None:
 
     def init_argv(proj: Path, *extra: str) -> list[str]:
         return ["init", "--project", str(proj), "--title", "T", "--author", "A",
-                "--style", "auto", "--skip-profile", *extra]
+                "--style", "auto", "--skip-profile",
+                "--api-base", "http://test.invalid/v1", *extra]
 
     with tempfile.TemporaryDirectory() as td:
         proj = Path(td) / "proj"

@@ -627,7 +627,9 @@ def case_7_cli_smoke() -> None:
         ])
         write_sidecar(root, "CHAPTER_0001.md", [dict(NOTE_A), dict(NOTE_B)])
         write_lf(root / "config.json",
-                 json.dumps({"source_lang": "zh", "target_lang": "en"}) + "\n")
+                 json.dumps({"source_lang": "zh", "target_lang": "en",
+                            "providers": {"translator": {
+                                "base_url": "http://test.invalid/v1"}}}) + "\n")
         rows = {"findings": [
             {"idx": 0, "kind": "restates", "severity": "warn",
              "reason": "note restates the line", "suggestion": ""},

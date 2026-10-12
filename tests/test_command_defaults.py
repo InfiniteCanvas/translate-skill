@@ -329,7 +329,8 @@ def case_5_fix_reads_config() -> None:
         proj = root / "proj"
         proj.mkdir()
         (proj / "config.json").write_text(json.dumps(
-            {"providers": {}, "review_report_path": "custom-report.md"},
+            {"providers": {"translator": {"base_url": "http://test.invalid/v1"}},
+             "review_report_path": "custom-report.md"},
             ensure_ascii=False), encoding="utf-8")
         glossary.save(proj, {"terms": [
             {"source": "灵根", "variants": [], "translation": "spirit root"},
