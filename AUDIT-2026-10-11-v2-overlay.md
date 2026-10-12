@@ -961,3 +961,98 @@ The generator, the committed file and the test moved together, which is the
 behaviour D5 was bought for.
 
 Gate after all fixes: **54 suites / 2672 checks / 0 failed**.
+---
+
+## Post-merge landing failure — five suites were green on exactly one machine
+
+The first fast-forward merge (`da1fbf1`) landed, and the **gate run in the
+destination tree failed**: 49 passed / 5 failed / 2336 checks, against 54 / 2672
+on the identical commit in the worktree.
+
+One difference explained it: the worktree carries a machine-local, gitignored
+`novel-translator/config.local.json`. A merge cannot carry a gitignored file, so
+the main tree has none. **The whole campaign's green gate had been partly a
+property of the developer's machine.**
+
+### Root cause — one cause, all five (and a sixth)
+
+D1 deleted the code-level `DEFAULT_BASE_URL` and made `base_url` required per
+provider block. Fixtures writing a `config.json` with empty or absent
+`providers` used to resolve through the LAN default; now they raise
+`providers.translator resolves no base_url`. They kept passing locally because
+the ambient overlay supplies a `base_url` for every job.
+
+`test_git.py` 2e failed by a different-looking route with the same cause:
+`vcs._enabled` (`vcs.py:82-94`) deliberately returns `True` for an unreadable
+config — "a missing or unreadable config … must not turn a translation run into
+an unversioned one" — so an unloadable fixture **enabled** commits and the
+fixture's `{"git_commits": False}` was never read. Correct behaviour, wrong
+fixture.
+
+**A sixth instance that the failure summary hid:** `test_git.py case_3_cmd_init`
+was crashing outright, because `cmd_init` resolves provider blocks from the
+ambient overlay when `--api-base` is absent. It reported **zero checks**, so the
+runner collapsed it into a single script-level failure and the "5 failures"
+summary named only 2e. Recording the hazard: *a suite that crashes before its
+summary line is reported as one script failure, and its earlier check-level
+failures are easy to misattribute.* The runner's counting behaviour was left
+unchanged — flagged, not silently altered.
+
+`test_main_exit_codes.py` 3a/3b/3c were additionally **passing for the wrong
+reason**: they assert only exit 2, `[FAIL]`, and no traceback — all of which the
+`base_url` error also satisfies. Only 3d caught it.
+
+### Fix
+
+Six fixtures given an explicit `base_url` in the repo's established
+`http://test.invalid/v1` pattern. **No production code touched** (verified:
+`git diff --stat da1fbf1..9ffac39 -- novel-translator/` empty), no schema or
+template change, therefore **no migration**. No assertion weakened; `test_git.py`
+gained one check pinning that `_enabled` is False, so the `git_commits` branch is
+what silences the commit rather than the `is_repo` gate — 2672 → 2673.
+
+### The guard, and a trap in it the implementer did not close
+
+`run_all.py` now renames `config.local.json` aside for the run and restores it in
+a `finally`. Since every suite reaches the skill root the same way
+(`Path(__file__).resolve().parent.parent / "novel-translator"`) and none reads
+the file directly, hiding it makes "passes on one machine only" unrepresentable.
+
+The orchestrator found the trap: **a hard kill strands the overlay at
+`.runall-hidden`, and the next run then finds no `LOCAL_CONFIG`, skips the
+restore, and never recovers it** — leaving the maintainer with no layer 1 at all,
+so every command fails with the exact error this commit fixes. Ctrl-C was
+handled; hard kill was not. Recovery-on-entry added, and proved by simulating a
+strand: recovered, hidden, restored, byte-identical.
+
+State where **both** files exist (user recreated the real one) deliberately keeps
+the user's file and leaves the stale hidden stranded — clobbering real data to
+tidy a leftover would be the worse failure.
+
+### Delta audit — `merge_ready: true`, no findings
+
+Hermeticity proved in both directions by the auditor independently:
+
+| run | commit | overlay | result |
+|---|---|---|---|
+| main tree | `da1fbf1` | absent | 49 / 2336 / **5 failed** (class reproduces) |
+| temp worktree | `9ffac39` | absent | **54 / 2673 / 0** |
+| worktree | `9ffac39` | present | **54 / 2673 / 0** |
+| worktree, stranded | `9ffac39` | `.runall-hidden` | **54 / 2673 / 0**, recovery fired |
+
+The new `2e` check was mutation-tested both directions: `git_commits: true` flips
+it red, the loadable `git_commits: false` fixture holds it green. Overlay
+SHA256 `A5C6A5A2…F326` unchanged across every run.
+
+Concurrent gate runs on one machine remain unsafe (the second `os.replace`
+raises `FileNotFoundError`). Judged an acceptable documented limitation for a
+single-maintainer local gate rather than blocking on a lock.
+
+### The lesson worth keeping
+
+Every per-phase round audited *this* checkout, where layer 1 existed. The defect
+was invisible to all of them by construction, and only surfaced when the loop's
+own rule — *the branch that is verified is the branch that is merged* — was
+followed literally and the gate was run **after** landing. A machine-local,
+gitignored file is not part of any commit, so no diff-based audit can see the
+dependency it creates.
