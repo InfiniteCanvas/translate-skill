@@ -479,22 +479,42 @@ invariant and the template-migration rule are untouched.
 
 ### D5 — Docs: generate the derivable, fix the drift
 
-- Generate the CLI surface table from the argparse tree into
-  `references/cli.md`, so subcommands/exit codes cannot drift again. Live drift
-  at HEAD: `translate.py:8-9` lists 17 subcommands and omits `logs`
-  (registered at `:1685`), and the same docstring omits exit 3 — which **is**
-  emitted, at `translate.py:2084-2095` (`return 3` on `client.LLMFatal`).
-- Correct the sequential-execution rationale in `SKILL.md` — the current
-  reason ("the glossary grows as you go") is false, since `_gate_corpus()`
-  already counts novel-wide; the real reason is deterministic, resumable
-  batches.
+**Decisions settled with the maintainer on 2026-10-12, before dispatch:**
+
+1. **`references/cli.md` is generated from the argparse tree, AND a test
+   regenerates it in memory and compares.** Any new subcommand without a doc
+   update fails the gate. Generating once and committing would fix today's
+   drift and let it return — the subcommand list has already drifted at least
+   three times in this repo's history. Same trick as D2's `.history.json`
+   invariant, which has held.
+2. **`cli.md` is the single source.** `SKILL.md` and `README.md` keep their
+   prose about what each command *does*, but stop restating *which commands
+   exist* and point to `cli.md`. Leaving hand-written duplicates is precisely
+   the drift D5 exists to remove.
+
+**Live drift at HEAD, re-verified before dispatch:** 23 subcommands are
+registered (including `logs` and `verify`); the `translate.py` module docstring
+lists 17, **omits `logs`**, and does not cover **exit 3** (`translate.py:2084`
+returns 3 on `LLMFatal`).
+
+Also in scope:
+
+- Correct the sequential-execution rationale in `SKILL.md` — the current reason
+  ("the glossary grows as you go") is false, since `_gate_corpus()` already
+  counts novel-wide; the real reason is deterministic, resumable batches.
 - **Report fan-out cost as a factor only.** A clean chapter costs 6–7 provider
   calls, each ×N models + 1 arbitrator under a multi-block job. Per
   `AGENTS.md`'s provider-routing rule this is reported as a number, with no
   recommendation to narrow a job's provider array and no model demoted.
-
-**Doc mirrors:** `references/cli.md` (new, generated), `SKILL.md` (rationale),
-`README.md` (CLI list).
+- **Carry the D4 audit's four low findings**, which are this phase's subject
+  matter rather than their own round:
+  - `references/file-formats.md:1789` — chapter sub-key list names 12 keys;
+    the JSON emits 18.
+  - `:1798` — documents a `usage` key the collector splits into
+    `prompt_tok`/`completion_tok`/`reasoning_tok`.
+  - `:1673` — the `_run_end` writer list omits `verify` (**pre-existing drift**,
+    not introduced by D3).
+  - the missing-`assets/dashboard/` failure mode is untested.
 
 ---
 
