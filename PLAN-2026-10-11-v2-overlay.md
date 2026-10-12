@@ -424,6 +424,21 @@ chapter). Decisions taken 2026-10-11:
    spending LLM calls on the many FAITH rejections that have nothing to do with
    the glossary.
 
+**Amended after the D3b audit round (2026-10-12).** The implementation shipped
+with the cascade refusing to flip chapter status, contradicting D3a's decision
+that a confirmed term flips the chapter. Its stated justification cited a risk
+of the scoped cascade overwriting the whole-book `verify.jsonl` — which the
+audit and then the orchestrator independently confirmed **does not exist**:
+`verify_project()` never writes the JSONL; only the whole-book `cmd_verify`
+does (`translate.py:1109`), so a scoped call structurally cannot clobber it.
+
+**Decision 2 is therefore amended: the cascade flips confirmed chapters to
+`needs-review`, exactly as `verify` does, and reports its findings through the
+existing `verify_cascade` trace event, which is already a separate artifact.**
+`--strict` continues to govern only the originating command's exit code, and
+`--no-verify` opts out of both. This was the option neither the implementer nor
+the orchestrator considered.
+
 D3a's stage 2 is already batched by term with a split-until-covered cap, so the
 cascade check's cost shape is bounded before this phase lands.
 
