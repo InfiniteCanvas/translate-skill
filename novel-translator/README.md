@@ -530,17 +530,20 @@ not broken by a cascade being detected.
     uv run scripts/translate.py review fix --project . [--no-verify] [--strict]
 
 `--strict` makes a confirmed cascade exit 1, for a caller that must tell "no
-drift" from "drift found"; `--no-verify` skips the scan entirely. Both are a
-usage error on `review glossary` / `review notes`, which change nothing. The
-automatic check never writes `logs/verify.jsonl` and never flips a chapter to
-`needs-review` — only `verify` itself does that — and is recorded in the trace
-log as a `verify_cascade` event.
+drift" from "drift found"; it governs that exit code and nothing else.
+`--no-verify` skips the scan and the flip together. Both are a usage error on
+`review glossary` / `review notes`, which change nothing. A confirmed chapter
+is flipped to `needs-review` exactly as `verify` flips it, making it eligible
+for `retry`; the check never writes `logs/verify.jsonl` — that artifact is the
+whole-book result set only the `verify` command produces — and is recorded in
+the trace log as a `verify_cascade` event.
 
 When the pipeline's faithfulness gate rejects a translation, it also asks
 whether a pinned term is why, since that is a fault fixed in `glossary.json`
 rather than by another attempt. The gate is free: the chapter is dismissed
-unless it also has an under-used pinned term, so the many rejections unrelated
-to the glossary spend nothing. Survivors print `[warn] [CHAPTER_NNNN] glossary
+unless it also declined a pinned term the source matched — rendered below the
+usage floor, or not at all — so the many rejections unrelated to the glossary
+spend nothing. Survivors print `[warn] [CHAPTER_NNNN] glossary
 over-binding: forcing '<term>' as '<pinned>' mistranslates this chapter; fix the
 glossary entry, not the translation`. Skip it with `--no-verify` on `translate`
 / `retry`.

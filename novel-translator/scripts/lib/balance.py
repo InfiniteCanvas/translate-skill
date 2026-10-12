@@ -139,6 +139,27 @@ def classify(entry: dict, src_count: int, translated_lines: list[str],
     return ("ok", tgt_count, floor)
 
 
+def _rows_of_kind(pairs: list[tuple[dict, int]],
+                  translated_lines: list[str], min_coverage: float,
+                  fuzzy_max: int, wanted: str) -> list[dict]:
+    """The rows classify() gave one verdict, as data, in classify()'s own
+    order -- so underused() and drifted() cannot disagree about a chapter."""
+    rows: list[dict] = []
+    for entry, src_count in pairs:
+        kind, tgt_count, floor = classify(entry, src_count, translated_lines,
+                                         min_coverage, fuzzy_max)
+        if kind != wanted:
+            continue
+        rows.append({
+            "source": entry.get("source", ""),
+            "translation": entry.get("translation", ""),
+            "src_count": src_count,
+            "tgt_count": tgt_count,
+            "floor": floor,
+        })
+    return rows
+
+
 def underused(pairs: list[tuple[dict, int]],
               translated_lines: list[str], min_coverage: float = 0.25,
               fuzzy_max: int = 2) -> list[dict]:
@@ -155,24 +176,35 @@ def underused(pairs: list[tuple[dict, int]],
     here would mistranslate, and it needs the counts to do that. Ordering is
     check()'s, because both walk `pairs` once through classify().
 
-    Note what is NOT here: "drift" entries. An absent rendering is a separate,
-    already-actionable signal -- the FAITH reviewer owns it inside a translate
-    run -- so a whole-book scan asks the semantic question only about the
-    under-used ones, where the count is genuinely ambiguous."""
-    rows: list[dict] = []
-    for entry, src_count in pairs:
-        kind, tgt_count, floor = classify(entry, src_count, translated_lines,
-                                         min_coverage, fuzzy_max)
-        if kind != "under":
-            continue
-        rows.append({
-            "source": entry.get("source", ""),
-            "translation": entry.get("translation", ""),
-            "src_count": src_count,
-            "tgt_count": tgt_count,
-            "floor": floor,
-        })
-    return rows
+    Note what is NOT here: "drift" entries, which drifted() returns. A
+    whole-book scan asks the semantic question only about the under-used ones,
+    where the count is genuinely ambiguous, because an absent rendering is
+    already actionable on its own -- check() reports it as a drift signal and
+    the translator is told to use the canonical form. The one caller that
+    cannot use that signal is a FAITH rejection (lib/verify.investigate_faith):
+    the translation was already produced and already rejected, so the absence
+    is not a correction to apply but a question to ask."""
+    return _rows_of_kind(pairs, translated_lines, min_coverage, fuzzy_max, "under")
+
+
+def drifted(pairs: list[tuple[dict, int]],
+            translated_lines: list[str], min_coverage: float = 0.25,
+            fuzzy_max: int = 2) -> list[dict]:
+    """The same rows check() reports as drift signals, as data.
+
+    One dict per entry classified "drift" -- the canonical rendering absent
+    from the translation entirely while the source matched it at least twice.
+    Same keys and same order as underused(), because both read classify().
+
+    A wholesale refusal of a pinned form is a stronger over-binding candidate
+    than partial under-use, not a weaker one: it is the shape a translator
+    produces when forcing the entry produces a mistranslation, and no retry can
+    fix it while the entry is still pinned. So the FAITH investigation asks
+    about both (lib/verify.investigate_faith). A whole-book scan does not --
+    paying stage 2 for every absent rendering in the book is not a trade it
+    makes -- and neither does the balance advisory, which reports these as
+    drift signals itself."""
+    return _rows_of_kind(pairs, translated_lines, min_coverage, fuzzy_max, "drift")
 
 
 def check(pairs: list[tuple[dict, int]],

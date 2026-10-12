@@ -814,17 +814,20 @@ background build too. Builds produce no git commits — `export/`,
   a term occurring in no chapter costs nothing. It is **advisory**: findings
   are printed as `[warn] verify: ...` and the originating command still exits
   0, so existing automation is not broken by a cascade being detected. Pass
-  `--strict` to make a confirmed cascade exit 1, or `--no-verify` to skip the
-  scan (both are also accepted by `review fix`, and are a usage error on
-  `review glossary` / `review notes`, which change nothing). The automatic run
-  never writes `logs/verify.jsonl` and never flips a chapter status — only
-  `verify` itself flags `needs-review`; the check is logged as a
-  `verify_cascade` trace event instead.
+  `--strict` to make a confirmed cascade exit 1 — it governs that exit code
+  and nothing else — or `--no-verify` to skip the scan and the flip together
+  (both are also accepted by `review fix`, and are a usage error on
+  `review glossary` / `review notes`, which change nothing). A confirmed
+  chapter is flipped to `needs-review`, exactly as `verify` flips it, so it
+  becomes eligible for `retry`; the automatic run never writes
+  `logs/verify.jsonl`, which only the whole-book `verify` command produces, and
+  is logged as a `verify_cascade` trace event instead.
 - **A FAITH rejection is also checked for glossary over-binding**: when the
   faithfulness gate rejects a translation, the pipeline asks whether a pinned
   term is why — a fault fixed in `glossary.json`, not by another attempt. The
-  gate is free: the chapter is dismissed unless it also has an under-used
-  pinned term, so rejections unrelated to the glossary spend nothing. Survivors
+  gate is free: the chapter is dismissed unless it also declined a pinned term
+  the source matched — rendered below the usage floor, or not at all — so
+  rejections unrelated to the glossary spend nothing. Survivors
   go through the same stage 2 and print `[warn] [CHAPTER_NNNN] glossary
   over-binding: forcing '<term>' as '<pinned>' mistranslates this chapter; fix
   the glossary entry, not the translation`. Skip it with `--no-verify` on

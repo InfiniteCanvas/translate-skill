@@ -6,20 +6,26 @@
 """D3b: the cascade check that runs after a glossary change, and the FAITH
 investigation that decides whether a rejection was glossary over-binding.
 
-Covers three contracts the automation relies on. First, that a
+Covers four contracts the automation relies on. First, that a
 glossary-changing command actually runs the drift check afterwards, scoped to
 the chapters the edited term actually occurs in -- so it neither stays silent
-nor pays for a whole-book scan on every keystroke-sized edit. Second, that the
-check is advisory by default: a confirmation is reported and the command still
-exits 0, so existing automation is not broken by a cascade being detected;
-`--strict` is the opt-in that makes it non-zero, and `--no-verify` the opt-out
-that skips the scan. Third, that the FAITH investigation's pre-filter is free
-and decisive: a chapter that FAITH-rejects for reasons unrelated to the
-glossary must reach no model at all, which is what keeps a default-on
-investigation affordable.
+nor pays for a whole-book scan on every keystroke-sized edit. Second, that a
+confirmation acts exactly as it does for the manual `verify` command: the
+chapter is flipped to `needs-review`, while the ORIGINATING command still
+exits 0 by default, so existing automation is not broken by a cascade being
+detected; `--strict` is the opt-in that makes it non-zero, and `--no-verify`
+the opt-out that skips the scan and the flip together. Third, that the FAITH
+investigation's pre-filter is free and decisive: a chapter that FAITH-rejects
+for reasons unrelated to the glossary must reach no model at all, which is
+what keeps a default-on investigation affordable, while a chapter that
+declined EVERY pinned term must still be asked about. Fourth, that this wiring
+actually runs: one case drives a real rejection through run_chapter and reads
+the prompt the investigation sent, so a miswired chain cannot pass on
+signature introspection alone.
 
 The provider seam is stubbed at consensus.chat throughout, so no suite here
-contacts a network.
+contacts a network. Nothing else is stubbed on that path -- the pipeline's
+FAITH gate and lib/verify.investigate_faith both run for real.
 """
 
 import contextlib
@@ -32,7 +38,8 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import client, consensus, config, fix, glossary, pipeline, project, verify
+from lib import (client, consensus, config, fix, glossary, logger, pipeline,
+                 project, verify)
 import translate
 
 PASSED = 0
@@ -78,6 +85,21 @@ UNDERSUPPLIED_BODY = (
     "She looked toward the far mountains.\n"
     "She recalled what her master had said.\n"
     "Grass and tree are unconstant too.\n"
+    "The wind passed through the woods.\n"
+)
+
+
+ALLDRIFT_SOURCE = (
+    "天道无常，裴小丫望向远山。\n"
+    "她想起师父说过的话。\n"
+    "天道无常，裴小丫归来。\n"
+    "风穿过林间。\n"
+)
+
+ALLDRIFT_BODY = (
+    "The sky's way is unconstant, and the girl looked toward the far mountains.\n"
+    "She recalled what her master had said.\n"
+    "The sky's way is unconstant, and the girl came back at last.\n"
     "The wind passed through the woods.\n"
 )
 
@@ -200,6 +222,30 @@ def case_a_glossary_edit_triggers_the_cascade_check() -> None:
               "cascade check after glossary merge" in out, out)
         check("1k merge: advisory default keeps the exit code at 0",
               code == 0, f"code={code}")
+
+        proj = make_project(Path(td), UNDERSUPPLIED_BODY)
+        code, out, stub = run_cli(
+            ["glossary", "retire", "--source", "裴小丫"], proj, confirms())
+        check("1l retire: the 0-flagged report says why it is 0",
+              "'裴小丫' is no longer a pinned glossary term" in out, out)
+        check("1m retire: the scope line still names the affected chapters",
+              "1 chapter(s) carry the edited term" in out, out)
+
+        proj = make_project(Path(td), UNDERSUPPLIED_BODY)
+        code, out, stub = run_cli(
+            ["glossary", "merge", "--keep", "天道", "--remove", "裴小丫"],
+            proj, confirms())
+        check("1n merge: the merged-away term is named as unpinned",
+              "'裴小丫' is no longer a pinned glossary term" in out, out)
+        check("1o merge: the term that survived is not called unpinned",
+              out.count("is no longer a pinned glossary term") == 1, out)
+
+        proj = make_project(Path(td), UNDERSUPPLIED_BODY)
+        code, out, stub = run_cli(
+            ["glossary", "set", "--source", "裴小丫", "--definition", "x"],
+            proj, confirms())
+        check("1p set: a term that is still pinned is never called unpinned",
+              "is no longer a pinned glossary term" not in out, out)
 
 
 def case_strict_and_no_verify_are_the_two_switches() -> None:
@@ -351,10 +397,30 @@ def case_faith_investigation_is_free_before_any_call() -> None:
                 UNDERSUPPLIED_BODY.splitlines())
             check("6e over-binding case: the chapter reached the model",
                   result["considered"] is True, str(result))
-            check("6f over-binding case: the declined term is the candidate",
-                  result["candidates"] == ["裴小丫"], str(result["candidates"]))
-            check("6g over-binding case: exactly one call was made",
-                  len(stub.calls) == 1, f"calls={stub.calls}")
+            check("6f over-binding case: both shapes of decline are candidates",
+                  result["candidates"] == ["天道", "裴小丫"],
+                  str(result["candidates"]))
+            check("6g over-binding case: one call per candidate term",
+                  len(stub.calls) == 2, f"calls={stub.calls}")
+
+        drift_proj = make_project(Path(td), ALLDRIFT_BODY)
+        drift_cfg = json.loads((drift_proj / "config.json").read_text(
+            encoding="utf-8"))
+        drift_g = glossary.load(drift_proj)
+        drift_source = (drift_proj / "source" / CHAPTER).read_text(
+            encoding="utf-8").splitlines()
+        with Stub(clears_all()) as stub:
+            result = verify.investigate_faith(
+                drift_proj, drift_cfg, drift_g, CHAPTER, drift_source,
+                ALLDRIFT_BODY.splitlines())
+            check("6h all-drift chapter: a wholesale refusal still reaches the "
+                  "model",
+                  result["considered"] is True, str(result))
+            check("6i all-drift chapter: every refused term is a candidate",
+                  result["candidates"] == ["天道", "裴小丫"],
+                  str(result["candidates"]))
+            check("6j all-drift chapter: one call per refused term",
+                  len(stub.calls) == 2, f"calls={stub.calls}")
 
 
 def case_faith_investigation_runs_the_shared_stage_two() -> None:
@@ -378,7 +444,7 @@ def case_faith_investigation_runs_the_shared_stage_two() -> None:
                   [t["source"] for t in result["contaminated_terms"]] == ["裴小丫"],
                   str(result["contaminated_terms"]))
             check("7c it ran on the verify job's own template",
-                  [job for job, _ch in stub.calls] == ["verify"],
+                  [job for job, _ch in stub.calls] == ["verify", "verify"],
                   f"calls={stub.calls}")
 
         with Stub(clears_all()) as stub:
@@ -525,26 +591,58 @@ def case_flags_are_rejected_where_they_do_not_apply() -> None:
                   f"{type(exc).__name__}: {exc}")
 
 
-def case_cascade_never_writes_or_flips() -> None:
-    """The cascade check reports; it does not act. Only the standalone
-    `verify` command flips a chapter, so an automatic check cannot schedule a
-    re-translation nobody asked for."""
+def case_cascade_flips_confirmed_and_writes_no_report() -> None:
+    """A confirmed cascade flips its chapter exactly as the `verify` command
+    does -- same helper, same guarded save -- while still writing no report:
+    the JSONL is the manual command's whole-book artifact and a scoped cascade
+    has no path to it. --no-verify opts out of the flip with the scan;
+    --strict changes the exit code and nothing else."""
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), UNDERSUPPLIED_BODY)
-        manifest_before = (proj / "chapters.json").read_bytes()
-        glossary_before = (proj / "glossary.json").read_bytes()
-        run_cli(["glossary", "set", "--source", "裴小丫", "--definition", "x"],
-                proj, confirms())
-        check("12a the cascade check did not touch the manifest",
-              (proj / "chapters.json").read_bytes() == manifest_before)
-        check("12b the cascade check did not write the glossary",
-              (proj / "glossary.json").read_bytes() != glossary_before
-              and glossary.find(glossary.load(proj), "裴小丫")["definition"] == "x")
-        statuses = [e["status"] for e in project.load_manifest(proj)]
-        check("12c the chapter status was not flipped by the cascade check",
-              statuses == ["translated"], str(statuses))
-        check("12d no verify.jsonl report was written by the cascade check",
+        code, out, stub = run_cli(
+            ["glossary", "set", "--source", "裴小丫", "--definition", "x"],
+            proj, confirms())
+        check("12a the cascade reported the confirmed chapter",
+              "-> needs-review" in out, out)
+        check("12b the confirmed chapter was flipped",
+              [e["status"] for e in project.load_manifest(proj)]
+              == ["needs-review"],
+              str(project.load_manifest(proj)))
+        check("12c the flip reached disk, not just memory",
+              [e["status"] for e in json.loads(
+                  (proj / "chapters.json").read_text(encoding="utf-8-sig"))]
+              == ["needs-review"])
+        check("12d the advisory default still exits 0",
+              code == 0, f"code={code}")
+        check("12e no verify.jsonl report was written by the cascade check",
               not (proj / "logs" / "verify.jsonl").is_file())
+        check("12f the cascade wrote no glossary flag of its own",
+              glossary.find(glossary.load(proj), "裴小丫")["definition"] == "x"
+              and "contaminated" not in glossary.load(proj))
+
+        proj = make_project(Path(td), UNDERSUPPLIED_BODY)
+        code, out, stub = run_cli(
+            ["glossary", "set", "--source", "裴小丫", "--definition", "x",
+             "--no-verify"], proj, confirms())
+        check("12g --no-verify suppresses the flip as well as the scan",
+              [e["status"] for e in project.load_manifest(proj)]
+              == ["translated"],
+              str(project.load_manifest(proj)))
+        check("12h --no-verify still applies the edit itself",
+              stub.calls == []
+              and glossary.find(glossary.load(proj), "裴小丫")["definition"] == "x",
+              f"calls={stub.calls}")
+
+        proj = make_project(Path(td), UNDERSUPPLIED_BODY)
+        code, out, stub = run_cli(
+            ["glossary", "set", "--source", "裴小丫", "--definition", "x",
+             "--strict"], proj, confirms())
+        check("12i --strict flips the same chapter the default does",
+              [e["status"] for e in project.load_manifest(proj)]
+              == ["needs-review"],
+              str(project.load_manifest(proj)))
+        check("12j --strict changes the exit code, not the flip",
+              code == 1 and "-> needs-review" in out, f"code={code} out={out}")
 
 
 def case_cascade_is_logged_as_its_own_event() -> None:
@@ -573,6 +671,159 @@ def case_cascade_is_logged_as_its_own_event() -> None:
                   str(cascades[0]))
 
 
+def make_pipeline_project(root: Path) -> Path:
+    """Pipeline-shaped fixture for the end-to-end case. The draft state carries
+    the translated lines and resumes at FAITH, so the run reaches the gate
+    without a translator call and the case stays about the wiring; max_attempts
+    is 1 so exactly one rejection -- and so exactly one investigation -- happens,
+    and glossary_auto_cleanup is off so BALANCE cannot spend a call on the same
+    drift the investigation is about.
+
+    `lines` is what the TRANSLATE stage would have left behind: one entry per
+    source line, including the trailing blank a newline-terminated source
+    yields. A resumed state that shortened it would be rejected by the very
+    line-pairing check this case is trying to reach past."""
+    proj = root / "faithproj"
+    for folder in ("source", "translated", "draft", "notes"):
+        (proj / folder).mkdir(parents=True, exist_ok=True)
+    write(proj / "config.json", json.dumps(
+        {**CFG, "max_attempts": 1, "glossary_auto_cleanup": False},
+        ensure_ascii=False, indent=2) + "\n")
+    write(proj / "glossary.json",
+          json.dumps(TERMS, ensure_ascii=False, indent=2) + "\n")
+    write(proj / "source" / CHAPTER, SOURCE_BODY)
+    write(proj / "translated" / CHAPTER, UNDERSUPPLIED_BODY)
+    write(proj / "chapters.json", json.dumps(
+        [{"file": CHAPTER, "number": 1, "order": 0, "status": "pending"}],
+        indent=2) + "\n")
+    write(proj / "draft" / "CHAPTER_0001.state.json", json.dumps(
+        {"stage": "FAITH", "attempt": 0, "feedback": [],
+         "title": "Mock Chapter Title",
+         "lines": UNDERSUPPLIED_BODY.splitlines() + [""],
+         "chunks": None, "notes": None, "rejected": None, "updated_at": "",
+         "pipeline": pipeline.STATE_VERSION},
+        ensure_ascii=False, indent=2) + "\n")
+    return proj
+
+
+def faith_chat(prompts: list[str]):
+    """The provider seam, stubbed for the two jobs this chain uses. The
+    `reviewer` call is the FAITH gate's own and the `verify` call is the
+    investigation's, so routing on job exercises the real wiring between them
+    -- nothing between run_chapter and consensus.chat is replaced. The verify
+    prompt is captured rather than its return value inspected, because the
+    prompt is what proves the chapter's own evidence was sent."""
+    def chat(project_dir, cfg, job, prompt, json_schema=None, max_tokens=None,
+             chapter=None):
+        if job == "verify":
+            prompts.append(prompt)
+            return json.dumps({"verdicts": [
+                {"source": "裴小丫", "chapter": CHAPTER, "mistranslates": True,
+                 "reason": "a different sense in this chapter"}]})
+        if job == "reviewer":
+            return json.dumps({"verdict": "FAIL",
+                               "reasons": ["the review invented an event"]})
+        raise AssertionError(f"unexpected job for this case: {job}")
+    return chat
+
+
+def read_events(proj: Path) -> list[dict]:
+    events: list[dict] = []
+    for path in sorted((proj / "logs").rglob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                pass
+    return events
+
+
+def case_faith_investigation_runs_end_to_end() -> None:
+    """The chain itself, with nothing between run_chapter and the provider
+    stubbed: a real FAITH rejection must reach the real investigate_faith,
+    carrying this chapter's own evidence. Signature introspection cannot catch
+    a swapped argument or an inverted condition; a prompt quoting the chapter
+    and the contested rendering can."""
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_pipeline_project(Path(td))
+        cfg = config.load_config(proj)
+        prompts: list[str] = []
+        orig = consensus.chat
+        consensus.chat = faith_chat(prompts)
+        outcome = None
+        exc: Exception | None = None
+        buf = io.StringIO()
+        logger._run_path = None
+        translated_before = (proj / "translated" / CHAPTER).read_bytes()
+        try:
+            with contextlib.redirect_stdout(buf):
+                outcome = pipeline.run_chapter(proj, CHAPTER, cfg)
+        except Exception as caught:
+            exc = caught
+        finally:
+            consensus.chat = orig
+        out = buf.getvalue()
+
+        check("14a chain: the chapter ran and FAITH rejected it",
+              exc is None and outcome == "needs-review",
+              f"outcome={outcome} exc={exc!r}")
+        check("14b chain: the gate really rejected, on this chapter",
+              "FAITH" in out and "marked needs-review" in out, out)
+        check("14c chain: the investigation asked the model, once per "
+              "contested term",
+              len(prompts) == 2, f"prompts={len(prompts)}")
+        if prompts:
+            check("14d chain: the prompt carries this chapter's own evidence",
+                  all(CHAPTER in prompt for prompt in prompts), prompts[0][:200])
+            check("14e chain: the prompt carries the contested pinned "
+                  "renderings from the real glossary",
+                  any('"pinned": "Pei Xiaoya"' in prompt for prompt in prompts)
+                  and any('"pinned": "Heavenly Dao"' in prompt
+                          for prompt in prompts),
+                  str([prompt[:120] for prompt in prompts]))
+            check("14f chain: the prompt pairs the counts stage 1 judged by",
+                  all("occurrence(s), rendered" in prompt and "floor" in prompt
+                      for prompt in prompts),
+                  str([prompt[:120] for prompt in prompts]))
+
+        events = read_events(proj)
+        investigations = [e for e in events
+                          if e.get("event") == "faith_glossary_investigation"]
+        check("14g chain: the investigation wrote its own trace event",
+              len(investigations) == 1
+              and investigations[0].get("chapter") == CHAPTER,
+              str([e.get("event") for e in events]))
+        if investigations:
+            check("14h chain: the event records the confirmed contamination",
+                  investigations[0].get("contaminated_terms") == ["裴小丫"],
+                  str(investigations[0]))
+        check("14i chain: the over-binding verdict reached the console",
+              "glossary over-binding" in out
+              and "fix the glossary entry, not the translation" in out, out)
+        check("14j chain: the investigation rewrote no translated line",
+              (proj / "translated" / CHAPTER).read_bytes()
+              == translated_before)
+        check("14k chain: no cascade event came from a translate run",
+              not [e for e in events if e.get("event") == "verify_cascade"])
+
+        proj = make_pipeline_project(Path(td) / "off")
+        prompts_off: list[str] = []
+        orig = consensus.chat
+        consensus.chat = faith_chat(prompts_off)
+        buf = io.StringIO()
+        logger._run_path = None
+        try:
+            with contextlib.redirect_stdout(buf):
+                pipeline.run_chapter(proj, CHAPTER, cfg, verify_on_faith=False)
+        finally:
+            consensus.chat = orig
+        check("14l chain: --no-verify reaches no model on this path",
+              prompts_off == [], f"prompts={len(prompts_off)}")
+        check("14m chain: the suppressed run wrote no investigation event",
+              not [e for e in read_events(proj)
+                   if e.get("event") == "faith_glossary_investigation"])
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         try:
@@ -588,10 +839,11 @@ def main() -> int:
     case_faith_investigation_is_free_before_any_call()
     case_faith_investigation_runs_the_shared_stage_two()
     case_faith_hook_is_wired_and_suppressible()
+    case_faith_investigation_runs_end_to_end()
     case_review_fix_checks_once_for_the_batch()
     case_verify_project_scope_is_optional_and_back_compatible()
     case_flags_are_rejected_where_they_do_not_apply()
-    case_cascade_never_writes_or_flips()
+    case_cascade_flips_confirmed_and_writes_no_report()
     case_cascade_is_logged_as_its_own_event()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")

@@ -368,21 +368,23 @@ chapter - nothing to re-check` and makes no call.
 
 Console markers for the automatic check are `[verify] cascade check after
 <verb>: <n> chapter(s) carry the edited term, <n> flagged ..., <n> confirmed
-across <n> call(s)`, `[warn] verify: <chapter> -> needs-review recommended:
-forcing the edited rendering mistranslates this chapter`, and the same
+across <n> call(s)`, `[warn] verify: <chapter> -> needs-review: forcing the
+edited rendering mistranslates this chapter`, and the same
 `[warn] verify: glossary contamination: ...` line the manual command prints.
 
-The cascade check is **advisory by default**: it reports and the originating
-command still exits 0, so automation that edits the glossary is not broken by
-a cascade being detected. `--strict` makes it exit 1 when verify confirms
-contamination; `--no-verify` skips the scan entirely (no model call). Both are
-accepted by `glossary replace | set | merge | retire` and by `review fix`,
-where they are a usage error on the read-only `review glossary` / `review
-notes` subjects. The check never writes `logs/verify.jsonl` and never flips a
-chapter status — reporting is not the manual command's job of scheduling a
-re-translation, so only `verify` itself flags `needs-review`; the automatic run
-is logged instead as a `verify_cascade` event carrying its `origin`, `terms`,
-`chapters` and `confirmed_chapters`.
+The cascade check acts on a confirmation exactly as `verify` does: the chapter
+is flipped to `needs-review`, through the same `project.set_status` path and
+behind the same guard that saves the manifest only when something was
+confirmed. `--strict` governs the **originating command's exit code only** —
+never whether the flip happens — and `--no-verify` opts out of both the scan
+and the flip. Both are accepted by `glossary replace | set | merge | retire`
+and by `review fix`, where they are a usage error on the read-only `review
+glossary` / `review notes` subjects. The check writes no `logs/verify.jsonl`:
+that file is the manual command's, since `verify_project()` returns records
+without writing anything and only `cmd_verify` renders the whole-book result
+set, so a scoped cascade has no path to it. The automatic run is logged as a
+`verify_cascade` event carrying its `origin`, `terms`, `chapters` and
+`confirmed_chapters`.
 
 `review fix` runs the check **once** for the whole batch, not once per applied
 command: each spawned subcommand is invoked with `--no-verify` (the same
@@ -393,20 +395,27 @@ Note that retiring or merging a term away leaves the cascade check with
 nothing to judge for **that** term — stage 1 matches against the live
 glossary, and the term is no longer in it — so those two verbs usually report
 `<n> flagged by the deterministic stage, 0 ... confirmed` while still scoping
-the scan to the right chapters. That is the honest answer: an unpinned term
-cannot contaminate a future chapter. Retiring a term still matters, because
-the chapters it was pinned in may now contradict the remaining glossary.
+the scan to the right chapters. The console says so rather than leaving the
+`0` to read as a missing feature: `[verify] '<term>' is no longer a pinned
+glossary term, so the deterministic stage has nothing to match it against;
+those chapters were re-checked against the glossary as it now stands`. That is
+the honest answer: an unpinned term cannot contaminate a future chapter.
+Retiring a term still matters, because the chapters it was pinned in may now
+contradict the remaining glossary.
 
 ### FAITH rejections
 
 When the faithfulness gate rejects a translation, the pipeline also asks
 whether the **glossary** was the cause — a different fault from the
 translator's, and one fixed in `glossary.json` rather than by another attempt.
-The gate is free and decisive: the chapter is dismissed unless it *also* has
-an under-used pinned term per stage 1 (the translation declined to use a term
-the source matched), so the many rejections with nothing to do with the
-glossary cost no model call at all. Survivors go through the same stage 2, on
-the same `verify` job, and are reported as `[warn] [CHAPTER_NNNN] glossary
+The gate is free and decisive: the chapter is dismissed unless it *also*
+declined a pinned term the source matched — rendered below the usage floor, or
+not at all — so the many rejections with nothing to do with the glossary cost
+no model call at all. Both shapes count here, and a chapter that refused every
+pinned form outright is the strongest over-binding candidate of all: it is the
+shape a translator produces when the entry does not fit the sense, and no retry
+can fix it while the entry stays pinned. Survivors go through the same stage 2,
+on the same `verify` job, and are reported as `[warn] [CHAPTER_NNNN] glossary
 over-binding: forcing '<term>' as '<pinned>' mistranslates this chapter;
 fix the glossary entry, not the translation`, plus a
 `faith_glossary_investigation` trace event. The investigation never rewrites

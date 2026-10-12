@@ -1095,13 +1095,7 @@ def cmd_verify(args: argparse.Namespace, project_dir: Path) -> int:
         _run_end(project_dir, "verify", "failed")
         raise
 
-    known = {entry.get("file") for entry in manifest}
-    for chapter in result["confirmed_chapters"]:
-        if chapter not in known:
-            print(f"[warn] verify: {chapter} is not in the manifest - "
-                  "confirmed, but its status cannot be flipped")
-            continue
-        project.set_status(manifest, chapter, "needs-review")
+    _flip_confirmed(project_dir, manifest, result["confirmed_chapters"])
     if result["confirmed_chapters"]:
         project.save_manifest(project_dir, manifest)
 
@@ -1451,6 +1445,27 @@ def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
     raise CliError(f"unknown glossary action: {args.action}")
 
 
+def _flip_confirmed(project_dir: Path, manifest: list[dict],
+                    confirmed: list[str]) -> None:
+    """Mark every confirmed chapter needs-review in the manifest, in memory.
+
+    The one write a verify result performs on project state, shared by the
+    `verify` command and the cascade check so the two can never disagree about
+    which chapters a confirmation re-translates. A chapter the manifest does
+    not list cannot be flipped and is reported rather than invented.
+
+    The manifest is saved by the caller, and only when `confirmed` is
+    non-empty: a scan that confirmed nothing must not rewrite the file.
+    """
+    known = {entry.get("file") for entry in manifest}
+    for chapter in confirmed:
+        if chapter not in known:
+            print(f"[warn] verify: {chapter} is not in the manifest - "
+                  "confirmed, but its status cannot be flipped")
+            continue
+        project.set_status(manifest, chapter, "needs-review")
+
+
 def _chapters_with_term(project_dir: Path, terms: list[str]) -> set[str]:
     """The chapters whose SOURCE contains any of the given glossary terms.
 
@@ -1484,18 +1499,28 @@ def _run_cascade_verify(args: argparse.Namespace, project_dir: Path,
                         cfg: dict, terms: list[str], origin: str) -> int:
     """Run the scoped drift scan after a glossary change; return an exit code.
 
+    A confirmation here means exactly what it means to the `verify` command,
+    and the chapter is treated the same way: it is flipped to `needs-review`
+    through the shared _flip_confirmed, behind the same "only when something
+    was confirmed" guard on the manifest save. An edit that drifts is drift the
+    manual command would have found anyway, and a chapter left `translated`
+    hides a finding whose only remedy is re-translating it.
+
+    Two artifacts it deliberately does not write. It writes no
+    `logs/verify.jsonl`, because verify_project() never writes it -- the JSONL
+    is cmd_verify's, a whole-book result set of one line per chapter examined,
+    and a scoped cascade has no path to it. And it writes no `glossary.json`,
+    because that file feeds the translator's pinned-terms list: a confirmed
+    entry is reported as a contamination record for a human to act on.
+
+    Its findings are logged as the `verify_cascade` trace event, the separate
+    artifact this check has always reported to.
+
     0 unless --strict turned a confirmation into a failure, so the default is
     advisory: an existing automation call that edits the glossary keeps exiting
-    0 even when the scan finds drift, because Decision 2 is that verify's
-    findings are reported as warnings here rather than propagated. --strict is
-    the opt-in for a caller that must tell "no drift" from "drift found".
-
-    The status flip is NOT this function's business and does not happen here.
-    A glossary change does not make any chapter's translation wrong -- it makes
-    the pinned term questionable, which is a report to read, not a verdict to
-    enforce -- and the full `verify` command remains the surface that flips
-    chapters, so a cascade check cannot silently schedule a re-translation
-    the maintainer never asked for.
+    0 even when the scan finds drift, because --strict governs the exit code
+    and nothing else. Flipping a chapter is not an exit-code decision.
+    --no-verify opts out of the scan and the flip together.
 
     No chapters containing the term means no subject for the scan: the edited
     term reaches no translated chapter, so there is nothing it could have
@@ -1514,8 +1539,19 @@ def _run_cascade_verify(args: argparse.Namespace, project_dir: Path,
           f"carry the edited term, {result['flagged']} flagged by the "
           f"deterministic stage, {result['confirmed']} term/chapter "
           f"finding(s) confirmed across {result['calls']} call(s)")
+    live = glossary.load(project_dir)
+    for term in terms:
+        if term and glossary.find(live, term) is None:
+            print(f"[verify] {term!r} is no longer a pinned glossary term, so "
+                  f"the deterministic stage has nothing to match it against; "
+                  f"those chapters were re-checked against the glossary as it "
+                  f"now stands")
+    if confirmed:
+        manifest = _load_manifest(project_dir)
+        _flip_confirmed(project_dir, manifest, confirmed)
+        project.save_manifest(project_dir, manifest)
     for chapter in confirmed:
-        print(f"[warn] verify: {chapter} -> needs-review recommended: forcing "
+        print(f"[warn] verify: {chapter} -> needs-review: forcing "
               f"the edited rendering mistranslates this chapter")
     for term in result["contaminated_terms"]:
         print(f"[warn] verify: glossary contamination: {term['source']!r} "
@@ -2005,9 +2041,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     cascade = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     cascade.add_argument("--no-verify", dest="no_verify", action="store_true",
-                         help="skip the post-edit glossary drift check")
+                         help="skip the post-edit glossary drift check and its status flip")
     cascade.add_argument("--strict", action="store_true",
-                         help="exit non-zero when that check confirms drift (default: advisory, exits 0)")
+                         help="exit non-zero when that check confirms drift (governs the exit code only; a confirmed chapter is flipped either way)")
 
     pr = gloss_sub.add_parser("replace", parents=[nested, cascade], allow_abbrev=False,
                               help="change a term's translation and rewrite chapters")

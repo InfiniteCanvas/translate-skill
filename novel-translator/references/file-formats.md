@@ -1868,16 +1868,25 @@ made, so an edit cannot pay for chapters it could not have reached. The scope is
 computed with `glossary.count_in_text` against each chapter's source — the same
 matcher the balance advisory and `glossary count` use.
 
-It is deliberately **not** a writer, and that is the contract to know:
+It writes exactly two things: a confirmed chapter's status in `chapters.json`,
+and its `verify_cascade` trace event. The rest of the contract is what it does
+**not** write, and that is worth stating precisely:
 
-- it does **not** write `logs/verify.jsonl`. That file is defined above as one
-  line per chapter examined of a whole-book scan; a scoped run would replace a
-  complete result set with a partial one, so the automatic check reports to the
-  console and the trace log instead;
-- it does **not** flip a chapter to `needs-review`. That flip schedules a
-  re-translation, and only the explicit `verify` command is allowed to decide
-  that;
+- it **does** flip a confirmed chapter to `needs-review`, through the same
+  `project.set_status` path the explicit `verify` command uses and behind the
+  same guard that saves the manifest only when something was confirmed. A
+  cascade is drift the manual command would have found anyway, and
+  `needs-review` is what makes a chapter eligible for `retry`;
+- it does **not** write `logs/verify.jsonl`. That file belongs to the manual
+  command: `verify_project()` returns records and writes nothing, and only
+  `cmd_verify` renders them into the whole-book result set defined above — one
+  line per chapter examined. A scoped cascade therefore has no path to the
+  file, and reports to the console and the trace event instead;
 - it does **not** write `glossary.json`, for the reason above.
+
+`--strict` governs the originating command's **exit code only**: it changes
+whether a confirmed cascade exits 1 or 0 and never whether the chapter is
+flipped. `--no-verify` opts out of both the scan and the flip.
 
 The automatic run is recorded as a `verify_cascade` event in the ordinary trace
 log, so it is findable without inventing a second artifact:
@@ -1898,9 +1907,13 @@ because they look like a missing feature and are not:
 
 - Retiring or merging a term away leaves nothing for stage 1 to match it
   against, so those verbs normally report `0 flagged by the deterministic
-  stage, 0 ... confirmed` while still scoping the scan correctly. An unpinned
-  term cannot contaminate a future chapter — that is the honest answer, and the
-  reason to retire is to stop the damage, not to detect it retrospectively.
+  stage, 0 ... confirmed` while still scoping the scan correctly. The console
+  says so explicitly rather than leaving the `0` to be read as a missing
+  feature — `[verify] '<term>' is no longer a pinned glossary term, so the
+  deterministic stage has nothing to match it against; those chapters were
+  re-checked against the glossary as it now stands`. An unpinned term cannot
+  contaminate a future chapter — that is the honest answer, and the reason to
+  retire is to stop the damage, not to detect it retrospectively.
 - A term occurring in no chapter yields an empty scope: the command prints
   `[verify] cascade check after <verb>: '<term>' occurs in no chapter - nothing
   to re-check` and makes no model call.

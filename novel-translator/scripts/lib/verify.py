@@ -21,8 +21,12 @@ appears in the source and is rendered in the translation fewer times than its
 usage floor -- max(1, ceil(min_coverage * src)) -- is a candidate. Natural
 English repeats nouns less than Chinese does, so this is genuinely ambiguous on
 its own: it is a question-generator, not a verdict. A term rendered not at all
-is DRIFT, not under-use, and is left to the FAITH reviewer that already owns it
-inside a translate run.
+is DRIFT rather than under-use, and a whole-book scan asks only about the
+under-used ones, because an absent rendering is already actionable inside a
+translate run: the balance advisory reports it as a drift signal and tells the
+translator to use the canonical form. The FAITH investigation is the one caller
+that cannot use that signal -- the translation was already produced and already
+rejected -- so it asks about drift rows as well (investigate_faith, balance.drifted).
 
 Stage 2 batches BY TERM, across the whole book, and asks the one question stage
 1 cannot: does forcing this pinned rendering, in these contexts, produce a
@@ -463,9 +467,18 @@ def investigate_faith(project_dir: Path, cfg: dict, g: dict, chapter: str,
     FAITH-rejects for many reasons -- an invented event, a dropped negation,
     a wrong pronoun -- and the glossary is only implicated when the source
     matched a pinned term that the translation then declined to use. So the
-    gate is stage 1's own answer (underused rows on THIS chapter, computed
-    from the same pairs the balance advisory already produced) and it is free:
-    a rejected chapter with no under-used term is dismissed before any call.
+    gate is stage 1's own answer on THIS chapter, computed from the same pairs
+    the balance advisory already produced, and it is free: a rejected chapter
+    with no declined pinned term is dismissed before any call.
+
+    Both shapes of decline count, under-use AND a wholesale refusal
+    (balance.underused and balance.drifted). A chapter that renders every
+    pinned term it matched zero times is not a weaker over-binding candidate
+    than one that renders some of them -- it is the purest one, the shape a
+    translator produces when the entry does not fit the sense -- and it is the
+    one a whole-book scan must not pay for, which is why the two pre-filters
+    differ. It is still free: both classifications are arithmetic over counts
+    already computed.
 
     The surviving rows go through the same stage 2 as a book scan -- same
     rubric, same per-term batching, same context windows -- because it is the
@@ -485,14 +498,15 @@ def investigate_faith(project_dir: Path, cfg: dict, g: dict, chapter: str,
             f"investigated")
         return empty
 
-    rows = balance.underused(
-        [(entry, count) for entry, count in glossary.contextual(
-            g, "\n".join(source_lines),
-            int(config.get_number(cfg, "contextual_glossary_cap")))],
-        translated_lines,
-        min_coverage=float(config.get_number(cfg, "min_term_coverage")),
-        fuzzy_max=int(config.get_number(cfg, "fuzzy_max_distance")),
-    )
+    pairs = [(entry, count) for entry, count in glossary.contextual(
+        g, "\n".join(source_lines),
+        int(config.get_number(cfg, "contextual_glossary_cap")))]
+    min_coverage = float(config.get_number(cfg, "min_term_coverage"))
+    fuzzy_max = int(config.get_number(cfg, "fuzzy_max_distance"))
+    rows = (balance.underused(pairs, translated_lines,
+                              min_coverage=min_coverage, fuzzy_max=fuzzy_max)
+            + balance.drifted(pairs, translated_lines,
+                              min_coverage=min_coverage, fuzzy_max=fuzzy_max))
     if not rows:
         return empty
 

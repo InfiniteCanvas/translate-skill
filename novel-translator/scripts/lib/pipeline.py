@@ -965,9 +965,10 @@ def _investigate_glossary_rejection(project_dir: Path, cfg: dict, g: dict,
     translator's and is fixed in glossary.json rather than by another attempt.
 
     The free deterministic pre-filter is what makes this affordable: a
-    rejection only reaches the model when this same chapter also has an
-    under-used pinned term, so the many rejections with nothing to do with the
-    glossary cost no calls at all (lib/verify.investigate_faith).
+    rejection only reaches the model when this same chapter also declined a
+    pinned term -- rendered it below the usage floor, or not at all -- so the
+    many rejections with nothing to do with the glossary cost no calls at all
+    (lib/verify.investigate_faith).
 
     Deferred import: lib/verify imports this module, so a module-level import
     here would be circular.
