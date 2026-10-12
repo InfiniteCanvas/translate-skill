@@ -445,15 +445,34 @@ cascade check's cost shape is bounded before this phase lands.
 ### D4 — Dashboard data/render split
 
 `lib/logdashboard.py` is 2,200 lines and the largest file in the repo. Measured
-precisely: 796 lines data collection, 563 HTML fragment builders (not one
-contiguous block — ~17 builder functions), 226 CSS + 402 JS as verbatim string
+precisely: 796 lines data collection, 563 HTML fragment builders (~17 builder
+functions, not one contiguous block), 226 CSS + 402 JS as verbatim string
 literals. It emits a 3.5 MB `report.html`.
 
-Split: `collect()` writes `logs/report.json` (the data contract, diffable,
-testable); `render()` reads that JSON and writes HTML from shipped
-`assets/dashboard/*` template files, so the linter can see them.
+**Decisions settled with the maintainer on 2026-10-12, before dispatch:**
+
+1. **The CSS and JS become real files; they are inlined at render time.**
+   `assets/dashboard/report.css` and `report.js` are proper files a linter or
+   formatter can finally see, and `render()` inlines them back so
+   **`report.html` stays one portable, self-contained file** — no external
+   `<link>` or `<script src>`, so a single report can still be archived or
+   emailed. Today's contract is preserved; only where the source text lives
+   changes.
+2. **`logs/report.json` is always written.** It becomes the data contract: the
+   thing tests assert against and the artifact a future visualization builds
+   from. It is a derived file under the gitignored `logs/`.
+
+Scope note for the implementer: `collect()` and `render()` are **already
+separate functions** (`logdashboard.py:671` and `:2067`), so this is not a
+rewrite of the module — it is extracting two constants plus adding one artifact.
+The 2,200-line figure is file size, not work.
+
 `tests/test_log_dashboard.py` (1,393 lines, 67.9 KB — the largest test file,
 mostly markup assertions) retargets the JSON contract.
+
+No migration is required: no config key, no `DEFAULTS`/`PROVIDER_DEFAULTS`
+change, and `assets/dashboard/` is not `assets/templates/`, so the `.history.json`
+invariant and the template-migration rule are untouched.
 
 **Doc mirrors:** `references/file-formats.md` (`logs/report.json` schema),
 `README.md` + `references/maintenance.md` (the logs surface).
