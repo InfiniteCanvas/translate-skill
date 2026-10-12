@@ -1671,7 +1671,8 @@ reply containing `</details>` or a fenced block cannot corrupt the structure.
 `report.html` (one per **project**, at `logs/report.html`) is the same idea at
 project scale: every retained log assembled into one self-contained page. Two
 writers — `_run_end` refreshes it after every `translate`/`retry`/`tn`/
-`review`/`profile` run, and `translate logs --html` writes it on demand; the
+`review`/`profile`/`verify` run, and `translate logs --html` writes it on
+demand; the
 latter is the path that matters after an interrupt, since `main()` hard-exits
 without reaching `_run_end`. Either writer also emits `logs/report.json`, the
 same run's collected data.
@@ -1786,7 +1787,7 @@ Top level, exactly these keys:
 | key | type | what it holds |
 |---|---|---|
 | `meta` | object | project title/config plus `generated_at` and `project_dir` |
-| `chapters` | array | one object per chapter bucket: `stem`, `number`, `runs`, `stage_spans`, `gates`, `calls_detail`, `epub`, `outcome`, `closed`, `elapsed_s`, `in_manifest`, `call_source` |
+| `chapters` | array | one object per chapter bucket, exactly these keys: `attempts`, `call_source`, `calls`, `calls_detail`, `closed`, `degraded`, `elapsed_s`, `epub`, `gates`, `in_manifest`, `number`, `outcome`, `run_file`, `runs`, `stage_spans`, `stages`, `stem`, `tokens` |
 | `runs` | array | project-bucket runs with no chapter of their own |
 | `tokens_by_job`, `tokens_by_model`, `calls_by_job` | object | the roll-ups the page's bars and roster read |
 | `total_calls`, `total_tokens`, `bodies_available`, `chapterless_tokens` | integer | page totals, each with its source named below |
@@ -1795,7 +1796,7 @@ Top level, exactly these keys:
 | `outcomes` | object | outcome → chapter count |
 | `unclosed` | array | `"<stem> / <run_id>"` for every open with no close |
 | `gaps` | array | every absence the page declares rather than rendering as zero |
-| `calls` | array | the call ledger: one record per model call, each with `shape`, `parsed`, `body`, `prompt`, `paired`, `candidate`/`candidates`, `consensus_for`, `url`, `usage` |
+| `calls` | array | the call ledger: one record per model call, each with `call_id`, `run_id`, `chapter`, `job`, `model`, `url`, `candidate`, `candidates`, `consensus_for`, `ts`, `elapsed_s`, `finish_reason`, `error`, `prompt_tok`, `completion_tok`, `reasoning_tok`, `params`, `prompt`, `body`, `parsed`, `shape`, `paired`, `source_lines`. The provider's `usage` object is **not** carried through — the collector reads it and splits it into `prompt_tok`, `completion_tok` and `reasoning_tok` (`null` when the provider reports no reasoning detail), so every token total on the page is an int it can sum |
 | `unpaired_events` | array | `result`/`chunk` rows, which carry no `call_id` |
 | `has_tier1` | boolean | whether the orchestration tier was available |
 
@@ -1814,6 +1815,24 @@ see them — and it is why the output contract is unchanged: there is still no
 archive or email by itself. `assets/dashboard/` is **not** `assets/templates/`
 and is not part of the `.history.json` template-customisation contract, so
 neither the migration rule nor the template-hash invariant applies to it.
+
+**A missing `assets/dashboard/` produces neither artifact.** `render()` reads
+both asset files before anything is written, so an install that shipped without
+that directory fails the page *and* the data together rather than emitting a
+`report.json` no page will ever explain. Each writer — the automatic
+`_run_end` refresh and `translate logs --html` — prints exactly one
+
+```
+[warn] html dashboard not written: FileNotFoundError: [Errno 2] No such file or directory: '<skill>/assets/dashboard/report.css'
+```
+
+`write_dashboard` returns `None`, `refresh` raises nothing, and the calling
+command's exit code is untouched: a dashboard is a diagnostic, so losing it may
+never fail a translation run. Both writers read the assets first, so an
+already-good `report.html` on disk is left byte-identical rather than truncated.
+The warning names the exact path, which is the whole diagnosis — it is a
+broken install, not a corrupt project; re-copying the skill directory restores
+the page on the next run.
 
 ### Gates
 

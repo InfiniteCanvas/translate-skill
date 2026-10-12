@@ -23,6 +23,12 @@ All commands look like this:
 `--project` defaults to the current directory and may also be given before
 the subcommand.
 
+`references/cli.md` is the full command surface — every subcommand (including
+the nested `glossary` actions), every flag with its default and requiredness,
+and the exit codes. It is generated from the script's argparse tree by
+`scripts/gen_cli_doc.py`, so it cannot go stale; the sections below cover what
+each command *does*.
+
 On Linux you can put it on your PATH instead (the script's shebang runs it
 through uv automatically):
 

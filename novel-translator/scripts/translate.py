@@ -5,17 +5,21 @@
 # ///
 """novel-translator: staged, resumable CJK novel translation CLI.
 
-Subcommands: init, ping, seed, migrate, profile, styles, status, sync,
-sync-config, translate, retry, mark, tn, review, verify, util, glossary,
-build-epub.
+The command surface -- every subcommand, flag, default and requiredness -- is
+generated into `references/cli.md` by `scripts/gen_cli_doc.py`, which
+`tests/test_cli_doc.py` regenerates and compares, so it is never restated here
+by hand. What argparse cannot express is stated below.
+
 Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
 had failures or the report was refused as stale / glossary search found nothing
 / glossary count below threshold / tn re-check failed chapters or scanned
 nothing eligible / profile generation failed / verify confirmed glossary drift
 or could not check a chapter / a glossary or review-fix command run with
---strict confirmed glossary drift, 2 usage or setup error /
-build-epub builder crashed / ping with one or more providers unreachable /
-130 interrupted (Ctrl-C).
+--strict confirmed glossary drift, 2 usage or setup error / build-epub builder
+crashed / ping with one or more providers unreachable / exit 3 a provider call
+failed and the run stopped, which is terminal rather than degrading to a
+surviving candidate (references/file-formats.md section "Provider failure is
+fatal"), 130 interrupted (Ctrl-C).
 
 Glossary-changing commands (glossary replace|set|merge|retire, and review fix)
 additionally run the drift scan over the chapters the edited term occurs in; it

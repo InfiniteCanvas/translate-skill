@@ -53,9 +53,12 @@ extraction.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1499,6 +1502,73 @@ def case_28_styles_and_script_are_real_files() -> None:
               "--cinnabar" in style and ".lrow" in style, "")
 
 
+def case_29_missing_dashboard_assets() -> None:
+    """An install that shipped without assets/dashboard/ must warn once, write
+    neither artifact, raise nothing, and leave a previously good page intact.
+
+    render() reads report.css and report.js before anything is written, so the
+    whole collection is discarded rather than half-emitted: the JSON contract is
+    derived from the same collect(), and a report.json without its page would
+    be the one outcome worse than producing neither. The directory is moved
+    aside for the case and restored in a finally, because a suite that leaves the
+    checkout without its own assets breaks every case after it.
+    """
+    assets = logdashboard.DASHBOARD_DIR
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        seed_tier1(root)
+        good = logdashboard.write_dashboard(root)
+        before = (root / "logs" / "report.html").read_bytes()
+        before_json = (root / "logs" / "report.json").read_bytes()
+        check("29a missing-assets: a healthy run writes both artifacts",
+              good is not None and before_json != b"", f"{good}")
+
+        aside = root / "assets_aside"
+        page_buf, refresh_buf = io.StringIO(), io.StringIO()
+        try:
+            shutil.move(str(assets), str(aside))
+            check("29b missing-assets: the directory really is gone",
+                  not assets.exists(), f"{assets}")
+            with contextlib.redirect_stdout(page_buf):
+                result = logdashboard.write_dashboard(root)
+            with contextlib.redirect_stdout(refresh_buf):
+                logdashboard.refresh(root)
+        finally:
+            if aside.exists():
+                shutil.move(str(aside), str(assets))
+        check("29c missing-assets: the directory is restored",
+              assets.is_dir() and (assets / "report.css").is_file(),
+              f"{assets}")
+
+        warns = [l for l in page_buf.getvalue().splitlines()
+                 if l.startswith("[warn]")]
+        check("29d missing-assets: nothing was returned", result is None,
+              f"{result!r}")
+        check("29e missing-assets: neither artifact is rewritten",
+              (root / "logs" / "report.html").read_bytes() == before
+              and (root / "logs" / "report.json").read_bytes() == before_json,
+              "a derived file changed while the page could not be rendered")
+        check("29f missing-assets: one warn per writer, and no more",
+              len(warns) == 1
+              and len([l for l in refresh_buf.getvalue().splitlines()
+                       if l.startswith("[warn]")]) == 1,
+              f"warns={warns}")
+        check("29g missing-assets: the warning names the missing file",
+              "html dashboard not written" in warns[0]
+              and "report.css" in warns[0], f"{warns}")
+        check("29h missing-assets: it reads as a missing install, not a bug",
+              "FileNotFoundError" in warns[0]
+              and "assets" in warns[0].replace("\\", "/"),
+              f"{warns}")
+
+        (root / "logs" / "report.json").unlink()
+        after = logdashboard.write_dashboard(root)
+        check("29i missing-assets: the next run rebuilds both artifacts",
+              after == good and (root / "logs" / "report.json").is_file()
+              and (root / "logs" / "report.html").is_file(),
+              f"{after}")
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in (
             "utf-8", "utf8"):
@@ -1520,7 +1590,8 @@ def main() -> int:
                  case_25_no_double_escaped_entity,
                  case_26_ledger_shows_the_provider,
                  case_27_report_json_is_the_data_contract,
-                 case_28_styles_and_script_are_real_files):
+                 case_28_styles_and_script_are_real_files,
+                 case_29_missing_dashboard_assets):
         case()
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     return 1 if FAILED else 0

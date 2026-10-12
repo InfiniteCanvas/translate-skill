@@ -2,7 +2,9 @@ Agent-facing workflows for glossary, review-report, and translator's-note
 maintenance: semantics, flags, defaults, console markers, and exit
 behavior for `review glossary|notes|fix`, `tn`, `logs`, `glossary
 set|merge|retire|replace|search|count`, and `util replace`. File formats
-and config schemas live in `references/file-formats.md`.
+and config schemas live in `references/file-formats.md`; the generated
+command surface -- every subcommand, flag, default and requiredness --
+lives in `references/cli.md`.
 
 ## Reading the trace logs (`logs`)
 

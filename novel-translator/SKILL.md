@@ -21,6 +21,12 @@ Read `references/file-formats.md` before editing any project file by hand —
 it defines every schema (glossary, manifest, state files, translated-chapter
 markdown contract).
 
+Read `references/cli.md` for the command surface itself — every subcommand
+(including the nested `glossary` actions), every flag with its default and
+requiredness, and the shared exit codes. It is **generated** from
+`scripts/translate.py`'s argparse tree by `scripts/gen_cli_doc.py`, so it is
+never restated below; the sections here cover what each command *does*.
+
 ## Prerequisites
 
 - `uv` on PATH (scripts declare their dependencies inline via PEP 723).
@@ -211,8 +217,14 @@ uv run "$SCRIPT" translate --project . --chapters 5-20   # inclusive range; also
 uv run "$SCRIPT" translate --project . --next 10          # first 10 pending or in-progress chapters in order
 ```
 
-Sequential by design — the glossary is meant to grow as you go, so later
-chapters translate more consistently than earlier ones. Already-`translated`
+Sequential by design — for operational reasons, not linguistic ones. Each
+chapter's outcome is settled and committed before the next one starts, so an
+interrupted batch resumes exactly where it stopped, one chapter can be retried
+on its own, and the git history reads as a clean per-chapter diff. Execution
+order does **not** make later chapters translate better: the significance gate
+counts term occurrences across the whole source corpus
+(`_gate_corpus()` joins every discovered chapter), and every chapter is
+translated against the same pinned glossary either way. Already-`translated`
 chapters are skipped; `--force` retranslates anyway.
 
 Each chapter runs through a state machine (resumable; safe to Ctrl-C and
@@ -534,7 +546,8 @@ background build too. Builds produce no git commits — `export/`,
 
 - **The tool is fully manual-runnable** — every operation is one of the
   commands above; the agent only saves typing. `README.md` in this skill is
-  the human-facing cheat sheet.
+  the human-facing cheat sheet, and `references/cli.md` is the generated list
+  of which commands exist and what flags they take.
 - **Prompts follow the Hy-MT2 model card conventions**: full language names,
   `X translates to "Y"` terminology pairs, structured-data preservation
   rules for the numbered-line protocol, `[Background Information]` context
@@ -853,12 +866,17 @@ background build too. Builds produce no git commits — `export/`,
 - **New source language**: drop a catalogue JSON with the right `language`
   field into the skill's `assets/catalogues/` (see file-formats.md), pass
   `--source-lang` at init. The pipeline itself is language-agnostic.
-- **Cost/cadence**: each chapter ≈ 5 model calls + retries (translate —
-  one call per part on longer chapters — faithfulness, glossary
-  expansion, notes, story recap), plus a cleanup-judgment call only when
-  balance flags drift signals; a job whose provider array carries N
-  models multiplies its calls by N plus one consensus call per fan-out;
-  one glossary
+- **Cost/cadence**: a clean chapter costs exactly **5 provider calls** —
+  TRANSLATE (one per part on a longer chapter), FAITH, GLOSSARY_EXPAND,
+  TN_GENERATE, and the rolling story recap; a rejected attempt adds 2 more
+  (TRANSLATE + FAITH), so a chapter that passes on its second try is 7. A
+  cleanup-judgment call is added only when balance flags drift signals, and a
+  merge call only when expansion re-proposes an existing entry with a different
+  rendering.
+  Fan-out multiplies each of those by a factor: a job whose provider array
+  carries N models makes N calls plus one arbitrator call per task, so an
+  N-block `translator` turns a clean chapter into 5 x (N + 1) calls — a factor,
+  reported as a number and not as a reason to narrow an array. One glossary
   review pass ≈ ceil(N/review_batch_size) calls for N entries (40 by
   default), one notes review pass ≈ ceil(M/review_batch_size) calls for M
   notes. `status` before long
