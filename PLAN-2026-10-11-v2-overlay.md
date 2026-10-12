@@ -403,14 +403,29 @@ chapter). Decisions taken 2026-10-11:
 
 #### D3b — auto-trigger and the FAITH investigation
 
-- **Auto-trigger, default ON:** after a glossary-changing operation —
-  `review --fix`, and the glossary retire / merge / replace paths — verify runs
-  over the chapters the change could have affected.
-- **FAITH investigation:** when the FAITH gate rejects a chapter for a reason
-  that looks like glossary over-binding, run the stage-2 investigation on it.
+**Decisions settled with the maintainer on 2026-10-12, before dispatch:**
 
-Both change behaviour for existing pipelines, which is why they land after D3a
-has proven the capability.
+1. **Auto-trigger, default ON.** After a glossary-changing operation verify runs
+   over the chapters the change could have affected. The glossary-changing
+   operations are: `review --fix` (which applies the report's machine-applicable
+   commands), and `glossary replace`, `glossary set`, `glossary merge`,
+   `glossary retire`.
+2. **Advisory by default, with `--strict` to propagate.** The originating
+   command exits 0 and reports verify's findings as warnings, so existing
+   automation never breaks because a cascade was detected. `--strict` makes it
+   exit non-zero when verify confirms contamination, for call sites that want to
+   distinguish "no drift" from "drift found".
+3. **An opt-out exists.** Default-ON implies a `--no-verify` to skip the cascade
+   check deliberately. (Orchestrator's call — implied by "default ON".)
+4. **The FAITH investigation uses a free deterministic pre-filter.** A chapter
+   that FAITH-rejects **and** has an under-used glossary term per stage 1 is the
+   plausible over-binding case — the translation declined to use the pinned
+   term. Stage 1 is already computed, so filtering costs nothing and avoids
+   spending LLM calls on the many FAITH rejections that have nothing to do with
+   the glossary.
+
+D3a's stage 2 is already batched by term with a split-until-covered cap, so the
+cascade check's cost shape is bounded before this phase lands.
 
 ### D4 — Dashboard data/render split
 
