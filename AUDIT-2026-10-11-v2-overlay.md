@@ -625,3 +625,74 @@ docstring and mirror no longer claim it writes nothing; `case_20_v018` added.
 No `v019` was created because main has none of v016-v018 or either verify
 template — the whole set is one unreleased phase, so the template edit rides on
 v018's existing `sync_templates` call.
+
+---
+
+## P3 D3b — auto-trigger and the FAITH investigation
+
+**Commits:** `1076d38` (implementation) → `9a38bb2` (audit fixes), after
+adjudicating one divergence with the maintainer.
+
+| Point | Result |
+|---|---|
+| gate before | 52 suites, 2523 checks |
+| after `1076d38` | **53 suites, 2592 checks**, 0 failed |
+| after `9a38bb2` | **53 suites, 2619 checks**, 0 failed, 52.8s |
+| isolation | exit 0 throughout |
+
+Decisions settled pre-dispatch: auto-trigger default ON across `review --fix`
+plus `glossary replace/set/merge/retire`; advisory by default with `--strict` to
+propagate; `--no-verify` opt-out; FAITH investigation gated by a free
+deterministic stage-1 pre-filter.
+
+### The divergence, and a false claim in a docstring
+
+The implementation shipped refusing to flip chapter status. Its docstring gave
+two reasons; the second was **factually false**: that a scoped cascade would
+overwrite the whole-book `verify.jsonl`. Orchestrator verified independently
+that `verify_project()` never writes the JSONL — only the whole-book
+`cmd_verify` does, at `translate.py:1109`. A scoped call structurally cannot
+clobber it.
+
+The audit found a **third option neither the orchestrator nor the implementer
+considered**: flip on stage-2 confirmation, report through the already-separate
+`verify_cascade` trace event, and leave `--strict` governing only the exit code.
+The orchestrator had collapsed "flip" and "exit code" into one decision in its
+brief; they are separable, and separating them satisfies D3a decision 3 and
+D3b decision 2 simultaneously. The maintainer chose it.
+
+The false claim was removed from the docstring **and every mirror**, replaced
+with the true statement. Verified: no surviving occurrence outside an unrelated
+v010 chapter-rename passage.
+
+Both paths now call a **shared `_flip_confirmed` helper** rather than
+reimplementing the flip, so `verify` and the cascade cannot diverge. The cascade
+does not even load the manifest unless something was confirmed, because
+`_load_manifest` raises and a glossary verb does not otherwise require it.
+
+### F3 — drift rows included, on evidence
+
+The pre-filter used `balance.underused`, which drops `drift` rows. The
+implementer checked and found the decisive fact: **`balance.check()` already
+feeds drift signals to the FAITH reviewer as a correction instruction** — "must
+be rendered verbatim, you rendered it 0 times". An all-drift rejection is
+therefore a chapter just instructed to do the opposite of what over-binding
+would require, and the investigation is the only thing that can unblock it.
+Added `balance.drifted()` as a sibling sharing `classify()`, scoped **only** to
+`investigate_faith`; a whole-book scan stays on under-used rows deliberately.
+
+### F4 — the end-to-end test is mutation-proven
+
+The FAITH wiring had been tested by signature introspection, which cannot catch
+a miswire. Replaced with a test that drives a real rejection through
+`run_chapter` asserting on the **prompt** the investigation sent. Proven able
+to fail:
+
+| Mutation | Result |
+|---|---|
+| inverted `verify_on_faith` condition | **5 failures**, incl. the `--no-verify` direction |
+| swapped source/translation arguments | **3 failures** |
+
+Both reverted. This is the direct answer to D3a's lesson — the previous phase
+shipped a no-op behind green tests, and the new test was made to fail on purpose
+before being trusted.
