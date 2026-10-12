@@ -740,3 +740,28 @@ phase promises to preserve.
 No migration: no config key, and `assets/dashboard/` is not `assets/templates/`.
 Confirmed `test_template_assets.py` globs `templates_dir.glob("*.md")` against
 `assets/templates` specifically, not `assets/**`.
+
+### D4 audit round — verdict `goal_holds: true`, 4 low findings
+
+Both decisions honoured, and the audit **proved** rather than asserted them:
+
+- **Self-containment**: rendered a real 32,487-byte page; zero hits for `<link`,
+  `script src=`, `iframe`, `@import`, `url(http`, `fetch(`, `xmlhttprequest`.
+- **The data contract is actually tested**: monkey-patched `_write_json` to drop
+  `tokens_by_model` and `calls`, and the **first** `json_of()` consumer raised
+  `KeyError`. This is the question that matters — a data contract nobody can
+  fail is decoration — and it is pinned.
+- Comment ban honored (0 added `#` lines); no config/template change, so no
+  migration.
+
+Four low findings, all documentation accuracy plus one untested edge:
+`file-formats.md:1789` lists 12 chapter sub-keys where the JSON emits 18;
+`:1798` documents a `usage` key the collector splits into
+`prompt_tok`/`completion_tok`/`reasoning_tok`; `:1673`'s writer list omits
+`verify` (**pre-existing drift, not introduced here**); and the
+missing-`assets/dashboard/` failure mode is untested — reproduced by moving the
+directory aside, yielding one `[warn]`, `None` returned, and neither artifact
+written.
+
+These are exactly the repo's documented rot mode, so they fold into **D5**, whose
+subject is documentation drift, rather than getting their own round.
