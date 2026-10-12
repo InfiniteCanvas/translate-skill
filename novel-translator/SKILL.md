@@ -843,7 +843,8 @@ background build too. Builds produce no git commits — `export/`,
   chapter's model IO, `--list` to enumerate runs, `--json` for a clean
   stream, `--report [--io]` to regenerate a report with model bodies. A
   whole-project dashboard is written to `logs/report.html` at the end of every
-  run and rebuildable with `uv run "$SCRIPT" logs --html`; prefer it when the question is about the
+  run and rebuildable with `uv run "$SCRIPT" logs --html`, alongside its data
+  contract `logs/report.json`; prefer the page when the question is about the
   project as a whole — which chapters are slow, where the tokens went, what is
   unclosed, what each model actually returned — and read the page rather than the JSONL. Read
   this when the user asks why a chapter failed, what a model actually

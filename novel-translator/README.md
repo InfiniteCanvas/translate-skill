@@ -1018,7 +1018,14 @@ ledger** covering every model call of every chapter's latest run. Clicking a
 call expands its prompt and its parsed response (a source-vs-translation
 side-by-side for translation, tables for glossary terms and notes, a badge for
 a review verdict). Bodies are always embedded and uncapped. No network
-requests, no CDN.
+requests, no CDN, and no external reference of any kind — the stylesheet and
+script live in the skill's `assets/dashboard/` and are inlined at render time,
+so one report file can be archived or emailed on its own.
+
+The same write also drops **`logs/report.json`**: the data behind the page, in
+the same shape, so two runs can be diffed without opening either page. Both
+files are derived and gitignored — delete either and the next dashboard run
+rebuilds it.
 
 ### Reading the logs
 

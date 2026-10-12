@@ -38,6 +38,7 @@ drift comparison.
 └── logs/                two-tier trace (see § Two-tier trace logs)
     ├── run-<run_id>.jsonl      tier 1: this invocation's orchestration timeline
     ├── report.html             project-wide HTML dashboard (see § report.html)
+    ├── report.json             the same dashboard's collected data (see § report.html)
     ├── project/
     │   ├── run-<run_id>.jsonl  tier 2: chapter-less model IO (profile, review)
     │   └── index.jsonl         append-only open/close markers for this invocation
@@ -1651,7 +1652,7 @@ already filesystem-safe.
 Any event name not in the tier-2 set defaults to **tier 1**, so an unknown or
 misspelled name can never leak model text into a chapter's file.
 
-### `index.jsonl`, `report.md` and `report.html`
+### `index.jsonl`, `report.md`, `report.html` and `report.json`
 
 `index.jsonl` (one per bucket) is **append-only and never pruned**, and is
 written unconditionally of both gates: an `open` line with no matching `close`
@@ -1672,7 +1673,8 @@ project scale: every retained log assembled into one self-contained page. Two
 writers — `_run_end` refreshes it after every `translate`/`retry`/`tn`/
 `review`/`profile` run, and `translate logs --html` writes it on demand; the
 latter is the path that matters after an interrupt, since `main()` hard-exits
-without reaching `_run_end`.
+without reaching `_run_end`. Either writer also emits `logs/report.json`, the
+same run's collected data.
 
 Its spine is the chapter `index.jsonl` close lines, **not** tier 1, because
 `index.jsonl` is never pruned while tier 1 keeps only `log_llm_keep_runs`
@@ -1769,6 +1771,49 @@ escape, so the substitution is lossless — a body holding a literal closing tag
 round-trips byte-identical. Note that Python's `html.unescape` is **not** a
 faithful stand-in for the browser here: simulating with it passes green for the
 broken encoding, which is how the defect survives review.
+
+#### `logs/report.json` (the dashboard's data contract)
+
+One `collect()` feeds both artifacts, so they cannot disagree. The JSON is
+written on **every** dashboard run — both writers, the automatic `_run_end`
+refresh and `translate logs --html` — with no flag to suppress it, and it is the
+shape `logdashboard.collect()` returns, so the page is a *view* of the file
+rather than a separate interpretation of the logs. It is derived and lives
+under the gitignored `logs/`: delete it and the next dashboard run rebuilds it.
+
+Top level, exactly these keys:
+
+| key | type | what it holds |
+|---|---|---|
+| `meta` | object | project title/config plus `generated_at` and `project_dir` |
+| `chapters` | array | one object per chapter bucket: `stem`, `number`, `runs`, `stage_spans`, `gates`, `calls_detail`, `epub`, `outcome`, `closed`, `elapsed_s`, `in_manifest`, `call_source` |
+| `runs` | array | project-bucket runs with no chapter of their own |
+| `tokens_by_job`, `tokens_by_model`, `calls_by_job` | object | the roll-ups the page's bars and roster read |
+| `total_calls`, `total_tokens`, `bodies_available`, `chapterless_tokens` | integer | page totals, each with its source named below |
+| `token_source`, `call_source` | string | which tier the totals came from — never silently changed |
+| `elapsed_total`, `elapsed_max` | number \| null | wall-clock, `null` when nothing was measured |
+| `outcomes` | object | outcome → chapter count |
+| `unclosed` | array | `"<stem> / <run_id>"` for every open with no close |
+| `gaps` | array | every absence the page declares rather than rendering as zero |
+| `calls` | array | the call ledger: one record per model call, each with `shape`, `parsed`, `body`, `prompt`, `paired`, `candidate`/`candidates`, `consensus_for`, `url`, `usage` |
+| `unpaired_events` | array | `result`/`chunk` rows, which carry no `call_id` |
+| `has_tier1` | boolean | whether the orchestration tier was available |
+
+It is serialised with `ensure_ascii=False, indent=2`, `default=str` for the
+handful of non-JSON values, and `newline="\n"` so the bytes are identical on
+every platform and a diff between two runs is meaningful. A write that fails
+prints one `[warn] html dashboard data not written` and **does not** fail the
+page: the page is what the caller reports on, so a missing derived file must
+never turn a good page into "not written".
+
+The page's stylesheet and script are real files in the skill's
+`assets/dashboard/` (`report.css`, `report.js`) and are **inlined** by
+`render()`. That is the whole point of the split — a linter or formatter can
+see them — and it is why the output contract is unchanged: there is still no
+`<link>` and no `<script src>`, so one `report.html` remains portable enough to
+archive or email by itself. `assets/dashboard/` is **not** `assets/templates/`
+and is not part of the `.history.json` template-customisation contract, so
+neither the migration rule nor the template-hash invariant applies to it.
 
 ### Gates
 

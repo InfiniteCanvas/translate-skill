@@ -52,7 +52,14 @@ actually carried a body in a `<details>` block.
 retained log in one self-contained page — a per-chapter ledger of stage
 durations tinted by outcome, token spend per job and per model, gate verdicts,
 the unclosed-run crash signal, the epub build history, and a **call ledger**
-listing every model call of every chapter's latest run. It is handled
+listing every model call of every chapter's latest run. The same write also
+emits **`logs/report.json`**, the `collect()` output behind the page: the
+diffable data contract, so two runs can be compared without opening either
+page. Both are derived and gitignored; delete either and the next dashboard
+run rebuilds it. The page carries its stylesheet and script inline (from
+`assets/dashboard/report.css` and `assets/dashboard/report.js` in the skill), so
+a single report can be archived or emailed on its own — it makes no external
+reference and no network request. It is handled
 *before* run selection, so it writes a page even when this invocation has no
 events to print, and it always covers the **whole project** — a SPEC does not
 narrow it. `_run_end` refreshes the same file after every `translate`/`retry`/

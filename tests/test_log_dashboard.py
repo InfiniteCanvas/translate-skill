@@ -36,6 +36,14 @@ Hermetic sandboxes under tempfile.TemporaryDirectory(). Self-contained
 PASS/FAIL script (no pytest). Run from anywhere:
 
     uv run tests/test_log_dashboard.py
+
+Two artifacts leave one collect(), and this suite reads the data one OFF DISK:
+logs/report.json is the contract, asserted through json_of() throughout, so a
+field that exists only in the returned dict cannot pass as a contract. The
+page's CSS and JS ship as files under assets/dashboard/ and are inlined at
+render time, so the page stays self-contained; case 28 pins that, because an
+external <link> or <script src> would be a regression dressed as an
+extraction.
 """
 
 # /// script
@@ -191,6 +199,20 @@ def html_of(root: Path) -> str:
     return logdashboard.render(logdashboard.collect(root))
 
 
+def json_of(root: Path) -> dict:
+    """logs/report.json as shipped, read back off disk.
+
+    Every data-contract assertion in this file goes through here rather than
+    through collect()'s return value, because the artifact on disk is the
+    contract: it is what a diff between two runs compares and what a future
+    visualization would read. A field that only exists in the returned dict is
+    not a contract.
+    """
+    logdashboard.write_dashboard(root)
+    return json.loads(
+        (root / "logs" / "report.json").read_text(encoding="utf-8"))
+
+
 def blob_of(text: str) -> list[dict]:
     """The records the browser will see, read back the way a browser does.
 
@@ -271,7 +293,7 @@ def case_1_primary_path() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         seed_tier1(root)
-        data = logdashboard.collect(root)
+        data = json_of(root)
         text = logdashboard.render(data)
 
         chapter = data["chapters"][0]
@@ -350,7 +372,7 @@ def case_2_escaping() -> None:
               .get("parsed") == {"verdict": "SUCCESS", "reasons": []}, "")
 
         expected = json.dumps(logdashboard._ledger_blob(
-            logdashboard.collect(root)), ensure_ascii=False,
+            json_of(root)), ensure_ascii=False,
             default=str).replace("<", "\\u003c")
         check("2g blob: the emitted blob is the documented encoding",
               blob_text == expected, "")
@@ -396,7 +418,7 @@ def case_4_no_invented_numbers() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         seed_tier1(root)
-        data = logdashboard.collect(root)
+        data = json_of(root)
         check("4a numbers: the failed call still counts as a call",
               data["total_calls"] == 3, f"{data['total_calls']}")
         check("4b numbers: the source of the total is named",
@@ -448,7 +470,7 @@ def case_6_retry_spans_sum() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         seed_tier1(root, retry_stage=True)
-        spans = logdashboard.collect(root)["chapters"][0]["stage_spans"]
+        spans = json_of(root)["chapters"][0]["stage_spans"]
         translate = [s for s in spans if s["stage"] == "TRANSLATE"]
         check("6a retry: both attempts are kept",
               len(translate) == 2, f"{len(translate)}")
@@ -468,7 +490,7 @@ def case_7_ordering_and_legacy() -> None:
                  "phase": "open", "command": "translate", "file": f"{stem}.md",
                  "number": int(stem.split("_")[1])},
             ])
-        stems = [c["stem"] for c in logdashboard.collect(root)["chapters"]]
+        stems = [c["stem"] for c in json_of(root)["chapters"]]
         check("7a order: numeric, not lexicographic",
               stems[0] == "CHAPTER_0007" and stems[1] == "CHAPTER_0100",
               f"{stems}")
@@ -509,7 +531,7 @@ def case_8_unclosed_and_multi_run() -> None:
              "phase": "open", "command": "translate", "file": "CHAPTER_0009.md",
              "number": 9},
         ])
-        data = logdashboard.collect(root)
+        data = json_of(root)
         by_stem = {c["stem"]: c for c in data["chapters"]}
 
         check("8a unclosed: an open with no close is kept",
@@ -585,13 +607,13 @@ def case_10_epub_join() -> None:
             "\n=== epub build after CHAPTER_0001.md | 2026-01-01T01:00:00 ===\n"
             "[warn] failed writing /home/someone/secret/book.epub\n",
             encoding="utf-8")
-        chapters = logdashboard.collect(root)["chapters"]
+        chapters = json_of(root)["chapters"]
         epub = chapters[0]["epub"]
         check("10a epub: a differently-cased bucket still joins",
               epub is not None, f"{epub}")
         check("10b epub: the latest block wins",
               epub["ok"] is False, f"{epub}")
-        text = logdashboard.render(logdashboard.collect(root))
+        text = logdashboard.render(json_of(root))
         check("10c epub: the maintainer's home path is not republished",
               "/home/someone" not in text, "")
 
@@ -611,7 +633,7 @@ def case_11_torn_tail() -> None:
             "[ok] epub: /home/x/b.epub\n"
             "=== epub build after CHAPTER_0",
             encoding="utf-8")
-        data = logdashboard.collect(root)
+        data = json_of(root)
         check("11a torn: the page still renders",
               "<html" in logdashboard.render(data), "")
         check("11b torn: the torn tail is reported",
@@ -765,7 +787,7 @@ def case_16_tier2_is_the_call_source() -> None:
                                      "completion_tokens": 50},
              "elapsed_s": 12.0, "finish_reason": "stop"},
         ])
-        data = logdashboard.collect(root)
+        data = json_of(root)
         calls = data["calls"]
         models = {c["model"] for c in calls}
         check("16a tier2: the chapter's tier-2 calls are used",
@@ -800,7 +822,7 @@ def case_16_tier2_is_the_call_source() -> None:
 
         no_llm = Path(td) / "off"
         seed_tier1(no_llm)
-        data_off = logdashboard.collect(no_llm)
+        data_off = json_of(no_llm)
         check("16i tier2: tier 1 answers when there is no tier-2 call record",
               data_off["call_source"] == "per-call rows (tier 1)",
               data_off["call_source"])
@@ -855,7 +877,7 @@ def case_17_shape_dispatch() -> None:
                   "body": body}
                  for n, (_want, body, job, cand) in enumerate(cases)]
         seed_calls(root, "CHAPTER_0001", RID, calls)
-        data = logdashboard.collect(root)
+        data = json_of(root)
         got = [c["shape"] for c in data["calls"]]
         want = [c[0] for c in cases]
         check("17a shape: every registry entry dispatches correctly",
@@ -931,7 +953,7 @@ def case_18_latest_run_agrees_with_the_ledger() -> None:
              "usage": {"prompt_tokens": 20, "completion_tokens": 20},
              "elapsed_s": 2.0, "finish_reason": "stop"},
         ])
-        data = logdashboard.collect(root)
+        data = json_of(root)
         chapter = data["chapters"][0]
         ids = [c["call_id"] for c in data["calls"]]
         check("18a run: the ledger uses the newest run, not the last close",
@@ -975,7 +997,7 @@ def case_19_fallback_and_unpaired() -> None:
             {"ts": "2026-01-01T03:03:00.000+00:00", "run_id": rid,
              "event": "chunk", "chapter": "CHAPTER_0001.md", "n": 1},
         ])
-        data = logdashboard.collect(root)
+        data = json_of(root)
         check("19a unpaired: a request with no response is kept",
               [c["call_id"] for c in data["calls"]] == ["ORPHAN"], "")
         check("19b unpaired: and flagged as unpaired",
@@ -1000,7 +1022,7 @@ def case_19_fallback_and_unpaired() -> None:
              "phase": "open", "command": "translate", "file": "CHAPTER_0002.md",
              "number": 2},
         ])
-        data2 = logdashboard.collect(gone)
+        data2 = json_of(gone)
         check("19g fallback: a run with no body is handled, not fatal",
               data2["calls"] == [], "")
         check("19h fallback: the chapter still renders",
@@ -1042,7 +1064,7 @@ def case_20_fanout_width() -> None:
             seed_calls(root, f"CHAPTER_00{label[-1]}x" if False else
                        f"CHAPTER_{int(label[1]) + 10:04d}", RID, calls)
 
-        data = logdashboard.collect(root)
+        data = json_of(root)
         records = logdashboard._ledger_blob(data)
         by_chapter: dict[str, list[dict]] = {}
         for r in records:
@@ -1079,7 +1101,7 @@ def case_20_fanout_width() -> None:
              "candidate": 1, "candidates": 2,
              "body": json.dumps({"verdict": "SUCCESS", "reasons": []})},
         ])
-        rec = logdashboard._ledger_blob(logdashboard.collect(rev))
+        rec = logdashboard._ledger_blob(json_of(rev))
         models = {(r["task"], r.get("candidate")): r["model"] for r in rec}
         check("20y fanout: position 1 is a different model per job",
               models.get(("translator", 1)) == "AAA"
@@ -1195,7 +1217,7 @@ def case_23_no_chapter_claims_a_cause_it_cannot_know() -> None:
              "stages": 5, "calls": 7, "tokens": {"translator": 900},
              "elapsed_s": 240.0},
         ])
-        data_bare = logdashboard.collect(bare)
+        data_bare = json_of(bare)
         empty_ch = [c for c in data_bare["chapters"] if c["stem"] == "CHAPTER_0002"]
         check("23c0 honesty: the fixture really is call-less",
               empty_ch and empty_ch[0]["calls_detail"] == [], "")
@@ -1364,6 +1386,119 @@ def case_26_ledger_shows_the_provider() -> None:
               text.count('colspan="9"') == 2, "")
 
 
+def case_27_report_json_is_the_data_contract() -> None:
+    """logs/report.json is written on EVERY dashboard run, from the same collect
+    that built the page.
+
+    It is the diffable artifact: two runs of the same project differ in a
+    handful of fields, and this file makes that difference readable without
+    opening either page. It is derived and gitignored, so nothing depends on it
+    surviving; that is exactly why it can be regenerated unconditionally on the
+    automatic refresh path too.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        seed_tier1(root)
+        check("27a json: write_dashboard writes it",
+              logdashboard.write_dashboard(root)
+              == root / "logs" / "report.html", "")
+        payload = root / "logs" / "report.json"
+        check("27b json: the artifact exists", payload.is_file(), "")
+        raw = payload.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        live = logdashboard.collect(root)
+        check("27c json: it is collect()'s output, not a subset",
+              set(data) == set(live),
+              f"{sorted(set(data) ^ set(live))}")
+        stamp = data["meta"]["generated_at"]
+        check("27d json: it round-trips the collected values",
+              all(data[k] == live[k] for k in data if k != "meta")
+              and data["meta"]["project_dir"] == live["meta"]["project_dir"]
+              and stamp == live["meta"]["generated_at"], "")
+        check("27e json: the whole thing is serialisable as shipped",
+              isinstance(data["chapters"], list)
+              and isinstance(data["calls"], list)
+              and isinstance(data["tokens_by_model"], dict)
+              and isinstance(data["has_tier1"], bool), "")
+        check("27f json: non-ASCII survives instead of being escaped",
+              raw.isascii() is False or "原文" not in raw, "")
+        check("27g json: it is written with LF, so a diff is stable",
+              "\r\n" not in raw, "")
+        page = (root / "logs" / "report.html").read_text(encoding="utf-8")
+        check("27h json: the page and the data come from ONE collection",
+              stamp in page, stamp)
+
+        refresh_only = Path(td) / "auto"
+        seed_no_tier1(refresh_only)
+        logdashboard.refresh(refresh_only)
+        check("27i json: the automatic refresh writes it too",
+              (refresh_only / "logs" / "report.json").is_file(), "")
+        check("27j json: and it is the honest degraded dataset",
+              json.loads((refresh_only / "logs" / "report.json")
+                         .read_text(encoding="utf-8"))["has_tier1"] is False, "")
+
+        held = Path(td) / "held"
+        seed_tier1(held)
+        target = held / "logs" / "report.json"
+        target.mkdir(parents=True)
+        check("27k json: an unwritable data file does not fail the page",
+              logdashboard.write_dashboard(held) is not None, "")
+        check("27l json: and the page is still there",
+              (held / "logs" / "report.html").is_file(), "")
+        target.rmdir()
+
+
+def case_28_styles_and_script_are_real_files() -> None:
+    """The CSS and the JS ship as files a linter can see, and the page still
+    carries them inline.
+
+    Extraction is only worth doing if the output contract survives it. It did:
+    report.html remains ONE portable file, so an archived or emailed report
+    renders styled with its ledger working. An external <link> or
+    <script src> would be a regression, not an improvement.
+    """
+    assets = (Path(logdashboard.__file__).resolve().parent.parent.parent
+              / "assets" / "dashboard")
+    check("28a assets: the dashboard assets directory is where it is declared",
+          assets == logdashboard.DASHBOARD_DIR,
+          f"{assets} vs {logdashboard.DASHBOARD_DIR}")
+    for name in ("report.css", "report.js"):
+        path = assets / name
+        check(f"28 assets: {name} is a real file with real content",
+              path.is_file() and path.stat().st_size > 1000,
+              f"{path}")
+
+    check("28b assets: the literals are gone from the module",
+          not hasattr(logdashboard, "_CSS")
+          and not hasattr(logdashboard, "_LEDGER_JS"), "")
+    source = Path(logdashboard.__file__).read_text(encoding="utf-8")
+    check("28c assets: and gone from its source text too",
+          '_CSS = """' not in source and "_LEDGER_JS = r\"\"\"" not in source, "")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        seed_calls(root, "CHAPTER_0001", RID, [
+            {"call_id": "ast001", "job": "translator", "model": "model-a",
+             "body": json.dumps({"verdict": "SUCCESS", "reasons": []})},
+        ])
+        text = html_of(root)
+        css = (assets / "report.css").read_text(encoding="utf-8")
+        js = (assets / "report.js").read_text(encoding="utf-8")
+        style = text[text.index("<style>") + len("<style>"):text.index("</style>")]
+        check("28d assets: the <style> block IS report.css, verbatim",
+              style == css, f"{len(style)} vs {len(css)}")
+        check("28e assets: the ledger <script> IS report.js, verbatim",
+              js in text and text.count(js) == 1, "")
+        low = text.lower()
+        check("28f assets: nothing is linked or loaded from outside",
+              "<link" not in low and "script src=" not in low
+              and "@import" not in low and "url(http" not in low, "")
+        check("28g assets: the ledger script still runs on its own",
+              "var BODIES" in text and "openCall" in text, "")
+        check("28h assets: the inlined CSS still carries the theme",
+              "--cinnabar" in style and ".lrow" in style, "")
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in (
             "utf-8", "utf8"):
@@ -1383,7 +1518,9 @@ def main() -> int:
                  case_23_no_chapter_claims_a_cause_it_cannot_know,
                  case_24_whole_row_click_guards,
                  case_25_no_double_escaped_entity,
-                 case_26_ledger_shows_the_provider):
+                 case_26_ledger_shows_the_provider,
+                 case_27_report_json_is_the_data_contract,
+                 case_28_styles_and_script_are_real_files):
         case()
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     return 1 if FAILED else 0
