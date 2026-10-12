@@ -1927,7 +1927,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_sync)
 
     p = sub.add_parser("sync-config", parents=[common], allow_abbrev=False,
-                       help="merge the skill's config.local.json into this project's config.json")
+                       help="report how this project's config resolves across its "
+                            "three layers (writes nothing)")
     p.set_defaults(func=cmd_sync_config)
 
     p = sub.add_parser("translate", parents=[common], allow_abbrev=False,

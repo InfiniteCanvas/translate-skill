@@ -33,11 +33,20 @@ migration-count claim is corrected. Every change traces to an audit finding.
 > leftover and the skill's copy is used instead. `style.md` is a chosen project
 > data shape, not an overlay, and is out of scope.
 >
-> **Every one of the six jobs in `config.CONSENSUS_JOBS` — `translator`,
-> `glossary`, `reviewer`, `annotator`, `recap`, `profile` — that fans out (two
+> **Every job in `config.CONSENSUS_JOBS` — at rev 1, `translator`, `glossary`,
+> `reviewer`, `annotator`, `recap`, `profile` — that fans out (two
 > or more provider blocks) resolves its own arbitration template
 > `consensus_<job>.md`, falling back to the general `consensus.md`.** A job with
 > a single block makes one call and loads no template, unchanged.
+>
+> **Recorded deviation (P4, 2026-10-12).** This clause was pinned when the six
+> jobs above were all of `CONSENSUS_JOBS`. D3a added a seventh — `verify` — and
+> shipped `consensus_verify.md` for it, so the goal is restated in terms of the
+> tuple rather than a count. The mechanism is unchanged and holds for the new
+> member; only the enumeration was out of date. The P4 audit confirmed
+> `CONSENSUS_JOBS` is *derived* (`config.py:23` filters `PROVIDER_JOBS`), so it
+> cannot drift from the job list again — the prose could, which is why every
+> mirror now says "every job in `CONSENSUS_JOBS`" instead of a number.
 >
 > A change to a shipped default or shipped prompt reaches every project on its
 > next run **without a migration**; exactly one migration (the D1/D2 transition

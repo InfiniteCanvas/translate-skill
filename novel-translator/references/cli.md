@@ -60,7 +60,7 @@ does not, and both resolve the same directory.
 | `status` | show per-chapter pipeline status |
 | `styles` | list available translation style presets |
 | `sync` | re-scan source/ for new or removed chapters and rebuild the manifest |
-| `sync-config` | merge the skill's config.local.json into this project's config.json |
+| `sync-config` | report how this project's config resolves across its three layers (writes nothing) |
 | `tn` | re-evaluate translator's notes on already-translated chapters (writes the notes/ sidecar) |
 | `translate` | run the translation pipeline on chapters |
 | `util` | maintenance utilities (replace: rewrite a term across translated chapters) |
@@ -366,7 +366,7 @@ re-scan source/ for new or removed chapters and rebuild the manifest
 
 ### `sync-config`
 
-merge the skill's config.local.json into this project's config.json
+report how this project's config resolves across its three layers (writes nothing)
 
     translate.py sync-config [--project PROJECT]
 

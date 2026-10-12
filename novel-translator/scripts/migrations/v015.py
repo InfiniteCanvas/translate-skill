@@ -74,7 +74,7 @@ added later (v018 added `verify`), so a config whose translator fans out would
 have been told that fewer jobs merge than really do, and the
 `providers.consensus_<job>` key the report advertises would have been
 documented for a subset of the jobs that accept it. Deriving it keeps the
-report honest across schema additions; the step's behaviour for the six jobs it
+report honest across schema additions; the step's behaviour for the jobs it
 shipped with is unchanged."""
 
 _LIMIT_KEY = "max_tokens_limit"

@@ -613,10 +613,10 @@ background build too. Builds produce no git commits — `export/`,
   *that* job — line-indexed structure and pinned terminology for a
   translation, evidence for a glossary entry, being grounded in the reviewed
   text for a finding. The general `consensus.md` is reached only for a job the
-  skill ships no `consensus_<job>.md` for; it ships one for all six, so a
-  project's own `consensus.md` is not consulted for any of them, while a
-  project's own `consensus_<job>.md` wins for its job. A single-block job loads
-  no template at all.
+  skill ships no `consensus_<job>.md` for; it ships one for every job in
+  `CONSENSUS_JOBS`, so a project's own `consensus.md` is not consulted for any
+  of them, while a project's own `consensus_<job>.md` wins for its job. A
+  single-block job loads no template at all.
 - **Upgrading projects (`migrate`)**: `uv run "$SCRIPT" migrate --project .
   [--dry-run] [--force]` upgrades an existing project to the current
   skill version — non-destructive, re-runnable, and it never resets

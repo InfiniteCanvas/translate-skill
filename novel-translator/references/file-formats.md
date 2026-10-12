@@ -409,8 +409,8 @@ stamp; `init` copies no defaults and no overlay values into it.
   - Authorship is read from the **raw** file, never the normalized one —
     `_normalize_providers` materializes `consensus` for every config, so the
     loaded dict cannot tell authored from derived. The fan-out list IS computed
-    on the normalized dict, which is why it names all six jobs even when the
-    file spells out only `translator`.
+    on the normalized dict, which is why it names every `CONSENSUS_JOBS` member
+    even when the file spells out only `translator`.
   - A `consensus_<job>` key does **not** substitute for the global: with one
     authored and no `consensus`, the load is still refused.
   - **The `consensus` <- `translator[0]` derivation is no longer reachable
@@ -1361,7 +1361,8 @@ merge with — that choice IS what this step enables. It adds no key to `DEFAULT
 or `PROVIDER_DEFAULTS`, so there is nothing to materialize; the change lives
 entirely inside `providers`, like v008's, and is authoritative by v008's
 precedent. Materializing the new keys was explicitly rejected: a config would
-carry six dead blocks duplicating the global arbitrator's `base_url` and auth,
+carry a dead block per job duplicating the global arbitrator's `base_url` and
+auth,
 and changing the global later would leave stale copies silently winning for
 the jobs that had them. What it reports is the one fact the operator cannot see
 without reading the file — which arbitrator each fan-out job will merge through,

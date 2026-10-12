@@ -850,3 +850,114 @@ with no test logic touched. Noted for the record, no action.
 No blocking and no major findings. No migration required: D5 touches no
 `DEFAULTS`/`PROVIDER_DEFAULTS` key and no `assets/templates/` file, and the head
 stays `v018`.
+---
+
+## P4 final whole-campaign audit — `merge_ready: false`, one real cross-phase defect caught
+
+Verdict **before** fixes: `merge_ready: false`, `goal_holds: true`.
+Gate observed live: **54 suites / 2672 checks / 0 failed**. Isolation exit 0.
+
+This round read the whole `913dc01..18afd91` diff rather than one phase's slice.
+That mattered: the defect it found was **invisible to every per-phase round**,
+because it only exists when D1 and D5 are read together.
+
+### F1 — `sync-config` help string lied about behavior — MEDIUM, fixed
+
+`translate.py:1930` carried `help="merge the skill's config.local.json into this
+project's config.json"` while `cmd_sync_config` (`:526-540`) had been made
+**report-only** by D1 — its own docstring says "this command writes nothing", and
+it never calls the removed `apply_overlay`.
+
+D5 then did exactly its job and made it worse: `gen_cli_doc.py` regenerated
+`cli.md` faithfully from the stale `help=`, so the lie was published in two
+more places (`cli.md:63` summary table, `cli.md:369` detail section). The drift
+test passed throughout, because it pins **parser↔doc** and both sides shared the
+same wrong input. It cannot catch parser↔runtime drift; nothing here claimed it
+would.
+
+This is the D1↔D5 boundary defect the campaign's structure predicted. D1's own
+round saw the body change and had no reason to distrust the untouched help
+string; D5's round only ever compared a document to its own source.
+
+Fixed: `help=` now reads "report how this project's config resolves across its
+three layers (writes nothing)", and `cli.md` regenerated (22,643 → 22,673 B).
+
+### F2 — the "six jobs" count, in four live places — LOW, fixed by de-numbering
+
+`CONSENSUS_JOBS` is **derived** (`config.py:23` filters `PROVIDER_JOBS`), so the
+tuple cannot drift again — D3a's added `verify` job makes it seven and every
+consumer followed automatically. Only the *prose* rotted. Four live sites:
+
+- `SKILL.md:616` "it ships one for all six"
+- `file-formats.md:412` "names all six jobs"
+- `file-formats.md:1364` "six dead blocks"
+- `migrations/v015.py:77` — **a shipped code docstring**, "the step's behaviour
+  for the six jobs it shipped with", sitting three lines below its own
+  explanation that v018 added `verify` and the list must stay derived
+
+The audit reported the first three; the `v015.py` docstring was found by the
+orchestrator's own grep and is the one that mattered most, since docstrings are
+read as API per `AGENTS.md`.
+
+All four now say **"every job in `CONSENSUS_JOBS`"** rather than a number.
+Writing "seven" would have been correct today and stale at the next job; the
+count is not the point, the rule is.
+
+The plan's **pinned goal** itself (`:36`) enumerated the six and is
+round-invariant, so it was amended with a **recorded deviation** per
+`verification-loop.md` §P3 step 6 — the mechanism is unchanged and holds for the
+seventh member; only the enumeration was out of date.
+
+Two occurrences of "six" are **correct as written** and were left alone:
+`errors.py:17` and `AUDIT-2026-10-07-fatal-retries.md:52` mean six *stage
+guards* in `pipeline.py`, an unrelated quantity.
+
+### Orchestrator process note
+
+A first grep for the stale count returned `config.py:206-207` and
+`test_migrate.py:1770-1771` as live hard-codes. They were not: the grep had no
+`path` argument and defaulted to the **workspace main tree at `913dc01`**, which
+predates `verify`. Re-run against the worktree, both were already fixed during
+D3a ("every CONSENSUS_JOBS member here", and `test_migrate.py` passes 223/223).
+Recording it because the same defaulting error would have produced two phantom
+findings, and because "the main tree is the workspace" is a standing trap in a
+two-tree loop.
+
+### Verified clean by this round
+
+- **Load-bearing claim, tested for real** in a `%TEMP%` scratch copy: a
+  `DEFAULTS` change in `lib/config.py` reached a project with no `migrate` run,
+  and a byte-equal project template fell through to a mutated shipped copy while
+  a customized one won. 3/3, both repos untouched.
+- **Migration chain**: `chain()` → `[1..18]`, `current_version()` → 18, every
+  `VERSION` matches its filename, and every `DESCRIPTION` matches what the step
+  does — the defect class this repo has been bitten by before.
+- **`.history.json` vs D3a's new templates**: `consensus_verify.md` and
+  `glossary_verify.md` are both tracked, and `test_template_assets.py` enumerates
+  shipped templates from the directory, so a future template is checked without
+  touching the test.
+- **Provider-routing hard constraint**: no model demoted, no provider array
+  narrowed, no `max_tokens` trimmed anywhere in the diff. Every
+  `PROVIDER_DEFAULTS.max_tokens` is still `DEFAULT_MAX_TOKENS = 65536`, every
+  `model` still `None`, and the shipped example overlays are byte-identical to
+  `913dc01`.
+- **Comment ban**: 0 prose `#` in `scripts/**` and `tests/**` under a
+  string-aware tokenizer; the apparent hits are markdown inside string constants.
+
+### Drift test re-proved after the fix
+
+Changing the `sync-config` `help=` without regenerating:
+
+```
+STALE cli.md -> exit 1
+FAIL  1b cli.md matches the parser byte for byte  [committed=22643B generated=22673B;
+      run 'uv run novel-translator/scripts/gen_cli_doc.py']
+FAIL  4c the parser is restored and the committed file still matches
+20 passed, 2 failed
+RESTORED -> exit 0 | 22 passed, 0 failed
+```
+
+The generator, the committed file and the test moved together, which is the
+behaviour D5 was bought for.
+
+Gate after all fixes: **54 suites / 2672 checks / 0 failed**.
