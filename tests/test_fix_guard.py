@@ -949,7 +949,7 @@ def case_14_subprocess_timeout() -> None:
               result["specs_run"] == 1, f"result={result}")
         check("14c timeout: exact line",
               out == "[review fix] command timed out after 1800s: glossary "
-                     "retire --source '灵根'\n",
+                     "retire --source '灵根' --no-verify\n",
               f"out={out!r}")
         check("14d timeout: child got timeout=1800, stdin=DEVNULL, "
               "GIT_TERMINAL_PROMPT=0 in an inherited env",

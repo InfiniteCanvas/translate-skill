@@ -939,7 +939,9 @@ def case_14_set_unit_guide_only_warn() -> None:
               exc is None and code == 0, f"code={code} exc={exc!r}")
         check("14c set unit: the change line then the exact guide-only warn",
               out == "[glossary] set '灵根': category 'item' -> 'unit'\n"
-                     + warn + "\n",
+                     + warn + "\n"
+                     + "[verify] cascade check after glossary set: '灵根' occurs "
+                       "in no chapter - nothing to re-check\n",
               f"out={out!r}")
         check("14d set unit: the category landed on disk",
               glossary.load(proj)["terms"][0].get("category") == "unit", "")

@@ -343,7 +343,7 @@ def case_8_llmfatal_is_never_absorbed_by_a_stage_guard() -> None:
     dead API key into a whole batch of needs-review chapters and a misleading
     exit 1. The stage guards do that for free because LLMFatal is also a
     PipelineError; this asserts the batch loop's own guard is what does it."""
-    def _boom(project_dir, file, cfg, force=False):
+    def _boom(project_dir, file, cfg, force=False, verify_on_faith=True):
         raise client.LLMFatal("HTTP 429 from x: provider code 1113")
 
     orig = pipeline.run_chapter

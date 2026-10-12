@@ -354,10 +354,64 @@ the flag is NOT stored in `glossary.json`, because that file feeds the
 translator's pinned-terms list and a stored flag would change translation
 behaviour. Exit 0 nothing confirmed, 1 something confirmed **or** a chapter that
 could not be checked (an unreadable chapter, or one whose translation line count
-differs from its source's, which the pairing cannot trust). Nothing triggers it
-automatically — run it
-after a glossary-changing operation (`review glossary --fix`, `glossary
-merge`/`retire`/`replace`) to see which chapters that change put at risk.
+differs from its source's, which the pairing cannot trust).
+
+**The same scan runs automatically after a glossary change.** After
+`review fix`, `glossary replace`, `glossary set`, `glossary merge` and
+`glossary retire`, the CLI re-checks the chapters the edited term actually
+occurs in — the deterministic, free scope computed with the same
+`glossary.count_in_text` the balance advisory uses, matched against each
+chapter's **source**, so chapters the edit cannot have reached are never
+scanned and never paid for. A term that occurs in no chapter has no subject:
+the command prints `[verify] cascade check after <verb>: '<term>' occurs in no
+chapter - nothing to re-check` and makes no call.
+
+Console markers for the automatic check are `[verify] cascade check after
+<verb>: <n> chapter(s) carry the edited term, <n> flagged ..., <n> confirmed
+across <n> call(s)`, `[warn] verify: <chapter> -> needs-review recommended:
+forcing the edited rendering mistranslates this chapter`, and the same
+`[warn] verify: glossary contamination: ...` line the manual command prints.
+
+The cascade check is **advisory by default**: it reports and the originating
+command still exits 0, so automation that edits the glossary is not broken by
+a cascade being detected. `--strict` makes it exit 1 when verify confirms
+contamination; `--no-verify` skips the scan entirely (no model call). Both are
+accepted by `glossary replace | set | merge | retire` and by `review fix`,
+where they are a usage error on the read-only `review glossary` / `review
+notes` subjects. The check never writes `logs/verify.jsonl` and never flips a
+chapter status — reporting is not the manual command's job of scheduling a
+re-translation, so only `verify` itself flags `needs-review`; the automatic run
+is logged instead as a `verify_cascade` event carrying its `origin`, `terms`,
+`chapters` and `confirmed_chapters`.
+
+`review fix` runs the check **once** for the whole batch, not once per applied
+command: each spawned subcommand is invoked with `--no-verify` (the same
+defensive pattern as the `--no-build` it already appends) and the executor
+re-checks the union of the terms its applied commands actually wrote.
+
+Note that retiring or merging a term away leaves the cascade check with
+nothing to judge for **that** term — stage 1 matches against the live
+glossary, and the term is no longer in it — so those two verbs usually report
+`<n> flagged by the deterministic stage, 0 ... confirmed` while still scoping
+the scan to the right chapters. That is the honest answer: an unpinned term
+cannot contaminate a future chapter. Retiring a term still matters, because
+the chapters it was pinned in may now contradict the remaining glossary.
+
+### FAITH rejections
+
+When the faithfulness gate rejects a translation, the pipeline also asks
+whether the **glossary** was the cause — a different fault from the
+translator's, and one fixed in `glossary.json` rather than by another attempt.
+The gate is free and decisive: the chapter is dismissed unless it *also* has
+an under-used pinned term per stage 1 (the translation declined to use a term
+the source matched), so the many rejections with nothing to do with the
+glossary cost no model call at all. Survivors go through the same stage 2, on
+the same `verify` job, and are reported as `[warn] [CHAPTER_NNNN] glossary
+over-binding: forcing '<term>' as '<pinned>' mistranslates this chapter;
+fix the glossary entry, not the translation`, plus a
+`faith_glossary_investigation` trace event. The investigation never rewrites
+the rejected lines and never flips a status — the FAITH gate already owns the
+chapter's outcome. Skip it with `--no-verify` on `translate` / `retry`.
 
 ## Bulk review fixes
 
@@ -378,7 +432,8 @@ with `[review fix] report is stale (glossary changed since generation) -
 regenerate with review glossary` unless `--stale-ok`), 2 on a
 missing/unreadable report or a report with no machine-applicable
 commands. `review fix` accepts exactly `--glossary`
-(the report path), `--dry-run`, `--stale-ok`, and `--exit-on-error`; any
+(the report path), `--dry-run`, `--stale-ok`, `--exit-on-error`, `--no-verify`
+and `--strict`; any
 other review
 flag exits 2 with `[FAIL] --<flag> does not apply to 'review <subject>'`
 (`--fix` on `review fix`/`review notes` keeps its own message:
@@ -442,13 +497,15 @@ The batch-flow subcommands:
 
 - `uv run "$SCRIPT" glossary set --project . --source S [--translation T]
   [--definition D] [--category C] [--add-variant V] [--remove-variant V]
-  [--alt-translations "A,B"] [--add-alt A] [--remove-alt A]` — atomic
+  [--alt-translations "A,B"] [--add-alt A] [--remove-alt A] [--no-verify]
+  [--strict]` — atomic
   multi-field metadata edit (CJK-checked against the source like
   `apply_fixes`); idempotent; prints `[glossary] noop: <detail>` when
   nothing actually changes. Assigning `--category unit` to an entry with
   a non-empty translation warns `[warn] glossary: '<source>' has a
   translation but category 'unit' (guide-only: balance checks skip it)`.
-- `uv run "$SCRIPT" glossary merge --project . --keep K --remove R` —
+- `uv run "$SCRIPT" glossary merge --project . --keep K --remove R [--no-verify]
+  [--strict]` —
   transfer `variants` / `alt_translations` / `definition` from R to K
   (definition only fills K when K's is empty; a definition arriving for a
   K that already has one is discarded with `[warn] glossary: definition
@@ -458,16 +515,19 @@ The batch-flow subcommands:
   spelling — is a clean no-op exit 0, the supplied spelling recorded in
   `retired` alongside the canonical source). Translation / category /
   origin / first_seen_chapter of the kept entry are preserved.
-- `uv run "$SCRIPT" glossary retire --project . --source X` — thin wrapper
+- `uv run "$SCRIPT" glossary retire --project . --source X [--no-verify]
+  [--strict]` — thin wrapper
   over `glossary.retire()` for a single source. Re-running with the
   entry's canonical source prints `[glossary] noop: already retired: X`
   and exits 0; a variant spelling of an already-retired entry is also a
   clean no-op (exit 0) — the supplied spelling is recorded in `retired`
   alongside the canonical source.
 - `uv run "$SCRIPT" glossary replace --project . --source S
-  --translation T [--keep-alt] [--no-build] [--dry-run]` — `--no-build`
+  --translation T [--keep-alt] [--no-build] [--dry-run] [--no-verify]
+  [--strict]` — `--no-build`
   skips the auto epub build for batch runs; the replace behavior itself is
-  unchanged.
+  unchanged. `--no-verify` / `--strict` govern the automatic cascade check
+  described under Whole-book drift verification.
 - `uv run "$SCRIPT" glossary search --project . TERM [--max-distance N]` —
   read-only lookup across `source`, `variants`, `translation`, and
   `alt_translations` (both sides) to find entries before the editing

@@ -951,6 +951,70 @@ def _log_chapter_start(project_dir: Path, file: str, entry: dict,
     })
 
 
+def _investigate_glossary_rejection(project_dir: Path, cfg: dict, g: dict,
+                                    file: str, source_lines: list[str],
+                                    lines: list[str], tag: str,
+                                    enabled: bool) -> None:
+    """On a FAITH rejection, ask whether the glossary over-bound this chapter.
+
+    The rejection already happened and the retry loop already owns the
+    outcome, so this reports rather than decides: it never flips a status and
+    never rewrites the rejected lines. What it adds is the question the
+    rejection cannot answer for itself -- whether forcing a pinned term is
+    what made the translation unfaithful, which is a different fault from the
+    translator's and is fixed in glossary.json rather than by another attempt.
+
+    The free deterministic pre-filter is what makes this affordable: a
+    rejection only reaches the model when this same chapter also has an
+    under-used pinned term, so the many rejections with nothing to do with the
+    glossary cost no calls at all (lib/verify.investigate_faith).
+
+    Deferred import: lib/verify imports this module, so a module-level import
+    here would be circular.
+
+    A model failure is reported and swallowed. The FAITH verdict that
+    triggered this is already recorded, and losing the chapter's diagnostic
+    must not turn into losing the chapter -- client.LLMFatal still propagates,
+    because a provider that will never answer is not a one-batch problem.
+    """
+    if not enabled:
+        return
+    from lib import verify as verify_mod
+    try:
+        result = verify_mod.investigate_faith(
+            project_dir, cfg, g, file, source_lines, lines)
+    except client.LLMFatal:
+        raise
+    except Exception as exc:
+        print(f"{tag} [warn] glossary investigation skipped: "
+              f"{type(exc).__name__}: {exc}")
+        return
+    if not result["considered"] and not result["errors"]:
+        return
+    logger.log_event(project_dir, {
+        "event": "faith_glossary_investigation", "chapter": file,
+        "considered": result["considered"],
+        "candidates": result["candidates"],
+        "findings": result["findings"],
+        "contaminated_terms": [t["source"]
+                               for t in result["contaminated_terms"]],
+        "calls": result["calls"],
+        "errors": result["errors"],
+    })
+    if not result["considered"]:
+        for error in result["errors"]:
+            print(f"{tag} [warn] {error}")
+        return
+    for term in result["contaminated_terms"]:
+        reason = term["reason"].strip()
+        print(f"{tag} [warn] glossary over-binding: forcing {term['source']!r} "
+              f"as {term['pinned']!r} mistranslates this chapter"
+              + (f" - {reason}" if reason else "")
+              + "; fix the glossary entry, not the translation")
+    for error in result["errors"]:
+        print(f"{tag} [warn] glossary investigation: {error}")
+
+
 def _log_chapter_end(project_dir: Path, file: str, entry: dict, outcome: str,
                      state: dict, stages_run: list[str], attempts: int,
                      error: BaseException | None = None) -> None:
@@ -983,7 +1047,8 @@ def _log_chapter_end(project_dir: Path, file: str, entry: dict, outcome: str,
                                logger.current_run_id(project_dir) or "")
 
 
-def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) -> str:
+def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False,
+                verify_on_faith: bool = True) -> str:
     """Run the staged pipeline for one chapter.
 
     Returns "translated", "needs-review", or "skipped". Prints progress lines
@@ -1009,7 +1074,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
     logger.note_chapter_start(project_dir, file)
     try:
         outcome, state, stages_run, attempts_run = _run_chapter(
-            project_dir, file, cfg, force, paths, manifest, entry, tag)
+            project_dir, file, cfg, force, paths, manifest, entry, tag,
+            verify_on_faith)
     except Exception as exc:
         _log_chapter_end(project_dir, file, entry, "crashed", {}, [], 0, exc)
         raise
@@ -1020,7 +1086,8 @@ def run_chapter(project_dir: Path, file: str, cfg: dict, force: bool = False) ->
 
 def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                  paths: dict, manifest: list[dict], entry: dict,
-                 tag: str) -> tuple[str, dict, list[str]]:
+                 tag: str,
+                 verify_on_faith: bool = True) -> tuple[str, dict, list[str]]:
     """The staged pipeline proper. Returns (outcome, state, stages_run) so
     the lifecycle wrapper can report them; run_chapter owns the logging."""
     stem = Path(file).stem
@@ -1495,6 +1562,9 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                     log_result("faithfulness", verdict=verdict,
                                reasons=fb, accepted=False)
                     failed_stage = "FAITH"
+                    _investigate_glossary_rejection(
+                        project_dir, cfg, g, file, source_lines, lines, tag,
+                        verify_on_faith)
                 else:
                     log_gate("FAITH", "pass", [])
                     log_result("faithfulness", verdict=verdict,
@@ -1664,7 +1734,8 @@ def _chapter_subject(file: str, outcome: str) -> str:
     return f"translate: chapter {number:04d} ({outcome})"
 
 
-def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = False) -> dict:
+def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = False,
+              verify_on_faith: bool = True) -> dict:
     """Run run_chapter sequentially over files.
 
     Returns {"translated": [...], "needs-review": [...], "skipped": [...]}.
@@ -1683,7 +1754,8 @@ def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = Fals
     try:
         for file in files:
             try:
-                outcome = run_chapter(project_dir, file, cfg, force=force)
+                outcome = run_chapter(project_dir, file, cfg, force=force,
+                                     verify_on_faith=verify_on_faith)
             except (PipelineError, client.LLMFatal):
                 raise
             except Exception as exc:

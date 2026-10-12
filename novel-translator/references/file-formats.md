@@ -1857,6 +1857,54 @@ and those chapters. `glossary.json` is **never** written: it feeds the translato
 pinned-terms list, so a flag stored there would change translation behaviour, which
 is a separate decision.
 
+### The automatic cascade check
+
+The same two stages also run **without** the `verify` command, after a
+glossary-changing operation (`glossary replace | set | merge | retire`, and
+`review fix` for the whole batch). It reuses stage 1 and stage 2 unchanged and
+differs only in **scope**: `verify_project(chapters=...)` restricts the scan to
+the chapters the edited term actually occurs in, decided before any call is
+made, so an edit cannot pay for chapters it could not have reached. The scope is
+computed with `glossary.count_in_text` against each chapter's source — the same
+matcher the balance advisory and `glossary count` use.
+
+It is deliberately **not** a writer, and that is the contract to know:
+
+- it does **not** write `logs/verify.jsonl`. That file is defined above as one
+  line per chapter examined of a whole-book scan; a scoped run would replace a
+  complete result set with a partial one, so the automatic check reports to the
+  console and the trace log instead;
+- it does **not** flip a chapter to `needs-review`. That flip schedules a
+  re-translation, and only the explicit `verify` command is allowed to decide
+  that;
+- it does **not** write `glossary.json`, for the reason above.
+
+The automatic run is recorded as a `verify_cascade` event in the ordinary trace
+log, so it is findable without inventing a second artifact:
+
+```json
+{"event": "verify_cascade", "origin": "glossary set",
+ "terms": ["裴小丫"], "chapters": ["CHAPTER_0001.md"],
+ "examined": 1, "flagged": 1, "confirmed": 1, "calls": 1,
+ "confirmed_chapters": ["CHAPTER_0001.md"], "errors": []}
+```
+
+`origin` is the verb the edit came from (`glossary replace|set|merge|retire`, or
+`review fix`); `terms` is the set actually written, which for `merge` is both
+`--keep` and `--remove`, and for `retire` is the retired source.
+
+Two consequences of matching against the **live** glossary are worth stating,
+because they look like a missing feature and are not:
+
+- Retiring or merging a term away leaves nothing for stage 1 to match it
+  against, so those verbs normally report `0 flagged by the deterministic
+  stage, 0 ... confirmed` while still scoping the scan correctly. An unpinned
+  term cannot contaminate a future chapter — that is the honest answer, and the
+  reason to retire is to stop the damage, not to detect it retrospectively.
+- A term occurring in no chapter yields an empty scope: the command prints
+  `[verify] cascade check after <verb>: '<term>' occurs in no chapter - nothing
+  to re-check` and makes no model call.
+
 ## Draft artifacts (`draft/`)
 
 For `CHAPTER_0001.md` the pipeline creates:

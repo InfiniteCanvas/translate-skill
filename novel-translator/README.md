@@ -405,7 +405,8 @@ delegating fixes by index:
 
 For the offline machine-actionable path, run
 `uv run scripts/translate.py review fix --glossary review-report.md
-[--dry-run] [--stale-ok] [--exit-on-error]`: it runs every `- Command:` bullet in the
+[--dry-run] [--stale-ok] [--exit-on-error] [--no-verify] [--strict]`: it runs every
+`- Command:` bullet in the
 `Machine-applicable` section as a subprocess (`glossary replace | set |
 merge | retire`), in order, and exits 0 on full success or full no-op, 1
 if any command failed (continues past failures by default;
@@ -516,10 +517,37 @@ entry, each tagged `kind` (`chapter` or `contamination`) so the two grains stay
 distinguishable. It is the input a later visualization can be built from. Exit 0
 when nothing is confirmed, 1 when a chapter is confirmed **or** could not be checked.
 
-Run it after a glossary-changing operation (`review glossary --fix`,
-`glossary merge` / `retire` / `replace`) to see which chapters the change put
-at risk, and before trusting a long-translated book. It is standalone: nothing
-triggers it automatically.
+It also runs by itself. After `glossary replace | set | merge | retire`, and once
+for the whole batch after `review fix`, the same two stages re-check just the
+chapters the edited term actually occurs in — the free scope the balance
+advisory already computes, so the scan never pays for the whole book and a term
+occurring in no chapter costs nothing. It is **advisory**: findings print as
+`[warn] verify: ...` and the command still exits 0, so existing automation is
+not broken by a cascade being detected.
+
+    uv run scripts/translate.py glossary set --project . --source S \
+        --definition D [--no-verify] [--strict]
+    uv run scripts/translate.py review fix --project . [--no-verify] [--strict]
+
+`--strict` makes a confirmed cascade exit 1, for a caller that must tell "no
+drift" from "drift found"; `--no-verify` skips the scan entirely. Both are a
+usage error on `review glossary` / `review notes`, which change nothing. The
+automatic check never writes `logs/verify.jsonl` and never flips a chapter to
+`needs-review` — only `verify` itself does that — and is recorded in the trace
+log as a `verify_cascade` event.
+
+When the pipeline's faithfulness gate rejects a translation, it also asks
+whether a pinned term is why, since that is a fault fixed in `glossary.json`
+rather than by another attempt. The gate is free: the chapter is dismissed
+unless it also has an under-used pinned term, so the many rejections unrelated
+to the glossary spend nothing. Survivors print `[warn] [CHAPTER_NNNN] glossary
+over-binding: forcing '<term>' as '<pinned>' mistranslates this chapter; fix the
+glossary entry, not the translation`. Skip it with `--no-verify` on `translate`
+/ `retry`.
+
+Run `verify` itself before trusting a long-translated book: the automatic check
+only covers the chapters an edit could have reached, while the manual command
+scans the whole book.
 
 Translator's notes have their own re-evaluation path: they live in
 `notes/<stem>.json` sidecars next to the chapters, never in the chapter
@@ -707,7 +735,9 @@ is also a clean no-op (exit 0) -- the supplied spelling is recorded in
 `retired` alongside the canonical source.
 
 `glossary replace` accepts `--no-build` to skip the post-success epub
-build for batch callers (the replace behavior itself is unchanged).
+build for batch callers (the replace behavior itself is unchanged), and
+`--no-verify` / `--strict` to govern the automatic drift check every glossary
+verb now runs.
 
 `glossary search TERM` is the read-only lookup that pairs with the editing
 subcommands: it matches TERM case-insensitively against every entry's

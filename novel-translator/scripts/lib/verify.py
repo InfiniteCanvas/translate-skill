@@ -326,7 +326,8 @@ def _contamination(findings: list[dict]) -> list[dict]:
     return out
 
 
-def verify_project(project_dir: Path, cfg: dict) -> dict:
+def verify_project(project_dir: Path, cfg: dict,
+                   chapters: set[str] | None = None) -> dict:
     """Scan every chapter that has both a source and a translation.
 
     Returns
@@ -344,6 +345,15 @@ def verify_project(project_dir: Path, cfg: dict) -> dict:
     translates. A missing or unreadable translation is simply not a chapter
     this scan has anything to say about, so it contributes no record.
 
+    `chapters`, when given, restricts the scan to those file names. It is the
+    cascade check's scope: a glossary edit can only have contaminated the
+    chapters the edited term actually occurs in, so scanning the whole book
+    would spend stage 2's calls on chapters the edit could not have reached.
+    The restriction is applied BEFORE stage 1, not as a filter on its results,
+    because the calls are the cost -- dropping records afterwards would have
+    already paid for them. None (the default) scans everything, so the
+    standalone `verify` command is unchanged.
+
     Nothing here writes: the status flip and the JSONL are the caller's, so
     the analysis stays pure and testable."""
     root = Path(project_dir)
@@ -354,6 +364,8 @@ def verify_project(project_dir: Path, cfg: dict) -> dict:
     flagged = 0
     by_term: dict[str, dict] = {}
     for chapter in project.discover(root):
+        if chapters is not None and chapter.file not in chapters:
+            continue
         translated = paths["translated"] / chapter.file
         if not translated.is_file():
             continue
@@ -408,9 +420,9 @@ def verify_project(project_dir: Path, cfg: dict) -> dict:
             verdicts, error = _verdicts(root, cfg, term, batch)
             if error:
                 errors.append(error)
-                chapters = {context["chapter"] for context in batch}
+                batch_chapters = {context["chapter"] for context in batch}
                 for record in records:
-                    if record["chapter"] in chapters and not record["error"]:
+                    if record["chapter"] in batch_chapters and not record["error"]:
                         record["error"] = error
             _merge(findings, verdicts)
 
@@ -433,5 +445,95 @@ def verify_project(project_dir: Path, cfg: dict) -> dict:
                          if finding["mistranslates"]),
         "calls": calls,
         "confirmed_chapters": confirmed_chapters,
+        "errors": errors,
+    }
+
+
+def investigate_faith(project_dir: Path, cfg: dict, g: dict, chapter: str,
+                      source_lines: list[str],
+                      translated_lines: list[str]) -> dict:
+    """Ask whether ONE chapter's faithfulness rejection was glossary
+    over-binding, and report what a pinned rendering would cost to force.
+
+    Returns {"considered": bool, "candidates": [str], "findings": [record],
+     "contaminated_terms": [record], "calls": int, "errors": [str]}.
+
+    considered False means the pre-filter declined the chapter and NO model
+    call was made. That filter is the whole point of this function. A chapter
+    FAITH-rejects for many reasons -- an invented event, a dropped negation,
+    a wrong pronoun -- and the glossary is only implicated when the source
+    matched a pinned term that the translation then declined to use. So the
+    gate is stage 1's own answer (underused rows on THIS chapter, computed
+    from the same pairs the balance advisory already produced) and it is free:
+    a rejected chapter with no under-used term is dismissed before any call.
+
+    The surviving rows go through the same stage 2 as a book scan -- same
+    rubric, same per-term batching, same context windows -- because it is the
+    same question, asked about one chapter instead of all of them. Confirmed
+    terms are returned as findings; this function writes nothing and flips no
+    status, because the caller is mid-translate and the chapter is already
+    headed for needs-review by the FAITH gate itself.
+    """
+    root = Path(project_dir)
+    empty = {"considered": False, "candidates": [], "findings": [],
+             "contaminated_terms": [], "calls": 0, "errors": []}
+    if len(source_lines) != len(translated_lines):
+        empty["errors"].append(
+            f"{chapter}: source has {len(source_lines)} lines but the "
+            f"translation has {len(translated_lines)} - the line indices stage "
+            f"2 pairs cannot be trusted, so no glossary over-binding was "
+            f"investigated")
+        return empty
+
+    rows = balance.underused(
+        [(entry, count) for entry, count in glossary.contextual(
+            g, "\n".join(source_lines),
+            int(config.get_number(cfg, "contextual_glossary_cap")))],
+        translated_lines,
+        min_coverage=float(config.get_number(cfg, "min_term_coverage")),
+        fuzzy_max=int(config.get_number(cfg, "fuzzy_max_distance")),
+    )
+    if not rows:
+        return empty
+
+    by_source = {entry.get("source", ""): entry
+                 for entry in g.get("terms", [])}
+    by_term: dict[str, dict] = {}
+    for row in rows:
+        entry = by_source.get(row["source"], {})
+        term = by_term.setdefault(row["source"], {
+            "source": row["source"],
+            "pinned": row["translation"],
+            "definition": entry.get("definition", ""),
+            "category": entry.get("category", ""),
+            "contexts": [],
+        })
+        for index in _hit_lines(source_lines, entry):
+            term["contexts"].append(
+                _context(chapter, source_lines, translated_lines, index, row))
+
+    findings: dict[tuple[str, str], dict] = {}
+    calls = 0
+    errors: list[str] = []
+    for source in sorted(by_term):
+        term = by_term[source]
+        contexts = term["contexts"]
+        if not contexts:
+            continue
+        for start in range(0, len(contexts), MAX_CONTEXTS_PER_CALL):
+            batch = contexts[start:start + MAX_CONTEXTS_PER_CALL]
+            calls += 1
+            verdicts, error = _verdicts(root, cfg, term, batch)
+            if error:
+                errors.append(error)
+            _merge(findings, verdicts)
+
+    resolved = list(findings.values())
+    return {
+        "considered": True,
+        "candidates": sorted(by_term),
+        "findings": resolved,
+        "contaminated_terms": _contamination(resolved),
+        "calls": calls,
         "errors": errors,
     }

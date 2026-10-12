@@ -806,6 +806,29 @@ background build too. Builds produce no git commits — `export/`,
   whether a term should be split, retired or given a different rendering —
   `verify` says which chapters to look at; `review glossary` is the separate
   per-entry audit, and `review fix` applies it.
+- **The drift check also runs by itself** after `glossary replace | set |
+  merge | retire` and after `review fix`, so a cascade is caught where it is
+  created instead of waiting for someone to remember `verify`. It re-checks
+  only the chapters the edited term actually occurs in — the free scope the
+  balance advisory already computes — so it never pays for the whole book, and
+  a term occurring in no chapter costs nothing. It is **advisory**: findings
+  are printed as `[warn] verify: ...` and the originating command still exits
+  0, so existing automation is not broken by a cascade being detected. Pass
+  `--strict` to make a confirmed cascade exit 1, or `--no-verify` to skip the
+  scan (both are also accepted by `review fix`, and are a usage error on
+  `review glossary` / `review notes`, which change nothing). The automatic run
+  never writes `logs/verify.jsonl` and never flips a chapter status — only
+  `verify` itself flags `needs-review`; the check is logged as a
+  `verify_cascade` trace event instead.
+- **A FAITH rejection is also checked for glossary over-binding**: when the
+  faithfulness gate rejects a translation, the pipeline asks whether a pinned
+  term is why — a fault fixed in `glossary.json`, not by another attempt. The
+  gate is free: the chapter is dismissed unless it also has an under-used
+  pinned term, so rejections unrelated to the glossary spend nothing. Survivors
+  go through the same stage 2 and print `[warn] [CHAPTER_NNNN] glossary
+  over-binding: forcing '<term>' as '<pinned>' mistranslates this chapter; fix
+  the glossary entry, not the translation`. Skip it with `--no-verify` on
+  `translate` / `retry`.
 - **Reading the trace logs**: every run writes two tiers under `logs/` —
   an orchestration timeline (`logs/run-<run_id>.jsonl`: run and chapter
   lifecycle, stage transitions, gate verdicts, degradations, one `llm_call`

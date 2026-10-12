@@ -332,6 +332,8 @@ def _resolve_source(g: dict, value: str | None) -> str | None:
 
 _SET_FIELD_FLAGS = ("--definition", "--category", "--translation")
 
+_MUTATING_VERBS = ("replace", "set", "merge", "retire")
+
 
 def _conflict_keys(argv: list[str], g: dict) -> set[tuple]:
     """(edited field, resolved source) identities of one Command spec -- the
@@ -410,6 +412,7 @@ def run_commands(
     skipped_conflict = 0
     seen_keys: set[tuple] = set()
     changed_chapters = False
+    applied_argv: list[list[str]] = []
 
     for i, spec in enumerate(specs, 1):
         if any(
@@ -481,6 +484,7 @@ def run_commands(
             noop += 1
         else:
             applied += 1
+            applied_argv.append(list(argv))
         if argv[:2] == ["glossary", "replace"] and _signals_chapter_change(out):
             changed_chapters = True
 
@@ -492,16 +496,55 @@ def run_commands(
         "specs_run": specs_run,
         "skipped_invalid": skipped_invalid,
         "skipped_conflict": skipped_conflict,
+        "argv": applied_argv,
     }
+
+
+def changed_sources(applied_argv: list[list[str]]) -> list[str]:
+    """The glossary terms the applied commands actually wrote to.
+
+    One entry per command that changed something, resolved to the terms it
+    edited, so the caller's post-batch cascade check scans the union of what
+    the report really touched rather than every term in the report. Order is
+    first-application order, de-duplicated, which is what makes a merge's two
+    terms (kept and removed) both appear.
+
+    `--source` is read for replace/set/retire and both `--keep`/`--remove`
+    for merge; a merge's removed source is included because retiring it is
+    part of what the merge did, and its chapters are exactly the ones whose
+    balance changed when the entry disappeared."""
+    out: list[str] = []
+    for argv in applied_argv:
+        values: list[str] = []
+        if len(argv) >= 2 and argv[0] == "glossary" and argv[1] == "merge":
+            values = [_argv_value(argv, "--keep"), _argv_value(argv, "--remove")]
+        else:
+            values = [_argv_value(argv, "--source")]
+        for value in values:
+            if isinstance(value, str) and value and value not in out:
+                out.append(value)
+    return out
 
 
 def _prepare_argv(argv: list[str]) -> list[str]:
     """Defensively append --no-build to `glossary replace` only when absent
-    so the executor can run a single batch-wide epub build at the end."""
-    if len(argv) >= 2 and argv[0] == "glossary" and argv[1] == "replace":
-        if "--no-build" not in argv:
-            return [*argv, "--no-build"]
-    return list(argv)
+    so the executor can run a single batch-wide epub build at the end, and
+    --no-verify to every MUTATING `glossary` verb so the cascade check runs
+    ONCE for the whole batch instead of once per child process: N commands
+    would otherwise pay N whole-cascade scans over overlapping chapter sets
+    and report the same drift N times.
+
+    The read-only verbs are deliberately left alone. They accept neither
+    flag, and a report bullet naming one must stay runnable rather than fail
+    on an argument it never asked for."""
+    prepared = list(argv)
+    if len(prepared) >= 2 and prepared[0] == "glossary":
+        verb = prepared[1]
+        if verb == "replace" and "--no-build" not in prepared:
+            prepared.append("--no-build")
+        if verb in _MUTATING_VERBS and "--no-verify" not in prepared:
+            prepared.append("--no-verify")
+    return prepared
 
 
 def _looks_like_noop(out: str) -> bool:

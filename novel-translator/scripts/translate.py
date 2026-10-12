@@ -12,9 +12,14 @@ Exit codes: 0 ok/no-op, 1 chapter needs-review / epubcheck failed / review fix
 had failures or the report was refused as stale / glossary search found nothing
 / glossary count below threshold / tn re-check failed chapters or scanned
 nothing eligible / profile generation failed / verify confirmed glossary drift
-or could not check a chapter, 2 usage or setup error /
+or could not check a chapter / a glossary or review-fix command run with
+--strict confirmed glossary drift, 2 usage or setup error /
 build-epub builder crashed / ping with one or more providers unreachable /
 130 interrupted (Ctrl-C).
+
+Glossary-changing commands (glossary replace|set|merge|retire, and review fix)
+additionally run the drift scan over the chapters the edited term occurs in; it
+is advisory, so those commands keep exiting 0 unless --strict was passed.
 """
 
 from __future__ import annotations
@@ -945,7 +950,8 @@ def cmd_translate(args: argparse.Namespace, project_dir: Path) -> int:
         files = pipeline.parse_range(args.chapters, manifest)
 
     print(f"[init] translating {len(files)} chapter(s)" + (" (force)" if force else ""))
-    results = pipeline.run_range(project_dir, files, cfg, force=force)
+    results = pipeline.run_range(project_dir, files, cfg, force=force,
+                                verify_on_faith=not bool(getattr(args, "no_verify", False)))
     _run_end(project_dir, "translate", "completed", results)
 
     print()
@@ -989,7 +995,8 @@ def cmd_retry(args: argparse.Namespace, project_dir: Path) -> int:
         print(f"[init] {file}: cleared artifacts, status pending")
     project.save_manifest(project_dir, manifest)
 
-    results = pipeline.run_range(project_dir, files, cfg, force=False)
+    results = pipeline.run_range(project_dir, files, cfg, force=False,
+                                verify_on_faith=not bool(getattr(args, "no_verify", False)))
     _run_end(project_dir, "retry", "completed", results)
 
     print()
@@ -1262,7 +1269,17 @@ def cmd_review_fix(args: argparse.Namespace, project_dir: Path) -> int:
             "review fix", True,
         )
 
-    return 1 if failed else 0
+    drift = 0
+    if applied and not getattr(args, "dry_run", False):
+        terms = fix.changed_sources(result["argv"])
+        if terms:
+            drift = _run_cascade_verify(
+                args, project_dir, _load_config_lenient(project_dir) or config.DEFAULTS,
+                terms, "review fix")
+
+    if failed:
+        return 1
+    return drift
 
 
 def cmd_review_notes(args: argparse.Namespace, project_dir: Path) -> int:
@@ -1291,8 +1308,10 @@ def cmd_review_notes(args: argparse.Namespace, project_dir: Path) -> int:
 def cmd_review(args: argparse.Namespace, project_dir: Path) -> int:
 
     rejected = {
-        "glossary": ("chapters", "glossary", "dry_run", "exit_on_error", "stale_ok"),
-        "notes": ("glossary", "dry_run", "exit_on_error", "stale_ok"),
+        "glossary": ("chapters", "glossary", "dry_run", "exit_on_error",
+                     "stale_ok", "no_verify", "strict"),
+        "notes": ("glossary", "dry_run", "exit_on_error", "stale_ok",
+                  "no_verify", "strict"),
         "fix": ("chapters", "batch_size"),
     }.get(args.subject, ())
     for dest in rejected:
@@ -1432,6 +1451,98 @@ def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
     raise CliError(f"unknown glossary action: {args.action}")
 
 
+def _chapters_with_term(project_dir: Path, terms: list[str]) -> set[str]:
+    """The chapters whose SOURCE contains any of the given glossary terms.
+
+    This is the cascade check's scope, and it is the same question stage 1
+    asks -- matched with glossary.count_in_text, the deterministic counter the
+    balance advisory and the `glossary count` command already use -- rather
+    than a second notion of "contains" that could disagree with it.
+
+    Source-side, not translation-side: verify's stage 1 matches a chapter's
+    SOURCE against the glossary and then asks how the translation rendered the
+    matched terms, so a chapter the edited term never appears in is one verify
+    would scan and find nothing about. An edited term that occurs nowhere
+    yields an empty set, and the caller skips the scan entirely rather than
+    paying for a whole-book pass that has no subject."""
+    needles = [t for t in terms if t]
+    if not needles:
+        return set()
+    entry = {"source": needles[0], "variants": needles[1:]}
+    hits: set[str] = set()
+    for chapter in project.discover(project_dir):
+        try:
+            _frontmatter, body = project.read_chapter(chapter.path)
+        except (OSError, ValueError):
+            continue
+        if glossary.count_in_text(entry, body):
+            hits.add(chapter.file)
+    return hits
+
+
+def _run_cascade_verify(args: argparse.Namespace, project_dir: Path,
+                        cfg: dict, terms: list[str], origin: str) -> int:
+    """Run the scoped drift scan after a glossary change; return an exit code.
+
+    0 unless --strict turned a confirmation into a failure, so the default is
+    advisory: an existing automation call that edits the glossary keeps exiting
+    0 even when the scan finds drift, because Decision 2 is that verify's
+    findings are reported as warnings here rather than propagated. --strict is
+    the opt-in for a caller that must tell "no drift" from "drift found".
+
+    The status flip is NOT this function's business and does not happen here.
+    A glossary change does not make any chapter's translation wrong -- it makes
+    the pinned term questionable, which is a report to read, not a verdict to
+    enforce -- and the full `verify` command remains the surface that flips
+    chapters, so a cascade check cannot silently schedule a re-translation
+    the maintainer never asked for.
+
+    No chapters containing the term means no subject for the scan: the edited
+    term reaches no translated chapter, so there is nothing it could have
+    contaminated and no call is made."""
+    if getattr(args, "no_verify", False):
+        return 0
+    affected = _chapters_with_term(project_dir, terms)
+    if not affected:
+        print(f"[verify] cascade check after {origin}: "
+              f"{', '.join(repr(t) for t in terms)} occurs in no chapter - "
+              f"nothing to re-check")
+        return 0
+    result = verify_mod.verify_project(project_dir, cfg, chapters=affected)
+    confirmed = result["confirmed_chapters"]
+    print(f"[verify] cascade check after {origin}: {len(affected)} chapter(s) "
+          f"carry the edited term, {result['flagged']} flagged by the "
+          f"deterministic stage, {result['confirmed']} term/chapter "
+          f"finding(s) confirmed across {result['calls']} call(s)")
+    for chapter in confirmed:
+        print(f"[warn] verify: {chapter} -> needs-review recommended: forcing "
+              f"the edited rendering mistranslates this chapter")
+    for term in result["contaminated_terms"]:
+        print(f"[warn] verify: glossary contamination: {term['source']!r} "
+              f"pinned as {term['pinned']!r} mistranslates in "
+              f"{', '.join(term['chapters'])} - the entry itself is wrong, so "
+              f"the next chapter translated against it repeats this")
+    for error in result["errors"]:
+        print(f"[warn] verify: {error}")
+    logger.log_event(project_dir, {
+        "event": "verify_cascade",
+        "origin": origin,
+        "terms": terms,
+        "chapters": sorted(affected),
+        "examined": result["examined"],
+        "flagged": result["flagged"],
+        "confirmed": result["confirmed"],
+        "calls": result["calls"],
+        "confirmed_chapters": confirmed,
+        "errors": result["errors"],
+    })
+    if confirmed and getattr(args, "strict", False):
+        _fail(f"{origin}: {len(confirmed)} chapter(s) confirmed glossary drift "
+              f"from this change (--strict)")
+        return 1
+    return 0
+
+
 def _cmd_glossary_replace(args: argparse.Namespace, project_dir: Path) -> int:
     """Behaviorally identical to the pre-step-1 `glossary replace`; --no-build
     only short-circuits the post-success auto epub build."""
@@ -1464,6 +1575,9 @@ def _cmd_glossary_replace(args: argparse.Namespace, project_dir: Path) -> int:
             _maybe_autobuild(
                 project_dir, cfg, "glossary replace", result["chapters"]["changed"] > 0
             )
+        return _run_cascade_verify(
+            args, project_dir, cfg or config.DEFAULTS, [gz["source"]],
+            "glossary replace")
     return 0
 
 
@@ -1518,7 +1632,9 @@ def _cmd_glossary_set(args: argparse.Namespace, project_dir: Path) -> int:
         if warn is not None:
             print(f"[warn] {warn}")
     vcs.commit(project_dir, f"glossary set: {args.source}")
-    return 0
+    return _run_cascade_verify(
+        args, project_dir, _load_config_lenient(project_dir) or config.DEFAULTS,
+        [str(entry.get("source") or args.source)], "glossary set")
 
 
 def _cmd_glossary_merge(args: argparse.Namespace, project_dir: Path) -> int:
@@ -1549,7 +1665,10 @@ def _cmd_glossary_merge(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"[glossary] merged '{removed_key}' into '{kept.get('source')}' "
           f"({', '.join(extras)})")
     vcs.commit(project_dir, f"glossary merge: '{removed_key}' into '{kept.get('source')}'")
-    return 0
+    return _run_cascade_verify(
+        args, project_dir, _load_config_lenient(project_dir) or config.DEFAULTS,
+        [str(kept.get("source") or args.keep), str(removed_key or args.remove)],
+        "glossary merge")
 
 
 def _cmd_glossary_retire(args: argparse.Namespace, project_dir: Path) -> int:
@@ -1565,7 +1684,9 @@ def _cmd_glossary_retire(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError(f"no glossary entry for '{args.source}'")
     print(f"[glossary] retired: {args.source}")
     vcs.commit(project_dir, f"glossary retire: {args.source}")
-    return 0
+    return _run_cascade_verify(
+        args, project_dir, _load_config_lenient(project_dir) or config.DEFAULTS,
+        [str(removed[0] if removed else args.source)], "glossary retire")
 
 
 def _cmd_glossary_search(args: argparse.Namespace, project_dir: Path) -> int:
@@ -1776,6 +1897,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="chapter spec, e.g. 1,3-5,CHAPTER_0007.md")
     g.add_argument("--next", type=int, metavar="N", help="next N untranslated chapters")
     p.add_argument("--force", action="store_true", help="retranslate even if already translated")
+    p.add_argument("--no-verify", dest="no_verify", action="store_true",
+                   help="skip the glossary over-binding investigation after a FAITH rejection")
     p.set_defaults(func=cmd_translate)
 
     p = sub.add_parser("retry", parents=[common], allow_abbrev=False,
@@ -1785,6 +1908,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="chapter spec, e.g. 1,3-5,CHAPTER_0007.md")
     g.add_argument("--failed", action="store_true",
                    help="retry every needs-review chapter (max attempts reached)")
+    p.add_argument("--no-verify", dest="no_verify", action="store_true",
+                   help="skip the glossary over-binding investigation after a FAITH rejection")
     p.set_defaults(func=cmd_retry)
 
     p = sub.add_parser("mark", parents=[common], allow_abbrev=False,
@@ -1822,6 +1947,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="(subject=fix) stop at the first failed command (default: continue past failures)")
     p.add_argument("--stale-ok", action="store_true", dest="stale_ok",
                    help="(subject=fix) run the report even if the glossary changed since generation")
+    p.add_argument("--no-verify", dest="no_verify", action="store_true",
+                   help="(subject=fix) skip the post-fix glossary drift check")
+    p.add_argument("--strict", action="store_true",
+                   help="(subject=fix) exit non-zero when that check confirms drift (default: advisory, exits 0)")
     p.set_defaults(func=cmd_review)
 
     p = sub.add_parser("verify", parents=[common], allow_abbrev=False,
@@ -1873,7 +2002,14 @@ def _build_parser() -> argparse.ArgumentParser:
     nested = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     nested.add_argument("--project", dest="project_action", default=None,
                         help="project directory (default: current directory)")
-    pr = gloss_sub.add_parser("replace", parents=[nested], allow_abbrev=False,
+
+    cascade = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    cascade.add_argument("--no-verify", dest="no_verify", action="store_true",
+                         help="skip the post-edit glossary drift check")
+    cascade.add_argument("--strict", action="store_true",
+                         help="exit non-zero when that check confirms drift (default: advisory, exits 0)")
+
+    pr = gloss_sub.add_parser("replace", parents=[nested, cascade], allow_abbrev=False,
                               help="change a term's translation and rewrite chapters")
     pr.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term (matched by source or variants)")
@@ -1887,7 +2023,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="skip the auto epub build after chapter rewrites (batch callers only)")
     pr.set_defaults(func=cmd_glossary)
 
-    ps = gloss_sub.add_parser("set", parents=[nested], allow_abbrev=False,
+    ps = gloss_sub.add_parser("set", parents=[nested, cascade], allow_abbrev=False,
                               help="edit metadata fields on a single entry (atomic, idempotent)")
     ps.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term (matched by source or variants)")
@@ -1909,7 +2045,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="remove A from alt_translations (repeatable, no-op when absent)")
     ps.set_defaults(func=cmd_glossary)
 
-    pm = gloss_sub.add_parser("merge", parents=[nested], allow_abbrev=False,
+    pm = gloss_sub.add_parser("merge", parents=[nested, cascade], allow_abbrev=False,
                               help="merge --remove into --keep; retire --remove")
     pm.add_argument("--keep", required=True, metavar="TERM",
                     help="source of the entry to keep (variants/alts unioned into)")
@@ -1917,7 +2053,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="source of the entry to absorb (also appended to 'retired')")
     pm.set_defaults(func=cmd_glossary)
 
-    pt = gloss_sub.add_parser("retire", parents=[nested], allow_abbrev=False,
+    pt = gloss_sub.add_parser("retire", parents=[nested, cascade], allow_abbrev=False,
                               help="retire a single source from the glossary")
     pt.add_argument("--source", required=True, metavar="TERM",
                     help="glossary source term to retire (matched by source or variants)")
