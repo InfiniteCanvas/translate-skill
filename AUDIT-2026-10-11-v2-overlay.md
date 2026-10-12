@@ -696,3 +696,47 @@ to fail:
 Both reverted. This is the direct answer to D3a's lesson — the previous phase
 shipped a no-op behind green tests, and the new test was made to fail on purpose
 before being trusted.
+
+---
+
+## P3 D4 — dashboard data/render split
+
+**Commit:** `41dccce`, on top of `4ae808d`.
+
+| Point | Result |
+|---|---|
+| gate before | 53 suites, 2619 checks |
+| gate after | **53 suites, 2641 checks**, 0 failed, 60.2s |
+| isolation | exit 0 |
+
+**The plan's 2,200-line figure was file size, not work.** `collect()` (`:671`)
+and `render()` (`:2067`) were already separate functions, so the phase is two
+extracted constants plus one new artifact. Module 2200 → 1446 lines.
+
+Decisions settled pre-dispatch: CSS and JS become real files under
+`assets/dashboard/` and are **inlined at render time**, so `report.html` stays
+one portable self-contained file; `logs/report.json` is **always** written as
+the data contract.
+
+**Byte-identity verified independently by the orchestrator**, not taken from the
+report: parsing HEAD's module with `ast` and comparing the original `_CSS` and
+`_LEDGER_JS` literals against the shipped files gives
+`12,387 B == 12,387 B, identical=True` and `15,270 B == 15,270 B,
+identical=True`. The implementer also extracted programmatically rather than
+hand-copying, so the bytes were never at risk.
+
+**Two of the implementer's corrections to the brief were right.** The brief said
+the test file was "mostly markup assertions"; it is roughly 60% `collect()`
+reads, so the retarget was a mechanical swap plus new coverage, not a rewrite.
+And it declined to commit, reading its role contract as "the orchestrator commits
+after a green round" — defensible, though earlier implementers in this campaign
+did commit. The orchestrator ran the gate and committed.
+
+**Test handling:** 18 assertions retargeted from `collect()` to reading
+`logs/report.json` back off disk, **0 deleted**, 2 new cases (22 assertions).
+The markup assertions were kept because they cover the output contract this
+phase promises to preserve.
+
+No migration: no config key, and `assets/dashboard/` is not `assets/templates/`.
+Confirmed `test_template_assets.py` globs `templates_dir.glob("*.md")` against
+`assets/templates` specifically, not `assets/**`.
