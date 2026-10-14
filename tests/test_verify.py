@@ -132,8 +132,9 @@ def big_source() -> str:
     """A chapter whose lines are long enough to fill a real payload, with the
     term on BIG_HITS: three hits that merge, three that merge again further
     down, and one alone -- three blocks a chapter, separated by gaps that must
-    stay gaps. The chapter renders 17,475 characters of evidence, so it is the
-    SEVENTEEN of these that overrun one call's cap (see big_project)."""
+    stay gaps. Its three blocks render 17,472 characters of evidence, block
+    separators included, so it is the SEVENTEEN of these that overrun one call's
+    cap (see big_project)."""
     return "\n".join("The 天道 " + FILLER * 8 if n in BIG_HITS else FILLER * 8
                      for n in range(1, BIG_LINES + 1))
 
@@ -152,10 +153,10 @@ def big_project(root: Path) -> Path:
     calls and the batches straddle chapter boundaries.
 
     The count is sized against the shipped BATCH_CHARS rather than chosen for
-    tidiness: one chapter renders 17,475 characters of evidence, so seventeen
-    render 297,075 and the cap splits them into three real batches. A fixture
-    small enough to fit one call would leave every "more than one call" check
-    in this file passing vacuously.
+    tidiness: one chapter renders 17,472 characters of evidence, so seventeen
+    render 297,076 and the cap splits them into three real batches of 121,245,
+    125,502 and 50,329. A fixture small enough to fit one call would leave every
+    "more than one call" check in this file passing vacuously.
     """
     return make_project(root, [(chapter, big_source(), big_translation())
                                for chapter in BIG_CHAPTERS])
