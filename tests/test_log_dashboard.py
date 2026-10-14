@@ -62,6 +62,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
@@ -1399,6 +1400,15 @@ def case_27_report_json_is_the_data_contract() -> None:
     opening either page. It is derived and gitignored, so nothing depends on it
     surviving; that is exactly why it can be regenerated unconditionally on the
     automatic refresh path too.
+
+    meta.generated_at is stamped at one-second resolution by each collect(), so
+    it is deliberately NOT compared across two independent calls: the written
+    payload and the re-collection are separate invocations, and asserting their
+    timestamps match only holds when both land inside the same second. What the
+    round-trip check claims is that every other field survives, that the stamp
+    is an aware ISO timestamp, and -- through the page check below -- that the
+    page and the data came from ONE collection, which is what actually ties a
+    timestamp to an artifact.
     """
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1418,7 +1428,9 @@ def case_27_report_json_is_the_data_contract() -> None:
         check("27d json: it round-trips the collected values",
               all(data[k] == live[k] for k in data if k != "meta")
               and data["meta"]["project_dir"] == live["meta"]["project_dir"]
-              and stamp == live["meta"]["generated_at"], "")
+              and datetime.fromisoformat(stamp).utcoffset() is not None
+              and datetime.fromisoformat(
+                  live["meta"]["generated_at"]).utcoffset() is not None, "")
         check("27e json: the whole thing is serialisable as shipped",
               isinstance(data["chapters"], list)
               and isinstance(data["calls"], list)

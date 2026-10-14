@@ -369,7 +369,17 @@ def case_9_two_projects() -> None:
     """Two project_dirs in one process: each appends into its OWN logs/ (no
     cross-project bleed), same-project events share one run file, the active
     run always lives in the logged project's logs/, and the reset contract
-    (clear _run_path) self-heals into fresh runs for BOTH tiers."""
+    (clear _run_path) self-heals into fresh runs for BOTH tiers.
+
+    The reset deliberately starts a NEW run, so the project's tier-1 bucket
+    holds two run files afterwards and a whole-directory read spans both. A
+    run_id embeds time.strftime at one-second resolution, so two runs minted
+    inside the same second carry the SAME id and collapse into one file; across
+    a second boundary they differ. The post-reset check therefore reads only the
+    events the reset produced: comparing the whole bucket would assert that two
+    separate runs share an id, which is false whenever the clock ticks and true
+    only by coincidence when it does not.
+    """
     with tempfile.TemporaryDirectory() as td:
         proj_a = Path(td) / "proj-a"
         proj_b = Path(td) / "proj-b"
@@ -430,9 +440,9 @@ def case_9_two_projects() -> None:
         check("9j reset: the reset also self-healed the tier-2 bucket",
               [e["event"] for e in events_in(tier2_dir(proj_b, "CHAPTER_0009"))]
               == ["chunk"], "")
-        ids = {e["run_id"] for e in
-               events_in(proj_b / "logs")
-               + events_in(tier2_dir(proj_b, "CHAPTER_0009"))}
+        after_t1 = [e for e in events_in(proj_b / "logs") if e["event"] == "b4"]
+        after_t2 = events_in(tier2_dir(proj_b, "CHAPTER_0009"))
+        ids = {e["run_id"] for e in after_t1 + after_t2}
         check("9k reset: both tiers share one run_id after the reset",
               len(ids) == 1, f"{ids}")
 
