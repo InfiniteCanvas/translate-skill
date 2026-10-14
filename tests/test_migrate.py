@@ -92,7 +92,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config
 import migrations
-from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015, v016, v017, v018
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015, v016, v017, v018, v019
 import translate
 
 PASSED = 0
@@ -1425,9 +1425,9 @@ def case_13_v011() -> None:
               isinstance(v011.DESCRIPTION, str)
               and "\n" not in v011.DESCRIPTION, "")
 
-        check("13k v018 is the chain head",
-              migrations.chain()[-1].VERSION == 18
-              and migrations.current_version() == 18,
+        check("13k v019 is the chain head",
+              migrations.chain()[-1].VERSION == 19
+              and migrations.current_version() == 19,
               f"chain_head={migrations.chain()[-1].VERSION} "
               f"current={migrations.current_version()}")
 
@@ -2233,6 +2233,106 @@ def case_20_v018() -> None:
               f"out={out_dry!r}")
 
 
+def case_21_v019() -> None:
+    """v019.migrate called directly: templates only, never config.
+
+    This step exists because the skill's glossary_verify.md changed, and because
+    an edit to assets/templates/.history.json is migration-grade. The half that
+    can go wrong silently is a step that claims to write nothing and then copies
+    a file, or one that rewrites config.json because a constant moved nearby --
+    so this case asserts the files on disk, not the prose, and asserts
+    config.json is byte-identical.
+
+    The consent half is sync_templates' and is inherited, so it is asserted
+    here only where v019 leans on it: a customized copy is kept, not taken.
+    """
+    SHIPPED = {"glossary_verify.md": "verify task rubric\n"}
+
+    def make_src(root: Path, name: str) -> Path:
+        src = root / name
+        src.mkdir()
+        for tpl, body in SHIPPED.items():
+            (src / tpl).write_text(body, encoding="utf-8", newline="\n")
+        return src
+
+    def make_project(root: Path, name: str) -> Path:
+        proj = root / name
+        proj.mkdir()
+        (proj / "config.json").write_text(
+            json.dumps({"version": 18, "providers": {
+                "translator": [{"base_url": "http://x/v1", "model": "t"}]}},
+                indent=2) + "\n",
+            encoding="utf-8", newline="\n")
+        return proj
+
+    NOTE = v019._NOTE
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        src = make_src(root, "ship")
+
+        proj = make_project(root, "plain")
+        before = (proj / "config.json").read_bytes()
+        lines = v019.migrate(proj, src, confirm=refuse_confirm)
+        check("21a v019: the behaviour change is REPORTED, naming blocks and the "
+              "counts the prompt now states",
+              lines[0] == NOTE and "block" in lines[0] and "occurrence" in lines[0],
+              f"lines={lines!r}")
+        check("21b v019: config.json is BYTE-IDENTICAL afterwards -- the batch "
+              "cap is a constant, not a config key",
+              (proj / "config.json").read_bytes() == before,
+              "v019 rewrote config.json")
+        copied = proj / "templates" / "glossary_verify.md"
+        check("21c v019: the rubric IS synced into a project that has none, so "
+              "the step is not report-only",
+              copied.is_file()
+              and copied.read_text(encoding="utf-8")
+              == SHIPPED["glossary_verify.md"], f"copied={copied.exists()}")
+        second = v019.migrate(proj, src, confirm=refuse_confirm)
+        check("21d v019: idempotent -- the second run repeats the note, adds no "
+              "template line and rewrites nothing",
+              second == [NOTE]
+              and (proj / "config.json").read_bytes() == before, f"second={second!r}")
+
+        custom = make_project(root, "custom")
+        asked: list[str] = []
+
+        def no_confirm(question: str) -> bool:
+            asked.append(question)
+            return False
+
+        write = custom / "templates"
+        write.mkdir()
+        mine = "my own rubric, keep me\n"
+        (write / "glossary_verify.md").write_text(mine, encoding="utf-8", newline="\n")
+        out_custom = v019.migrate(custom, src, confirm=no_confirm)
+        check("21e v019: a project whose copy drifted is left ALONE when consent "
+              "is declined -- a customization is not a leftover",
+              (write / "glossary_verify.md").read_text(encoding="utf-8") == mine
+              and len(asked) == 1
+              and any("kept" in line for line in out_custom),
+              f"out={out_custom!r} asked={asked!r}")
+        forced = v019.migrate(custom, src, force=True)
+        check("21f v019: and --force refreshes it, so the rubric can be brought "
+              "current deliberately",
+              (write / "glossary_verify.md").read_text(encoding="utf-8")
+              == SHIPPED["glossary_verify.md"]
+              and any("--force" in line for line in forced), f"out={forced!r}")
+
+        dry = make_project(root, "dry")
+        dry_before = snapshot(dry)
+        out_dry = v019.migrate(dry, src, dry_run=True, confirm=refuse_confirm)
+        check("21g v019: --dry-run reports the note and the template it would "
+              "copy, and creates nothing",
+              out_dry == [NOTE, "[ok] templates + glossary_verify.md (new)"]
+              and snapshot(dry) == dry_before, f"out={out_dry!r}")
+
+        check("21h v019: VERSION matches the filename", v019.VERSION == 19, "")
+        check("21i v019: DESCRIPTION is one line",
+              isinstance(v019.DESCRIPTION, str)
+              and "\n" not in v019.DESCRIPTION, "")
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -2257,6 +2357,7 @@ def main() -> int:
     case_18_migrate_never_requires_the_endpoint_it_repairs()
     case_19_v017()
     case_20_v018()
+    case_21_v019()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

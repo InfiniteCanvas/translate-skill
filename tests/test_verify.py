@@ -108,6 +108,49 @@ TEN_HIT_SOURCE = "".join(
 TEN_HIT_TRANSLATION = ("Heavenly Dao spoke again.\n" + "".join(
     f"It spoke again, line {n}.\n" for n in range(1, 10)))
 
+BIG_LINES = 60
+
+BIG_HITS = (1, 3, 5, 20, 22, 24, 50)
+
+BIG_CHAPTERS = ("CHAPTER_0001.md", "CHAPTER_0002.md", "CHAPTER_0003.md")
+
+FILLER = "the lamps burned low and the wind moved over the wall "
+
+TOUCH_HITS = (1, 6, 20, 26)
+
+TOUCH_SOURCE = "\n".join("The 天道 governs it." if n in TOUCH_HITS
+                          else "Nothing of note on this line."
+                          for n in range(1, 31))
+
+TOUCH_TRANSLATION = "\n".join("Heavenly Dao governs it." if n == 1
+                              else "Something else entirely."
+                              for n in range(1, 31))
+
+
+def big_source() -> str:
+    """A chapter whose lines are long enough that three of them carry more
+    evidence than one call's BATCH_CHARS allows, with the term on BIG_HITS:
+    three hits that merge, three that merge again further down, and one alone
+    -- three blocks a chapter, separated by gaps that must stay gaps."""
+    return "\n".join("The 天道 " + FILLER * 8 if n in BIG_HITS else FILLER * 8
+                     for n in range(1, BIG_LINES + 1))
+
+
+def big_translation() -> str:
+    """The same chapter rendered with the pinned form ONCE, so stage 1 flags
+    the term as under-used (floor 2, rendered 1) and stage 2 has evidence to
+    judge. Every other line paraphrases without repeating the pinned form."""
+    return "\n".join(
+        "Heavenly Dao " + FILLER * 8 if n == 1 else "It was said again " + FILLER * 8
+        for n in range(1, BIG_LINES + 1))
+
+
+def big_project(root: Path) -> Path:
+    """Three identical long chapters, so one term's evidence spans several
+    calls and the batches straddle chapter boundaries."""
+    return make_project(root, [(chapter, big_source(), big_translation())
+                               for chapter in BIG_CHAPTERS])
+
 
 def check(name: str, cond: bool, detail: str = "") -> None:
     global PASSED
@@ -256,6 +299,59 @@ def clears(source: str, chapter: str = "CHAPTER_0001.md"):
          "reason": "the chapter uses the term in the pinned sense"}]})
 
 
+def silent(_prompt, _chapter):
+    return json.dumps({"verdicts": []})
+
+
+BLOCK_HEADER = re.compile(r"^\[\d+\] (\S+) lines (\d+)-(\d+)")
+
+
+def prompt_blocks(prompt: str) -> list[tuple[str, int]]:
+    """Each evidence block's (chapter, first line), read off the prompt TEXT
+    rather than off anything the module keeps, so an ordering or attribution
+    claim cannot be satisfied by the code agreeing with itself."""
+    found = (BLOCK_HEADER.match(line) for line in prompt.splitlines())
+    return [(m.group(1), int(m.group(2))) for m in found if m]
+
+
+def prompt_lines(prompt: str) -> set[tuple[str, int]]:
+    """Every (chapter, line number) the prompt actually presents, read from the
+    blocks' own source numbering."""
+    lines: set[tuple[str, int]] = set()
+    chapter = None
+    side = None
+    for raw in prompt.splitlines():
+        header = BLOCK_HEADER.match(raw)
+        if header:
+            chapter, side = header.group(1), None
+            continue
+        if raw == "  source:":
+            side = "source"
+            continue
+        if raw == "  translation:":
+            side = None
+            continue
+        numbered = re.match(r"^ {4}(\d+): ", raw)
+        if side == "source" and chapter and numbered:
+            lines.add((chapter, int(numbered.group(1))))
+    return lines
+
+
+def expected_lines() -> set[tuple[str, int]]:
+    """The union of the term's per-hit windows across the big fixture: every
+    (chapter, line) the evidence must cover, computed from the hits and the
+    window radius rather than from the code that merges them."""
+    lines = big_source().splitlines()
+    covered = set()
+    for index in verify._hit_lines(lines, {"source": "天道", "variants": []}):
+        low = max(0, index - verify.CONTEXT_WINDOW)
+        high = min(len(lines) - 1, index + verify.CONTEXT_WINDOW)
+        covered |= {(chapter, n + 1)
+                    for chapter in BIG_CHAPTERS
+                    for n in range(low, high + 1)}
+    return covered
+
+
 def case_the_prompt_actually_carries_its_data() -> None:
     """The regression guard for the shipped template: assert what the MODEL is
     told, on the real path, with the stub below the seam.
@@ -308,7 +404,7 @@ def case_every_shipped_verify_template_is_filled() -> None:
     task = (shipped / "glossary_verify.md").read_text(encoding="utf-8")
     arb = (shipped / "consensus_verify.md").read_text(encoding="utf-8")
     for key in ("source_lang", "target_lang", "term", "contexts",
-                "context_count"):
+                "context_count", "hit_count"):
         check("q1 glossary_verify.md carries " + "{{" + key + "}}",
               "{{" + key + "}}" in task, "")
     check("q2 consensus_verify.md still carries both arbitration keys and "
@@ -317,7 +413,8 @@ def case_every_shipped_verify_template_is_filled() -> None:
           and not [k for k in re.findall(r"\{\{\s*([A-Za-z_]+)\s*\}\}", arb)
                    if k not in ("task_prompt", "candidates_section")], "")
     mapping = {"source_lang": "Chinese", "target_lang": "English",
-               "term": "{}", "contexts": "{}", "context_count": "1"}
+               "term": "{}", "contexts": "{}", "context_count": "1",
+               "hit_count": "10"}
     filled = pipeline.fill(task, mapping, "glossary_verify.md")
     check("q3 the shipped task template fills to something DIFFERENT from "
           "itself -- the check a zero-placeholder template cannot pass",
@@ -389,36 +486,154 @@ def case_stage2_batches_by_term_across_chapters() -> None:
               "")
 
 
-def case_contexts_are_split_into_follow_up_calls() -> None:
+def case_nearby_hits_become_one_block() -> None:
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), [
             ("CHAPTER_0001.md", TEN_HIT_SOURCE, TEN_HIT_TRANSLATION),
         ])
-        hits = verify._hit_lines(TEN_HIT_SOURCE.splitlines(),
-                                 {"source": "天道", "variants": []})
-        batches = -(-len(hits) // verify.MAX_CONTEXTS_PER_CALL)
+        code, out, cap = capture_prompts(proj, silent)
+        check("t4 hits within CONTEXT_WINDOW of one another become ONE block "
+              "instead of one window each -- ten hits in ten lines are judged "
+              "as a single span, which is the change the whole stage is for",
+              len(cap.prompts) == 1
+              and prompt_blocks(cap.prompts[0]) == [("CHAPTER_0001.md", 1)]
+              and prompt_lines(cap.prompts[0]) == {("CHAPTER_0001.md", n)
+                                                   for n in range(1, 11)},
+              f"blocks={prompt_blocks(cap.prompts[0]) if cap.prompts else []!r}")
+        check("t5 and the prompt reports what it is holding in the model's own "
+              "words -- CONTEXTS and the occurrences they cover, under the one "
+              "name the rest of the rubric uses, so the count the rules reason "
+              "about is stated rather than inferred",
+              cap.prompts
+              and "This batch holds 1 context(s) covering 10 occurrence(s) of "
+              "that term." in cap.prompts[0], "")
+
+
+def case_every_line_is_presented_once_across_every_call() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        proj = big_project(Path(td))
+        code, out, cap = capture_prompts(proj, silent)
+        shown = [prompt_lines(prompt) for prompt in cap.prompts]
+        union = set().union(*shown) if shown else set()
+        expected = expected_lines()
+        repeats = sorted(pair for pair in union
+                         if sum(pair in lines for lines in shown) > 1)
+        check("t1 the term's evidence really did cost more than one call, so "
+              "the property below is under test and not vacuous",
+              len(cap.prompts) > 1, f"prompts={len(cap.prompts)}")
+        check("t2 every line a hit's window covers is presented EXACTLY ONCE "
+              "across ALL the calls that term cost: the union equals the union "
+              "of the per-hit windows -- none dropped, none added -- and no "
+              "pair of them appears in two calls",
+              union == expected and not repeats,
+              f"presented={len(union)} expected={len(expected)} "
+              f"repeats={repeats[:4]!r}")
+
+
+def case_blocks_are_presented_in_chapter_then_line_order() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        proj = big_project(Path(td))
+        code, out, cap = capture_prompts(proj, silent)
+        orders = [prompt_blocks(prompt) for prompt in cap.prompts]
+        check("t3 inside every call the blocks run in non-decreasing "
+              "(chapter, first line) order, so the model reads the evidence in "
+              "book order rather than in whatever order it was collected",
+              len(orders) > 1
+              and all(order == sorted(order) for order in orders),
+              f"orders={orders!r}")
+
+
+def case_trace_attributes_a_batch_to_its_first_chapter() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        proj = big_project(Path(td))
+        code, out, stub = run_verify(proj, [], silent)
+        _code2, _out2, cap = capture_prompts(proj, silent)
+        opening = [Path(blocks[0][0]).stem
+                  for blocks in map(prompt_blocks, cap.prompts)]
+        check("t6 the trace's chapter= is the FIRST CHAPTER IN THE BATCH'S "
+              "BLOCK ORDER -- not the first chapter the term occurs in, which a "
+              "batch boundary can move away from",
+              [chapter for _job, chapter in stub.calls] == opening
+              and len(opening) > 1
+              and opening[0] != opening[-1],
+              f"traced={[c for _j, c in stub.calls]!r} opening={opening!r}")
+
+
+def case_an_oversized_block_still_ships() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(Path(td), [(
+            "CHAPTER_0001.md",
+            "\n".join("The 天道 " + FILLER * 8 for _n in range(50)),
+            "\n".join("Heavenly Dao " + FILLER * 8 if n == 1
+                      else "It was said again " + FILLER * 8
+                      for n in range(1, 51)),
+        )])
+        code, out, cap = capture_prompts(proj, silent)
+        check("t7 one block bigger than the cap on its own still SHIPS, alone: "
+              "the cap bounds how many blocks travel together, never whether "
+              "evidence reaches a call",
+              len(cap.prompts) == 1
+              and prompt_blocks(cap.prompts[0]) == [("CHAPTER_0001.md", 1)]
+              and len(prompt_lines(cap.prompts[0])) == 50,
+              f"prompts={len(cap.prompts)} "
+              f"lines={len(prompt_lines(cap.prompts[0])) if cap.prompts else 0}")
+
+
+def case_five_lines_apart_merges_and_six_does_not() -> None:
+    """Hits 5 lines apart merge into one block; hits 6 lines apart do not.
+
+    Both halves are in the case name because together they ARE the rule: the
+    merge condition is `low <= previous high + 1`, so a window starting on the
+    line after its neighbour's last line joins it, and a window starting one
+    line later does not. Nothing else in this suite places hits at exactly that
+    distance, which is how the condition can be wrong -- too eager, joining
+    across a gap -- while every other check stays green.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(Path(td), [
+            ("CHAPTER_0001.md", TOUCH_SOURCE, TOUCH_TRANSLATION),
+        ], cfg=STRICT_CFG)
+        code, out, cap = capture_prompts(proj, silent)
+        check("t8 hits 5 lines apart become ONE block (lines 1-8) and hits 6 "
+              "lines apart stay TWO (18-22 and 24-28): a window that begins on "
+              "the line after its neighbour's last line joins it, and one that "
+              "begins a line later does not",
+              len(cap.prompts) == 1
+              and prompt_blocks(cap.prompts[0]) == [
+                  ("CHAPTER_0001.md", 1),
+                  ("CHAPTER_0001.md", 18),
+                  ("CHAPTER_0001.md", 24)]
+              and len(prompt_lines(cap.prompts[0])) == 18,
+              f"blocks={prompt_blocks(cap.prompts[0]) if cap.prompts else []!r}")
+
+
+def case_contexts_are_split_into_follow_up_calls() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        proj = big_project(Path(td))
         code, out, cap = capture_prompts(proj, json.dumps({"verdicts": [
-            {"source": "天道", "chapter": "CHAPTER_0001.md",
-             "mistranslates": False, "reason": "pinned sense"}]}))
-        check("o1 a term with more contexts than one call carries is SPLIT into "
-              "follow-up calls rather than truncated to fit",
-              len(hits) > verify.MAX_CONTEXTS_PER_CALL
-              and len(cap.prompts) == batches,
-              f"hits={len(hits)} cap={verify.MAX_CONTEXTS_PER_CALL} "
+            {"source": "天道", "chapter": "CHAPTER_0002.md",
+             "mistranslates": True, "reason": "a different referent here"}]}))
+        per_call = [prompt_lines(prompt) for prompt in cap.prompts]
+        shown = set().union(*per_call) if per_call else set()
+        check("o1 a term whose evidence exceeds one call's BATCH_CHARS is "
+              "SPLIT into follow-up calls rather than truncated to fit",
+              len(cap.prompts) > 1
+              and all(prompt_blocks(prompt) for prompt in cap.prompts),
               f"prompts={len(cap.prompts)}")
-        sent = sum(p.count("  source:") for p in cap.prompts)
-        check("o2 NO CONTEXT IS DROPPED to make the cap fit: every hit line is "
-              "offered to some call, and none is sent twice",
-              sent == len(hits), f"sent={sent} hits={len(hits)}")
+        check("o2 NO EVIDENCE IS DROPPED to make the cap fit: every line a "
+              "hit's window covers is still offered to some call",
+              shown == expected_lines(),
+              f"presented={len(shown)} expected={len(expected_lines())}")
         check("o3 the split is visible -- the console reports the call count, "
               "so a term that cost extra is never silent",
               f"across {len(cap.prompts)} call(s)" in out, f"out={out!r}")
         check("o4 and the chapter is still judged ONCE, however many batches "
-              "its contexts took -- a batch boundary is a payload limit, not a "
+              "its blocks took -- a batch boundary is a payload limit, not a "
               "second opinion",
-              len(chapter_records(proj)[0]["findings"]) == 1
-              and chapter_records(proj)[0]["findings"][0]["chapter"]
-              == "CHAPTER_0001.md", f"row={chapter_records(proj)[0]!r}")
+              len(chapter_records(proj)[1]["findings"]) == 1
+              and chapter_records(proj)[1]["findings"][0]["chapter"]
+              == "CHAPTER_0002.md",
+              f"row={chapter_records(proj)[1]!r}")
 
 
 def case_a_confirmed_term_also_flags_the_glossary_entry() -> None:
@@ -615,20 +830,21 @@ def case_stage1_matches_the_pipeline_advisory() -> None:
                              {"source": "天道", "variants": []})
     check("h4 every source line the term occurs on is located, so no usage is "
           "left unjudged", len(hits) == 8, f"hits={hits!r}")
-    context = verify._context("CHAPTER_0001.md", DRIFT_SOURCE.splitlines(),
-                              DRIFT_TRANSLATION.splitlines(), 4, scanned[0])
-    check("h5 a context pairs the source and translation at THE SAME line "
-          "numbers -- the line-indexed protocol the whole pipeline rests on",
-          [line.split(":")[0] for line in context["source"]]
-          == [line.split(":")[0] for line in context["translation"]]
-          and context["lines"] == "3-7", f"context={context!r}")
-    check("h6 the window is bounded to CONTEXT_WINDOW either side of the hit",
-          len(context["source"]) == 2 * verify.CONTEXT_WINDOW + 1
-          and "天道" in context["source"][verify.CONTEXT_WINDOW],
-          f"context={context!r}")
-    check("h7 the context carries the per-chapter counts the flag was raised "
-          "on", context["source_count"] == 8 and context["rendered_count"] == 1
-          and context["floor"] == 2, f"context={context!r}")
+    blocks = verify._blocks("CHAPTER_0001.md", DRIFT_SOURCE.splitlines(),
+                            DRIFT_TRANSLATION.splitlines(), [4], scanned[0])
+    block = blocks[0]
+    check("h5 an evidence block pairs the source and translation at THE SAME "
+          "line numbers -- the line-indexed protocol the whole pipeline rests on",
+          [line.split(":")[0] for line in block["source"]]
+          == [line.split(":")[0] for line in block["translation"]]
+          and block["lines"] == "3-7", f"block={block!r}")
+    check("h6 the block is bounded to CONTEXT_WINDOW either side of the hit",
+          len(block["source"]) == 2 * verify.CONTEXT_WINDOW + 1
+          and "天道" in block["source"][verify.CONTEXT_WINDOW],
+          f"block={block!r}")
+    check("h7 the block carries the per-chapter counts the flag was raised "
+          "on", block["source_count"] == 8 and block["rendered_count"] == 1
+          and block["floor"] == 2, f"block={block!r}")
 
 
 def case_job_and_template_coupling() -> None:
@@ -680,6 +896,12 @@ def main() -> int:
     case_every_shipped_verify_template_is_filled()
     case_stage1_is_free_and_gates_stage2()
     case_stage2_batches_by_term_across_chapters()
+    case_nearby_hits_become_one_block()
+    case_every_line_is_presented_once_across_every_call()
+    case_blocks_are_presented_in_chapter_then_line_order()
+    case_trace_attributes_a_batch_to_its_first_chapter()
+    case_an_oversized_block_still_ships()
+    case_five_lines_apart_merges_and_six_does_not()
     case_contexts_are_split_into_follow_up_calls()
     case_a_confirmed_term_also_flags_the_glossary_entry()
     case_status_flip_only_on_confirmation()

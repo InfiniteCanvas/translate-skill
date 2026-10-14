@@ -41,15 +41,19 @@ reviewer/glossary arbitration wording instructs the merge to treat a pinned
 rendering as a project decision that is never an error -- the exact opposite
 of what this stage asks for.
 
-A term's occurrences are split into batches of MAX_CONTEXTS_PER_CALL and every
-context reaches a call: a dropped context is exactly where a contaminating one
-hides, so the cap is paid for with more calls rather than with a silent gap,
-and the call count is reported.
+A term's occurrences are grouped into BLOCKS first -- one per run of windows
+that overlap or touch around its hits, scoped to a single chapter -- and the
+blocks are packed into batches of at most BATCH_CHARS. Every occurrence reaches
+a call: a dropped one is exactly where a contaminating one hides, so the cap is
+paid for with more calls rather than with a silent gap, and the call count is
+reported. Grouping happens BEFORE batching, which is what makes the evidence
+non-repeating: a line near two hits is presented once, inside one call, rather
+than twice inside one prompt or twice across two of them.
 
-Each context pairs a window of source lines with the translation lines at the
+Each block pairs a span of source lines with the translation lines at the
 SAME indices, both numbered. That pairing is the pipeline's line-indexed
 protocol -- VALIDATE refuses a translation whose line count differs from its
-source -- so index N here is index N there, and the window is what lets the
+source -- so index N here is index N there, and the span is what lets the
 model judge a SENSE rather than a bare hit line. A chapter whose counts do not
 match is reported as an error and left unchecked: its indices cannot be trusted,
 and verify never exits 0 over a chapter it failed to check.
@@ -85,11 +89,28 @@ JOB = "verify"
 
 TEMPLATE = "glossary_verify.md"
 
-MAX_CONTEXTS_PER_CALL = 8
-
 CONTEXT_WINDOW = 2
 
 CONTEXT_CHARS = 400
+
+BATCH_CHARS = 8 * (2 * CONTEXT_WINDOW + 1) * 2 * CONTEXT_CHARS
+"""Characters one batch of EVIDENCE may carry: the chapter name, the line range,
+and every source and translation line in the batch's blocks. It does NOT bound
+the rendered prompt -- the rubric, the term block and the language names are
+constant per call, and counting prose is what would make the derivation below
+incoherent, because that arithmetic counts lines.
+
+The number is the ceiling the old cap of eight contexts per call already
+implied, written out instead of counted in contexts (8 x (2 * CONTEXT_WINDOW +
+1) lines x 2 languages x CONTEXT_CHARS). It is a character budget rather than a
+block count because a block spans however many lines its hits' windows covered,
+so counting blocks bounds nothing. No batch that shipped under the count cap
+could exceed this number, so no batch gets larger; one that does is a single
+oversized block, which ships alone.
+
+It is not derived from the project's config because the config carries no
+input-context key to derive it from: max_tokens and max_tokens_limit cap
+OUTPUT, so a per-project derivation would mean inventing a key."""
 
 VERIFY_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -154,20 +175,24 @@ def _chapter_lines(translated_body: str) -> list[str]:
     return lines[first:last]
 
 
-def _context(chapter_file: str, source_lines: list[str],
-             translated_lines: list[str], index: int, row: dict) -> dict:
-    """One context: the CONTEXT_WINDOW lines either side of the hit line,
-    source and translation at the same 1-based line numbers, with the counts
-    stage 1 flagged this term on THIS chapter.
+def _block(chapter_file: str, source_lines: list[str],
+           translated_lines: list[str], low: int, high: int, hits: int,
+           row: dict) -> dict:
+    """One evidence block: the lines low..high of a chapter, source and
+    translation at the same 1-based line numbers, carrying how many hit lines
+    the span covers and the counts stage 1 flagged this term on THIS chapter.
 
-    The counts travel with the context rather than with the term because they
-    are per chapter: the same term can be rendered faithfully everywhere but one.
+    The span arrives clamped to the chapter's edges -- _blocks is where a hit
+    becomes a window; this renders one.
+
+    The counts travel with the block rather than with the term because they are
+    per chapter: the same term can be rendered faithfully everywhere but one.
     """
-    low = max(0, index - CONTEXT_WINDOW)
-    high = min(len(source_lines) - 1, index + CONTEXT_WINDOW)
     return {
         "chapter": chapter_file,
+        "low": low,
         "lines": f"{low + 1}-{high + 1}",
+        "hits": hits,
         "source": [f"{n + 1}: {source_lines[n][:CONTEXT_CHARS]}"
                    for n in range(low, high + 1)],
         "translation": [f"{n + 1}: {translated_lines[n][:CONTEXT_CHARS]}"
@@ -176,6 +201,43 @@ def _context(chapter_file: str, source_lines: list[str],
         "rendered_count": row["tgt_count"],
         "floor": row["floor"],
     }
+
+
+def _blocks(chapter_file: str, source_lines: list[str],
+            translated_lines: list[str], indices: list[int],
+            row: dict) -> list[dict]:
+    """One chapter's hits as evidence blocks: each hit's CONTEXT_WINDOW window,
+    clamped to the chapter, with windows that OVERLAP OR TOUCH merged into one
+    block spanning min(low)..max(high).
+
+    Merging is union-preserving by construction. A merged block spans exactly
+    the lines its own hits' windows covered: nothing is added, so the model is
+    never shown evidence the book does not have, and nothing is dropped, so a
+    hit can never fall outside every block and go unjudged. Windows with a gap
+    between them stay separate blocks, because joining across a gap would
+    present lines no hit's window reached.
+
+    Blocks are chapter-scoped, and must be: line numbers restart at zero in
+    every chapter, so merging a term's hits ACROSS chapters would fuse unrelated
+    windows into a span that spans nothing.
+
+    This runs once per (term, chapter), BEFORE any batching. Coalescing inside
+    the batch loop would produce blocks that overlap across batches -- the same
+    line re-read by the next call, the repetition this removes restored, and
+    every per-prompt check still green.
+    """
+    spans: list[list[int]] = []
+    for index in sorted(indices):
+        low = max(0, index - CONTEXT_WINDOW)
+        high = min(len(source_lines) - 1, index + CONTEXT_WINDOW)
+        if spans and low <= spans[-1][1] + 1:
+            spans[-1][1] = max(spans[-1][1], high)
+            spans[-1][2] += 1
+            continue
+        spans.append([low, high, 1])
+    return [_block(chapter_file, source_lines, translated_lines,
+                   low, high, hits, row)
+            for low, high, hits in spans]
 
 
 def _term_block(term: dict) -> dict:
@@ -188,20 +250,20 @@ def _term_block(term: dict) -> dict:
     }
 
 
-def _context_block(contexts: list[dict]) -> str:
-    """Contexts as the prompt's numbered evidence blocks, source above
+def _render_blocks(blocks: list[dict]) -> str:
+    """Blocks as the prompt's numbered evidence blocks, source above
     translation under each line range."""
-    blocks: list[str] = []
-    for position, context in enumerate(contexts, start=1):
-        blocks.append(
-            f"[{position}] {context['chapter']} lines {context['lines']} "
-            f"(source {context['source_count']} occurrence(s), rendered "
-            f"{context['rendered_count']}, floor {context['floor']})\n"
+    rendered: list[str] = []
+    for position, block in enumerate(blocks, start=1):
+        rendered.append(
+            f"[{position}] {block['chapter']} lines {block['lines']} "
+            f"(source {block['source_count']} occurrence(s), rendered "
+            f"{block['rendered_count']}, floor {block['floor']})\n"
             f"  source:\n"
-            + "\n".join(f"    {line}" for line in context["source"])
+            + "\n".join(f"    {line}" for line in block["source"])
             + "\n  translation:\n"
-            + "\n".join(f"    {line}" for line in context["translation"]))
-    return "\n\n".join(blocks)
+            + "\n".join(f"    {line}" for line in block["translation"]))
+    return "\n\n".join(rendered)
 
 
 def scan_chapter(cfg: dict, g: dict, source_lines: list[str],
@@ -223,24 +285,31 @@ def scan_chapter(cfg: dict, g: dict, source_lines: list[str],
 
 
 def _prompt(project_dir: Path, cfg: dict, term: dict,
-            contexts: list[dict]) -> str:
-    """One term's judging prompt: the rubric plus the term and the contexts it
-    is judged on. The data is IN the prompt -- the rubric alone answers nothing."""
+            blocks: list[dict]) -> str:
+    """One term's judging prompt: the rubric plus the term and the blocks it is
+    judged on. The data is IN the prompt -- the rubric alone answers nothing.
+
+    It reports the batch as CONTEXTS and as the occurrences those contexts
+    cover, because the rubric's rules reason about occurrences: a context count
+    alone would tell the model it is holding fewer pieces of evidence than it
+    is, and calling the unit a block in one place and a context in the rest
+    would make it map between two names for the same thing."""
     return fill(
         pipeline._load_template(project.paths(project_dir)["templates"], TEMPLATE),
         {
             "source_lang": _lang_name(cfg.get("source_lang")),
             "target_lang": _lang_name(cfg.get("target_lang")),
             "term": json.dumps(_term_block(term), ensure_ascii=False, indent=2),
-            "contexts": _context_block(contexts),
-            "context_count": str(len(contexts)),
+            "contexts": _render_blocks(blocks),
+            "context_count": str(len(blocks)),
+            "hit_count": str(sum(block["hits"] for block in blocks)),
         },
         TEMPLATE,
     )
 
 
 def _verdicts(project_dir: Path, cfg: dict, term: dict,
-              contexts: list[dict]) -> tuple[list[dict], str | None]:
+              blocks: list[dict]) -> tuple[list[dict], str | None]:
     """Stage 2 for one term's batch: the confirmed-or-not verdicts keyed by
     chapter, plus an error string when the batch could not be judged.
 
@@ -248,19 +317,27 @@ def _verdicts(project_dir: Path, cfg: dict, term: dict,
     `verify` out gets one model per block plus the consensus_verify.md
     arbitration, exactly like every other job.
 
+    The trace's chapter= is the FIRST CHAPTER IN THIS BATCH'S BLOCK ORDER, not
+    the first chapter the term occurs in. A batch is a payload limit and can
+    open mid-book, so the bucket a call is filed under is the chapter its
+    evidence starts on; batches are ordered by _batches, so that is the lowest
+    chapter this batch carries. It is a tier-2 label for logs/verify.jsonl,
+    not a claim that the call judged only that chapter -- the verdicts are keyed
+    by the chapter each one names.
+
     A verdict naming a term or a chapter that was not in this batch is
     dropped: a model that answers about some other context has not judged this
     one, and letting it through would confirm a chapter on evidence about a
     different one. Contexts the model omits are NOT confirmed, so a truncated
     or partial reply cannot confirm anything.
     """
-    label = (f"{term['source']} ({len(contexts)} context(s), "
-             f"{', '.join(sorted({c['chapter'] for c in contexts}))})")
+    label = (f"{term['source']} ({len(blocks)} context(s), "
+             f"{', '.join(sorted({b['chapter'] for b in blocks}))})")
     try:
         resp = consensus.chat(project_dir, cfg, JOB,
-                              _prompt(project_dir, cfg, term, contexts),
+                              _prompt(project_dir, cfg, term, blocks),
                               json_schema=VERIFY_SCHEMA,
-                              chapter=Path(contexts[0]["chapter"]).stem)
+                              chapter=Path(blocks[0]["chapter"]).stem)
         data = client.extract_json(resp)
     except client.LLMFatal:
         raise
@@ -268,7 +345,7 @@ def _verdicts(project_dir: Path, cfg: dict, term: dict,
         return [], f"{label}: {type(exc).__name__}: {exc}"
     if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
         return [], f"{label}: response is not a JSON object with a verdicts list"
-    offered = {context["chapter"]: context for context in contexts}
+    offered = {block["chapter"]: block for block in blocks}
     out: list[dict] = []
     for row in data["verdicts"]:
         if not isinstance(row, dict):
@@ -291,6 +368,45 @@ def _verdicts(project_dir: Path, cfg: dict, term: dict,
             "reason": reason if isinstance(reason, str) and reason.strip() else "",
         })
     return out, None
+
+
+def _batches(blocks: list[dict]) -> list[list[dict]]:
+    """Blocks packed into batches of at most BATCH_CHARS, in non-decreasing
+    (chapter, low) order whatever order they arrive in.
+
+    Sorting here rather than at the call sites makes the order a property of
+    the batch itself: the model reads the first block first, and the chapter
+    that block sits in is also the chapter _verdicts files the call under.
+    Ordering drives attention and is not recovered by any later step, so it is
+    stated once and holds for both callers.
+
+    A block's cost is BATCH_CHARS' unit and nothing else: its chapter name, its
+    line range, and every source and translation line. The rubric, the term
+    block and the language names are the same for every call, so counting them
+    would bound nothing packing decides -- the cap is on the evidence a batch
+    carries, not on the rendered prompt.
+
+    A block that alone exceeds the cap ships BY ITSELF. Dropping or narrowing
+    evidence is the one outcome this stage must never produce, because a
+    contaminating usage is exactly what a dropped window hides; the cap bounds
+    how many blocks travel together, not the payload of any one of them.
+    """
+    ordered = sorted(blocks, key=lambda block: (block["chapter"], block["low"]))
+    batches: list[list[dict]] = []
+    current: list[dict] = []
+    size = 0
+    for block in ordered:
+        cost = (len(block["chapter"]) + len(block["lines"])
+                + sum(len(line) for line in block["source"])
+                + sum(len(line) for line in block["translation"]))
+        if current and size + cost > BATCH_CHARS:
+            batches.append(current)
+            current, size = [], 0
+        current.append(block)
+        size += cost
+    if current:
+        batches.append(current)
+    return batches
 
 
 def _merge(into: dict[tuple[str, str], dict], verdicts: list[dict]) -> None:
@@ -405,26 +521,23 @@ def verify_project(project_dir: Path, cfg: dict,
                     "pinned": row["translation"],
                     "definition": entry.get("definition", ""),
                     "category": entry.get("category", ""),
-                    "contexts": [],
+                    "blocks": [],
                 })
-                for index in _hit_lines(source_lines, entry):
-                    term["contexts"].append(
-                        _context(chapter.file, source_lines, translated_lines,
-                                 index, row))
+                term["blocks"].extend(
+                    _blocks(chapter.file, source_lines, translated_lines,
+                            _hit_lines(source_lines, entry), row))
         records.append(record)
 
     findings: dict[tuple[str, str], dict] = {}
     calls = 0
     for source in sorted(by_term):
         term = by_term[source]
-        contexts = term["contexts"]
-        for start in range(0, len(contexts), MAX_CONTEXTS_PER_CALL):
-            batch = contexts[start:start + MAX_CONTEXTS_PER_CALL]
+        for batch in _batches(term["blocks"]):
             calls += 1
             verdicts, error = _verdicts(root, cfg, term, batch)
             if error:
                 errors.append(error)
-                batch_chapters = {context["chapter"] for context in batch}
+                batch_chapters = {block["chapter"] for block in batch}
                 for record in records:
                     if record["chapter"] in batch_chapters and not record["error"]:
                         record["error"] = error
@@ -520,22 +633,18 @@ def investigate_faith(project_dir: Path, cfg: dict, g: dict, chapter: str,
             "pinned": row["translation"],
             "definition": entry.get("definition", ""),
             "category": entry.get("category", ""),
-            "contexts": [],
+            "blocks": [],
         })
-        for index in _hit_lines(source_lines, entry):
-            term["contexts"].append(
-                _context(chapter, source_lines, translated_lines, index, row))
+        term["blocks"].extend(
+            _blocks(chapter, source_lines, translated_lines,
+                    _hit_lines(source_lines, entry), row))
 
     findings: dict[tuple[str, str], dict] = {}
     calls = 0
     errors: list[str] = []
     for source in sorted(by_term):
         term = by_term[source]
-        contexts = term["contexts"]
-        if not contexts:
-            continue
-        for start in range(0, len(contexts), MAX_CONTEXTS_PER_CALL):
-            batch = contexts[start:start + MAX_CONTEXTS_PER_CALL]
+        for batch in _batches(term["blocks"]):
             calls += 1
             verdicts, error = _verdicts(root, cfg, term, batch)
             if error:

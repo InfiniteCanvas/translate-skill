@@ -176,6 +176,16 @@ ceiling made explicit, and that the config carries **no input-context key**
 (`max_tokens` and `max_tokens_limit` are output caps), so a per-project
 derivation is not available without inventing a key.
 
+**What `BATCH_CHARS` measures — pinned, because the goal sentence alone is
+ambiguous.** It bounds the batch's **evidence payload**: the chapter name, the
+line range, and every source and translation line. It does **not** bound the
+whole rendered prompt — the rubric, the term block and the language names are
+constant per call and are not counted. Counting evidence only is what makes the
+derivation coherent: the goal's own arithmetic (`8 × 5 × 2 × 400`) counts
+lines, so a cap that also counted prose could not be derived from it. Measured
+on the test fixture, a full batch is ~30,164 evidence chars inside a ~34,581
+char prompt.
+
 A batch is packed with blocks until adding the next would exceed `BATCH_CHARS`;
 a single block larger than the cap ships alone. Both loops from §1.2 use it.
 
@@ -382,6 +392,7 @@ mutation-proving being required.
 
 **Refuted — the plan must NOT act on it.** The conventions lens reported as
 blocking that `v019` would not reach existing projects, because v018-era copies
+would match a shipped hash and keep the old rubric.
 would match a shipped hash and keep the old rubric. That inverts
 `pipeline._load_template` (`pipeline.py:443`), which resolves to the skill's copy
 for exactly that case. Acting on it would have meant force-overwriting every

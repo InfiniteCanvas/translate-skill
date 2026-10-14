@@ -140,3 +140,118 @@ quietly dropped.
 `uv run tests/run_all.py` at `c720c2e` → **54 passed, 0 failed, 2673 checks**,
 verified live in the main tree with no ambient `config.local.json`. No code has
 been changed; this round is plan-only.
+---
+
+## P3 V1 — context blocks + explicit byte cap — `goal_holds: true`
+
+Commit scope: 6 modified + `v019.py`. Gate after the fix round: **54 suites /
+2691 checks / 0 failed** (baseline 2673; V1 added 18 checks, removed none).
+
+### The change
+
+Stage 2 emitted one ±2 context per hit line, so a term with clustered hits made
+the model re-read the same sentence up to eight times. V1 forms **blocks** —
+overlapping-or-touching windows merged, union-preserving, chapter-scoped, formed
+**before** batching — and replaces `MAX_CONTEXTS_PER_CALL` with
+`BATCH_CHARS = 8 × (2 × CONTEXT_WINDOW + 1) × 2 × CONTEXT_CHARS` = 32,000.
+
+Measured on `example/`, taken before any code moved: **8,414 contexts → 3,397
+blocks** (−59.6%), 42,070 → 28,239 lines (−32.9%, **1.49×**).
+
+**Three plan-level errors this phase caught, all of them mine:**
+
+1. **The first measurement was wrong.** An early run reported **12.82×** by
+   merging a term's hits *across chapter boundaries* — line indices restart at 0
+   per chapter, so unrelated hits coalesced into meaningless blocks. Chapter-scoped
+   re-run: **1.49×**. A unit error turned a 33% saving into a fabricated 93% one,
+   and the output looked entirely plausible. Same class as the no-op that shipped
+   behind a green gate: a confident number that is wrong.
+2. **The dispatch brief contradicted the plan.** `PLAN:305` already said "V1
+   ships `v019`"; the brief told the implementer the history edit was V2's. It
+   escalated rather than working around it — the discipline earning its keep.
+   `test_template_assets.py:73-80` forces template-edit ⟷ history-update to be
+   atomic, so V1 could not otherwise be green.
+3. **`BATCH_CHARS` scope was ambiguous.** "No batch exceeds BATCH_CHARS" does not
+   say whether the rendered prompt or the evidence counts. Pinned to **evidence**
+   (chapter name, line range, source/translation lines); the rubric, term block and
+   language names are constant per call and uncounted, because the derivation's own
+   arithmetic counts lines.
+
+### Audit round
+
+`goal_holds: true`, no blocking or major findings. The auditor built its own
+32-case harness rather than reusing the implementer's fixtures; the union
+invariant held on every case — first/last-line clamping, two-chapter terms,
+distance-5 vs distance-6, consecutive hits, empty term, `variants: None`,
+substring-of-a-longer entry, missing `translated/`.
+
+**Accepted and fixed:**
+
+- **F1 — the rubric named one thing two ways.** Line 7 said `block(s)` while the
+  body said "context" in six places, the placeholder was `{{contexts}}`, and the
+  deliberately-untouched `consensus_verify.md` said "context" throughout. A
+  verdict-controlling rubric should not make the model map between two names for
+  one unit. Unified on **context**; the `{{hit_count}}` half stays, because rules
+  3 and 4 reason about occurrences.
+- **F2 — the touch boundary was untested.** The `+1` mutation was not isolable:
+  no fixture placed hits at the distance where touching and overlapping differ.
+  Added `case_five_lines_apart_merges_and_six_does_not`; the mutation now turns
+  **exactly one check red**, and the distance-6 control half stays correct under
+  both conditions, which is what makes the first half attributable.
+
+### Refuted — and it is the second time this exact claim has surfaced
+
+The audit reported a pre-existing minor defect: that `.history.json`'s two older
+`glossary_verify.md` digests do not match the real blobs, leaving
+`_is_shipped_leftover` degraded and old rubric copies stuck as customizations.
+
+**Refuted.** Hashing raw blobs through `git cat-file` — the byte path, not a
+shell pipeline:
+
+```
+35789b7 -> e47706c8...  recorded: yes
+04d9d98 -> 7949dc00...  recorded: yes
+current -> 0fee31a4...  recorded: yes
+```
+
+All three match; no file contains a CR, so line-ending normalisation is not in
+play. The auditor's mismatching hashes came from hashing a re-encoded stream.
+
+**This is the same claim that arrived in P1 from the opposite direction.** There,
+a lens reported that `v019` would not reach existing projects and recommended a
+forced overwrite; the orchestrator refuted it on `_load_template` (`pipeline.py:443`),
+correctly. This audit concluded the same practical outcome — old copies stranded —
+for a different and wrong reason. Two reports, both wrong about the same fact, for
+different reasons, with opposite conclusions that would have converged on the same
+destructive action. Re-hashing raw bytes is what settled it.
+
+### History — three released revisions
+
+```
+e47706c8...  original
+7949dc00...  v018-era
+0fee31a4...  current (context naming)
+```
+
+A fourth digest, `4df3f410...`, existed only on this unmerged branch. Append-only
+exists so a revision some project may hold is never re-hashed away; those bytes
+were never released, so no project can hold them, and shipping them would put a
+revision into the history that was never shipped. **Removed rather than shipped**,
+by maintainer ruling. `e47706c8...` and `7949dc00...` unchanged in value and order.
+
+### Scope note
+
+`consensus_verify.md` was deliberately left unchanged. Read against how blocks
+actually behave, its rules 1-3 ("one term and several contexts, possibly in
+different chapters"; "the contexts must be compared against each other"; "every
+context here reached the job because…") all remain true, the arbitrator reads the
+new span definition inside `<Original task prompt>` on every call, and every
+candidate edit would have reworded a numbered rule — the thing V1.4 exists to
+forbid.
+
+### Carried to V2
+
+Doc mirrors are knowingly stale against the code and assigned to V2.4:
+`references/file-formats.md:1901`, `:1910` (names the deleted
+`MAX_CONTEXTS_PER_CALL`), `:2127`; `SKILL.md:801/803`; `README.md:502/506`;
+`references/maintenance.md:337-340`.

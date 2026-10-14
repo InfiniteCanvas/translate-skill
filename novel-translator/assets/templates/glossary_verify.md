@@ -4,7 +4,7 @@ A project builds a glossary as it translates. Each entry pins one rendering for 
 
 Glossary drift is exactly "words meaning different things in different contexts". You are therefore given ONE term and several CONTEXTS it appears in, possibly spread across different chapters, and you judge them AGAINST EACH OTHER. A sense that is ordinary in one context and absent from the pinned rendering is only visible by comparison.
 
-This batch holds {{context_count}} context(s) of that term.
+This batch holds {{context_count}} context(s) covering {{hit_count}} occurrence(s) of that term.
 
 <term>
 
@@ -18,7 +18,7 @@ This batch holds {{context_count}} context(s) of that term.
 
 </contexts>
 
-Each context is a window of lines around one place the term occurs. The source lines are numbered, and the translation lines carry THE SAME numbers, because the translation is line-for-line with its source: line N in one is line N in the other. Use them together. A window can show the same term meaning different things within a single chapter.
+Each context is a span of lines around one or more places the term occurs. The source lines are numbered, and the translation lines carry THE SAME numbers, because the translation is line-for-line with its source: line N in one is line N in the other. Use them together. A span can show the same term meaning different things within a single chapter.
 
 That is the only thing you are deciding. Answer, for each CONTEXT's chapter given below:
 
