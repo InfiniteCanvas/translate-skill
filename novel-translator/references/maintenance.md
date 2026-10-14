@@ -334,12 +334,15 @@ arbitrates its own fan-out through `consensus_verify.md`). It batches **by term
 across the book, not by chapter**: drift is "the same word meaning different
 things in different contexts", and a per-chapter call structurally cannot see
 one chapter's usage contradict another's. One call carries one term plus
-**contexts** — the ±2-line window around a line the term occurs on, source and
-translation paired at the **same line numbers** (index N is index N; that is the
-line-indexed protocol VALIDATE enforces). A term with more than 8 contexts is
+**contexts**, each a **block** — a hit's ±2-line window, with windows that overlap
+or touch merged into one span — with source and translation paired at the **same
+line numbers** (index N is index N; that is the line-indexed protocol VALIDATE
+enforces). Blocks are formed before batching, so a line near two hits is presented
+once. A term whose evidence exceeds one call's 128,000-character payload cap is
 split across follow-up calls until every one is covered — a dropped context is
-where a contaminating one hides — and the call count is printed. A verdict is
-still per `(term, chapter)`, and a verdict naming a term or chapter that was not
+where a contaminating one hides — and the call count is printed. A single block
+larger than the cap ships as a one-block batch rather than being dropped. A verdict
+is still per `(term, chapter)`, and a verdict naming a term or chapter that was not
 offered is dropped.
 
 Console markers: `[verify] <n> chapter(s) examined, <n> flagged ..., <n>

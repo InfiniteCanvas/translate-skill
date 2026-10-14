@@ -113,7 +113,7 @@ BIG_LINES = 60
 
 BIG_HITS = (1, 3, 5, 20, 22, 24, 50)
 
-BIG_CHAPTERS = ("CHAPTER_0001.md", "CHAPTER_0002.md", "CHAPTER_0003.md")
+BIG_CHAPTERS = tuple(f"CHAPTER_{n:04d}.md" for n in range(1, 18))
 
 FILLER = "the lamps burned low and the wind moved over the wall "
 
@@ -129,10 +129,11 @@ TOUCH_TRANSLATION = "\n".join("Heavenly Dao governs it." if n == 1
 
 
 def big_source() -> str:
-    """A chapter whose lines are long enough that three of them carry more
-    evidence than one call's BATCH_CHARS allows, with the term on BIG_HITS:
-    three hits that merge, three that merge again further down, and one alone
-    -- three blocks a chapter, separated by gaps that must stay gaps."""
+    """A chapter whose lines are long enough to fill a real payload, with the
+    term on BIG_HITS: three hits that merge, three that merge again further
+    down, and one alone -- three blocks a chapter, separated by gaps that must
+    stay gaps. The chapter renders 17,475 characters of evidence, so it is the
+    SEVENTEEN of these that overrun one call's cap (see big_project)."""
     return "\n".join("The 天道 " + FILLER * 8 if n in BIG_HITS else FILLER * 8
                      for n in range(1, BIG_LINES + 1))
 
@@ -147,8 +148,15 @@ def big_translation() -> str:
 
 
 def big_project(root: Path) -> Path:
-    """Three identical long chapters, so one term's evidence spans several
-    calls and the batches straddle chapter boundaries."""
+    """Seventeen identical long chapters, so one term's evidence spans several
+    calls and the batches straddle chapter boundaries.
+
+    The count is sized against the shipped BATCH_CHARS rather than chosen for
+    tidiness: one chapter renders 17,475 characters of evidence, so seventeen
+    render 297,075 and the cap splits them into three real batches. A fixture
+    small enough to fit one call would leave every "more than one call" check
+    in this file passing vacuously.
+    """
     return make_project(root, [(chapter, big_source(), big_translation())
                                for chapter in BIG_CHAPTERS])
 
@@ -353,6 +361,22 @@ def expected_lines() -> set[tuple[str, int]]:
     return covered
 
 
+def evidence_section(prompt: str) -> str:
+    """The evidence the model was handed, read out of the prompt TEXT between
+    its own markers, so a cap claim is checked against the prompt rather than
+    against the packer's own arithmetic."""
+    return prompt.split("<contexts>", 1)[1].split("</contexts>", 1)[0].strip("\n")
+
+
+def synth_block(chapter: str, low: int, lines: int, width: int) -> dict:
+    """One evidence block whose lines are `width` characters long, built
+    through the module's own constructor -- so a case can place a batch's cost
+    either side of the cap without inventing a book to put it in."""
+    body = [f"{n + 1}: " + "x" * width for n in range(low + lines)]
+    return verify._block(chapter, body, body, low, low + lines - 1, 3,
+                         {"src_count": 8, "tgt_count": 1, "floor": 2})
+
+
 def case_the_prompt_actually_carries_its_data() -> None:
     """The regression guard for the shipped template: assert what the MODEL is
     told, on the real path, with the stub below the seam.
@@ -391,6 +415,76 @@ def case_the_prompt_actually_carries_its_data() -> None:
         check("p7 NO UNFILLED PLACEHOLDER SURVIVES into the filled prompt",
               not re.findall(r"\{\{\s*[A-Za-z_][A-Za-z0-9_]*\s*\}\}", prompt),
               f"leftovers={re.findall(r'{{.*?}}', prompt)!r}")
+
+
+def drift_blocks() -> tuple[list[str], list[str], dict, list[dict]]:
+    """The DRIFT fixture read the way stage 2 reads it: the source lines, the
+    translation lines, the term under judgement, and the one chapter's blocks.
+    """
+    source = DRIFT_SOURCE.splitlines()
+    translated = DRIFT_TRANSLATION.splitlines()
+    scanned = verify.scan_chapter(CFG, TERMS, source, translated)
+    term = {"source": "天道", "pinned": "Heavenly Dao",
+            "definition": "the way of heaven", "category": "technique"}
+    entry = {"source": "天道", "variants": []}
+    blocks = verify._blocks("CHAPTER_0001.md", source, translated,
+                            verify._hit_lines(source, entry), scanned[0])
+    return source, translated, term, blocks
+
+
+def case_a_real_prompt_carries_its_data_with_nothing_stubbed() -> None:
+    """The check the previous campaign shipped without: a REAL prompt, built
+    through verify._prompt off the shipped template with no stub on the path.
+
+    D3a's stage 2 went out as a complete no-op -- a prompt with no {{}} in it,
+    2,466 characters of static rubric -- and the gate was green because the
+    provider call was stubbed out of the case. Nothing here stubs anything:
+    consensus.chat, client.chat and fill all run for real, so what is asserted
+    is the text a model would have been sent.
+
+    Every one of the six keys is load-bearing rather than three of them: the
+    evidence section and the batch line are asserted as well as the term and
+    the language names, because a template that LOST its {{contexts}} would
+    leave a prompt still carrying its term, its languages and no leftovers --
+    green on every weaker version of this check."""
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(Path(td), [
+            ("CHAPTER_0001.md", DRIFT_SOURCE, DRIFT_TRANSLATION),
+        ])
+        _source, _translated, term, blocks = drift_blocks()
+        prompt = verify._prompt(proj, CFG, term, blocks)
+        check("s1 the term under judgement reaches the model, with its pinned "
+              "rendering and its definition rather than its name alone",
+              "天道" in prompt and "Heavenly Dao" in prompt
+              and "the way of heaven" in prompt, f"len={len(prompt)}")
+        check("s2 both configured language names reach it, resolved through "
+              "_lang_name like every other prompt in the repo",
+              "Chinese" in prompt and "English" in prompt, "")
+        check("s3 NO UNFILLED PLACEHOLDER survives, and the evidence itself is "
+              "what the prompt carries",
+              not re.findall(r"\{\{\s*[A-Za-z_][A-Za-z0-9_]*\s*\}\}", prompt)
+              and evidence_section(prompt) == verify._render_blocks(blocks),
+              f"leftovers={re.findall(r'{{.*?}}', prompt)!r}")
+        check("s4 and the batch reports its own size in both units, so the "
+              "counts the rubric reasons about are stated",
+              "This batch holds 1 context(s) covering 8 occurrence(s) of that "
+              "term." in prompt, "")
+        template = (pipeline._SKILL_TEMPLATES / "glossary_verify.md").read_text(
+            encoding="utf-8")
+        write(proj / "templates" / "glossary_verify.md",
+              template.replace("{{contexts}}",
+                               "(the evidence this stage is about)"))
+        stripped = verify._prompt(proj, CFG, term, blocks)
+        check("s5 THE CONTROL THIS CASE RESTS ON: strip {{contexts}} out of a "
+              "SCRATCH COPY of the shipped template and the SAME prompt loses "
+              "its evidence while still carrying its term and its languages "
+              "-- so s3 is a live assertion, not a formality, and the "
+              "project's own copy winning the overlay is the path a real "
+              "project would hit",
+              "{{contexts}}" in template and "天道" in stripped
+              and "Chinese" in stripped
+              and evidence_section(stripped) != verify._render_blocks(blocks),
+              f"evidence={len(evidence_section(stripped))!r}")
 
 
 def case_every_shipped_verify_template_is_filled() -> None:
@@ -564,10 +658,10 @@ def case_an_oversized_block_still_ships() -> None:
     with tempfile.TemporaryDirectory() as td:
         proj = make_project(Path(td), [(
             "CHAPTER_0001.md",
-            "\n".join("The 天道 " + FILLER * 8 for _n in range(50)),
+            "\n".join("The 天道 " + FILLER * 8 for _n in range(200)),
             "\n".join("Heavenly Dao " + FILLER * 8 if n == 1
                       else "It was said again " + FILLER * 8
-                      for n in range(1, 51)),
+                      for n in range(1, 201)),
         )])
         code, out, cap = capture_prompts(proj, silent)
         check("t7 one block bigger than the cap on its own still SHIPS, alone: "
@@ -575,8 +669,10 @@ def case_an_oversized_block_still_ships() -> None:
               "evidence reaches a call",
               len(cap.prompts) == 1
               and prompt_blocks(cap.prompts[0]) == [("CHAPTER_0001.md", 1)]
-              and len(prompt_lines(cap.prompts[0])) == 50,
+              and len(prompt_lines(cap.prompts[0])) == 200
+              and len(evidence_section(cap.prompts[0])) > verify.BATCH_CHARS,
               f"prompts={len(cap.prompts)} "
+              f"evidence={len(evidence_section(cap.prompts[0])) if cap.prompts else 0} "
               f"lines={len(prompt_lines(cap.prompts[0])) if cap.prompts else 0}")
 
 
@@ -635,6 +731,52 @@ def case_contexts_are_split_into_follow_up_calls() -> None:
               and chapter_records(proj)[1]["findings"][0]["chapter"]
               == "CHAPTER_0002.md",
               f"row={chapter_records(proj)[1]!r}")
+
+
+def case_the_cap_bounds_the_evidence_the_model_reads() -> None:
+    """BATCH_CHARS bounds the RENDERED evidence, and both halves of that claim
+    are checked against the prompt text rather than against the packer.
+
+    The first implementation counted a proxy -- chapter name, line range, raw
+    lines -- while _render_blocks emitted more than that: the header line, the
+    "[N] " prefix, the indentation. Measured on a real book that under-counted
+    by 14.8%, so "no batch's evidence exceeds BATCH_CHARS" was true of the proxy
+    and false of the prompt. The cost is now taken from the renderer, and the
+    evidence is measured here off the text between the prompt's own markers.
+
+    The fixture is sized so a proxy-packed batch would BREACH the shipped cap,
+    not merely approach it: seventeen chapters render 297,075 characters of
+    evidence between them, so a batch filled to the proxy's 128,000 renders
+    well past it. A cheaper-to-measure cost function fails y1 on this fixture;
+    one that measures the rendered form passes. The oversized half stands on its
+    own feet too -- the block is measured over the cap, so "ships alone" cannot
+    pass because nothing was ever oversized."""
+    with tempfile.TemporaryDirectory() as td:
+        proj = big_project(Path(td))
+        code, out, cap = capture_prompts(proj, silent)
+        rendered = [len(evidence_section(prompt)) for prompt in cap.prompts]
+        check("y1 no batch's RENDERED evidence exceeds BATCH_CHARS -- the cap "
+              "measured off the prompt text, so the invariant is a claim about "
+              "what the model reads",
+              len(rendered) > 1
+              and all(size <= verify.BATCH_CHARS for size in rendered),
+              f"sizes={rendered} cap={verify.BATCH_CHARS}")
+        check("y2 and it is not vacuous: the term really did cost several "
+              "batches and the fullest one carries a real share of the cap, so "
+              "the cap is binding rather than decorative",
+              max(rendered) > verify.BATCH_CHARS // 2,
+              f"sizes={rendered}")
+    oversized = synth_block("CHAPTER_0001.md", 0, 200, 400)
+    small = synth_block("CHAPTER_0002.md", 0, 3, 400)
+    batches = verify._batches([small, oversized, small])
+    alone = [batch for batch in batches
+             if len(verify._render_blocks(batch)) > verify.BATCH_CHARS]
+    check("y3 a block bigger than the cap on its own still SHIPS ALONE -- never "
+          "dropped, never narrowed, never packed with a neighbour -- which is "
+          "the cap's one exception and the reason it is safe to have",
+          len(alone) == 1 and len(alone[0]) == 1 and alone[0] == [oversized]
+          and sum(len(batch) for batch in batches) == 3,
+          f"batches={[len(b) for b in batches]}")
 
 
 def case_a_confirmed_term_also_flags_the_glossary_entry() -> None:
@@ -952,6 +1094,7 @@ def main() -> int:
             pass
 
     case_the_prompt_actually_carries_its_data()
+    case_a_real_prompt_carries_its_data_with_nothing_stubbed()
     case_every_shipped_verify_template_is_filled()
     case_stage1_is_free_and_gates_stage2()
     case_stage2_batches_by_term_across_chapters()
@@ -962,6 +1105,7 @@ def main() -> int:
     case_an_oversized_block_still_ships()
     case_five_lines_apart_merges_and_six_does_not()
     case_contexts_are_split_into_follow_up_calls()
+    case_the_cap_bounds_the_evidence_the_model_reads()
     case_a_confirmed_term_also_flags_the_glossary_entry()
     case_status_flip_only_on_confirmation()
     case_stage1_hit_alone_never_flips()

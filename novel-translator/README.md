@@ -499,14 +499,17 @@ The model stage batches **by term across the whole book**, not by chapter. Drift
 "the same word meaning different things in different contexts", and a per-chapter
 call structurally cannot see a chapter that renders a term faithfully contradict
 one that doesn't — and a name that recurs through the book would pay the rubric
-once per chapter. Each call gets one term plus *contexts*: the ±2-line window around
-a line it occurs on, with the source and the translation at the **same line
-numbers**, since index N in one is index N in the other (the pairing VALIDATE
-enforces; a chapter whose counts differ is reported and left unchecked rather than
-guessed at). A term with more than 8 contexts is split across follow-up calls until
-every one is covered — a dropped context is exactly where a contaminating one hides
-— and the number of calls made is printed, so an expensive term is never a silent
-one. The verdict is still per `(term, chapter)`.
+once per chapter. Each call gets one term plus *contexts*, and a context is a
+**block**: a hit's ±2-line window, with windows that overlap or touch merged into one
+span, so a line near two hits is read once rather than twice. Source and translation
+sit at the **same line numbers**, since index N in one is index N in the other (the
+pairing VALIDATE enforces; a chapter whose counts differ is reported and left
+unchecked rather than guessed at). Blocks are formed before batching and travel in
+book order, and a term whose evidence exceeds one call's 128,000-character payload
+cap is split across follow-up calls until every one is covered — a dropped
+context is exactly where a contaminating one hides — and the number of calls made is
+printed, so an expensive term is never a silent one. The verdict is still per
+`(term, chapter)`.
 
 It never rewrites a translated chapter. A **confirmed** term marks its chapter
 `needs-review`, which is the existing human review surface and also what makes

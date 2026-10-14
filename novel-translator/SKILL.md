@@ -798,10 +798,12 @@ background build too. Builds produce no git commits — `export/`,
   low count is a real sense the pinned rendering cannot carry. Stage 2 batches
   **by term across the book**, not by chapter, because drift is "the same word
   meaning different things in different contexts" and that is only visible by
-  laying one term's usages against each other; each call carries the ±2-line
-  window around a line the term occurs on, source and translation paired at the
-  same line numbers. A term with more than 8 contexts is split across follow-up
-  calls so none is ever dropped, and the call count is printed. It is
+  laying one term's usages against each other; each call carries **blocks** — a
+  hit's ±2-line window (`CONTEXT_WINDOW`), overlapping or touching windows merged
+  into one span — with source and translation paired at the same line numbers, and
+  the blocks formed **before** batching so a line near two hits is presented once.
+  A term whose evidence exceeds one call's 128,000-character payload cap is split
+  across follow-up calls so none is ever dropped, and the call count is printed. It is
   advisory and **never rewrites a translated chapter**; a confirmed term marks
   its chapter `needs-review`, which is what makes it eligible for `retry`, so
   the flip happens **only** on a model confirmation and never on a counting hit.

@@ -93,20 +93,38 @@ CONTEXT_WINDOW = 2
 
 CONTEXT_CHARS = 400
 
-BATCH_CHARS = 8 * (2 * CONTEXT_WINDOW + 1) * 2 * CONTEXT_CHARS
-"""Characters one batch of EVIDENCE may carry: the chapter name, the line range,
-and every source and translation line in the batch's blocks. It does NOT bound
-the rendered prompt -- the rubric, the term block and the language names are
-constant per call, and counting prose is what would make the derivation below
-incoherent, because that arithmetic counts lines.
+BATCH_CHARS = 128_000
+"""Characters one batch of RENDERED EVIDENCE may carry: exactly what
+_render_blocks emits for that batch -- every block's header line with its
+occurrence counts, its "[N] " prefix, its source and translation lines, the
+indentation on all of them, and the blank-line gaps between blocks. It does NOT
+bound the rendered prompt -- the rubric, the term block and the language names are
+constant per call, and counting them would make the cap a statement about text
+the model never reads as evidence, which is a different quantity, measured per
+call rather than per batch.
 
-The number is the ceiling the old cap of eight contexts per call already
-implied, written out instead of counted in contexts (8 x (2 * CONTEXT_WINDOW +
-1) lines x 2 languages x CONTEXT_CHARS). It is a character budget rather than a
-block count because a block spans however many lines its hits' windows covered,
-so counting blocks bounds nothing. No batch that shipped under the count cap
-could exceed this number, so no batch gets larger; one that does is a single
-oversized block, which ships alone.
+_batches measures that rendered form by calling the same renderer the prompt is
+built from, so "no batch's evidence exceeds BATCH_CHARS" is a statement about
+what the model reads, not about a summary of it. A cost function counting only
+the chapter name, the line range and the raw lines under-counted the header, the
+prefix and the indentation by 14.8% on a real book: an invariant true of the
+proxy and false of the prompt, and true of the prompt is the whole point.
+
+The number is a share of the INPUT context every model in use has -- each
+carries at least 256,000 -- so a full batch of evidence still fits a call with
+room for the prompt's own prose, and a book whose chapters run far longer than
+the measured one is not split for nothing. The ceiling the old cap of eight
+contexts per call implied was 32,000 (8 x (2 * CONTEXT_WINDOW + 1) lines x 2
+languages x CONTEXT_CHARS), and it bound nothing real: a 23-term run on a real
+73-chapter book measured a p95 payload of 10,674 characters, and its largest
+single block rendered at 34,873 -- already past it before any batching decision
+was made. Overhead is what that derivation missed, since it counts line payload
+only: eight maximal windows render at 33,454 where their payload is 32,000.
+
+It is a character budget rather than a block count because a block spans however
+many lines its hits' windows covered, so counting blocks bounds nothing. A block
+larger than the cap on its own ships alone: the cap bounds how many blocks
+travel together, never whether evidence reaches a call.
 
 It is not derived from the project's config because the config carries no
 input-context key to derive it from: max_tokens and max_tokens_limit cap
@@ -257,20 +275,35 @@ def _term_block(term: dict) -> dict:
     }
 
 
+_BLOCK_SEPARATOR = "\n\n"
+
+
+def _render_block(block: dict, position: int) -> str:
+    """One block as the prompt presents it: the numbered header line with the
+    chapter's counts, then the source lines and the translation lines at the
+    same indices, both indented.
+
+    `position` is the number _render_blocks puts on the block, and it is part of
+    the rendered text, so _batches measures a block at the position its batch
+    really gives it -- a tenth block's "[10] " is wider than a first block's
+    "[1] ", and a cap that ignored that would be a cap on its own proxy again.
+    """
+    return (
+        f"[{position}] {block['chapter']} lines {block['lines']} "
+        f"(source {block['source_count']} occurrence(s), rendered "
+        f"{block['rendered_count']}, floor {block['floor']})\n"
+        f"  source:\n"
+        + "\n".join(f"    {line}" for line in block["source"])
+        + "\n  translation:\n"
+        + "\n".join(f"    {line}" for line in block["translation"]))
+
+
 def _render_blocks(blocks: list[dict]) -> str:
     """Blocks as the prompt's numbered evidence blocks, source above
     translation under each line range."""
-    rendered: list[str] = []
-    for position, block in enumerate(blocks, start=1):
-        rendered.append(
-            f"[{position}] {block['chapter']} lines {block['lines']} "
-            f"(source {block['source_count']} occurrence(s), rendered "
-            f"{block['rendered_count']}, floor {block['floor']})\n"
-            f"  source:\n"
-            + "\n".join(f"    {line}" for line in block["source"])
-            + "\n  translation:\n"
-            + "\n".join(f"    {line}" for line in block["translation"]))
-    return "\n\n".join(rendered)
+    return _BLOCK_SEPARATOR.join(
+        _render_block(block, position)
+        for position, block in enumerate(blocks, start=1))
 
 
 def scan_chapter(cfg: dict, g: dict, source_lines: list[str],
@@ -378,8 +411,8 @@ def _verdicts(project_dir: Path, cfg: dict, term: dict,
 
 
 def _batches(blocks: list[dict]) -> list[list[dict]]:
-    """Blocks packed into batches of at most BATCH_CHARS, in non-decreasing
-    (chapter, low) order whatever order they arrive in.
+    """Blocks packed into batches of at most BATCH_CHARS of RENDERED EVIDENCE,
+    in non-decreasing (chapter, low) order whatever order they arrive in.
 
     Sorting here rather than at the call sites makes the order a property of
     the batch itself: the model reads the first block first, and the chapter
@@ -387,11 +420,20 @@ def _batches(blocks: list[dict]) -> list[list[dict]]:
     Ordering drives attention and is not recovered by any later step, so it is
     stated once and holds for both callers.
 
-    A block's cost is BATCH_CHARS' unit and nothing else: its chapter name, its
-    line range, and every source and translation line. The rubric, the term
-    block and the language names are the same for every call, so counting them
-    would bound nothing packing decides -- the cap is on the evidence a batch
-    carries, not on the rendered prompt.
+    A block's cost is _render_block's own output for it AT THE POSITION THIS
+    BATCH PUTS IT IN, plus the gap that precedes it -- so `size` is the exact
+    length of _render_blocks(batch), not a summary of it. Taking the cost from
+    the renderer rather than re-deriving the layout here is what keeps the two
+    from drifting apart, and measuring the rendered form is what makes BATCH_CHARS
+    a bound on what the model reads: the header line, the "[N] " prefix and the
+    indentation are bytes the model receives, and a cost that omitted them
+    under-counted by 14.8% on a real book. A block ships at position one of its
+    batch, so a block that opens the next batch is measured again at position
+    one; the position of a block already in the batch never moves.
+
+    The rubric, the term block and the language names are the same for every
+    call, so they stay uncounted -- the cap is on the evidence a batch carries,
+    not on the rendered prompt.
 
     A block that alone exceeds the cap ships BY ITSELF. Dropping or narrowing
     evidence is the one outcome this stage must never produce, because a
@@ -403,12 +445,13 @@ def _batches(blocks: list[dict]) -> list[list[dict]]:
     current: list[dict] = []
     size = 0
     for block in ordered:
-        cost = (len(block["chapter"]) + len(block["lines"])
-                + sum(len(line) for line in block["source"])
-                + sum(len(line) for line in block["translation"]))
+        cost = len(_render_block(block, len(current) + 1))
+        if current:
+            cost += len(_BLOCK_SEPARATOR)
         if current and size + cost > BATCH_CHARS:
             batches.append(current)
             current, size = [], 0
+            cost = len(_render_block(block, 1))
         current.append(block)
         size += cost
     if current:

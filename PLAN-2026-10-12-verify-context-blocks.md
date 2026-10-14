@@ -25,12 +25,24 @@ finding; the disposition of all findings is §7.
 > union of presented lines is exactly the union of that term's per-hit
 > ±`CONTEXT_WINDOW` windows — no line dropped, none added.
 >
-> **No batch exceeds `BATCH_CHARS` (32,000).** That number is not new and is
-> not a preference: it is the **explicit form of the ceiling `MAX_CONTEXTS_PER_CALL
-> = 8` already implied** — 8 contexts × 5 lines × 2 (source + translation) ×
-> `CONTEXT_CHARS` (400). No batch that shipped before this change could exceed
-> it, so no batch can get larger. A batch always carries at least one block, so
-> an oversized single block still ships rather than looping.
+> **No batch exceeds `BATCH_CHARS` (128,000) rendered characters.** The cap bounds
+> the **rendered evidence** — what the model actually reads — and is measured
+> against that form, not a cheaper proxy that under-counts. It does not bound
+> the whole prompt: the rubric, the term block and the instruction preamble are
+> excluded, because a cap that counts text the model never sees as evidence
+> measures the wrong quantity.
+>
+> The number is a **maintainer ruling, not a derivation**: every provider in use
+> has a context window of at least 256k, so a 32k ceiling bound nothing real and
+> only truncated batches the provider would have handled comfortably. Measured on
+> the real run (§2 V2), rendered p95 was 10,674 with a single block reaching
+> 34,873 — already past a 32k cap, so 128k leaves headroom for books far longer
+> than the example project while keeping the cap honest.
+>
+> Because the cap is no longer derived from `MAX_CONTEXTS_PER_CALL = 8`, the
+> invariant that keeps packing terminating is stated explicitly instead: **a
+> batch always carries at least one block.** A block that alone exceeds the cap
+> still ships as a one-block batch rather than looping forever.
 >
 > **The verdict contract is unchanged:** one verdict per `(term, chapter)`, and
 > the fields a verdict carries (`source_count`, `rendered_count`, `floor`) are
@@ -192,22 +204,39 @@ coalescing within each batch would produce blocks that overlap *across* batches
 passes. This is the specific defect V1.6 exists to catch.
 
 **V1.2 — Explicit cap.**
-`MAX_CONTEXTS_PER_CALL` is replaced by `BATCH_CHARS = 32_000`, computed from the
-constants already in the module: `8 × (2 × CONTEXT_WINDOW + 1) × 2 ×
-CONTEXT_CHARS`. Its docstring states that it is the old count-cap's implied
-ceiling made explicit, and that the config carries **no input-context key**
-(`max_tokens` and `max_tokens_limit` are output caps), so a per-project
-derivation is not available without inventing a key.
+`MAX_CONTEXTS_PER_CALL` is replaced by `BATCH_CHARS = 128_000`, a **maintainer
+ruling recorded in the pinned goal** rather than a number computed from this
+module's constants: every provider in use has a context window of at least
+256k, so the 32,000 the old count cap implied (`8 × 5 × 2 × CONTEXT_CHARS`)
+bound nothing real. Its docstring states that basis, and that the config
+carries **no input-context key** (`max_tokens` and `max_tokens_limit` are
+output caps), so a per-project derivation is not available without inventing a
+key.
+
+Because the cap is no longer derived from the deleted count cap, the invariant
+that keeps packing terminating is stated explicitly: a batch always carries at
+least one block, so an oversized single block ships as a one-block batch
+instead of looping.
 
 **What `BATCH_CHARS` measures — pinned, because the goal sentence alone is
-ambiguous.** It bounds the batch's **evidence payload**: the chapter name, the
-line range, and every source and translation line. It does **not** bound the
-whole rendered prompt — the rubric, the term block and the language names are
-constant per call and are not counted. Counting evidence only is what makes the
-derivation coherent: the goal's own arithmetic (`8 × 5 × 2 × 400`) counts
-lines, so a cap that also counted prose could not be derived from it. Measured
-on the test fixture, a full batch is ~30,164 evidence chars inside a ~34,581
-char prompt.
+ambiguous.** It bounds the batch's **rendered evidence**: exactly what
+`_render_blocks` emits for that batch — each block's header line, its
+`[N] ` prefix, its occurrence counts, and every source and translation line,
+indentation included. It does **not** bound the whole rendered *prompt*: the
+rubric, the term block and the language names are constant per call and are not
+counted, because the goal's own arithmetic (`8 × 5 × 2 × 400`) counts lines and
+could not derive a cap that also counted prose.
+
+**Amended 2026-10-15 by maintainer ruling, after measurement.** The first
+implementation counted a *proxy* — chapter name, line range, and the raw line
+strings — while `_render_blocks` emitted more than that. Measured on the real
+book, the proxy under-counted by **14.8%**, and the largest batch rendered at
+**34,873** — already past the 32,000 cap that was in force, i.e. the cap was
+binding at the tail rather than decorative. The cap now measures the rendered
+form directly, so "no batch's evidence exceeds `BATCH_CHARS`" is literally true
+rather than true-of-a-proxy. That finding is why the cap is specified against
+the rendered form at all, and it stands independently of the number: a cap that
+measures a proxy measures nothing the model reads.
 
 A batch is packed with blocks until adding the next would exceed `BATCH_CHARS`;
 a single block larger than the cap ships alone. Both loops from §1.2 use it.
@@ -292,14 +321,40 @@ project. V2 takes the **after**: block count, lines per block, payload per batch
 calls per term, and the P95 payload. Report both sides side by side, so the
 shipped cap is chosen against an observed delta rather than a projected one.
 
-**V2.2 — Confirm or revise the cap.** The statistic that decides the cap is
-stated in advance: **the 95th percentile of per-batch payload over the measured
-terms**, with the cap set so that no more than 5% of batches would be split by
-it. If the observed P95 is materially below `BATCH_CHARS`, V2 records that the
-cap has headroom; if a single block routinely exceeds it, V2 reports the floor-of-one
-block behaviour so the reader knows a batch can exceed the cap by design. If no
-real project is available, V2 says so explicitly and marks the measurement
-outstanding — it must not present a synthetic number as an empirical one.
+**V2.2 — Cap confirmed against the measured distribution.** Recorded 2026-10-15
+from a live run on a scratch copy of `example/` (73 chapters, 39 flagged by
+stage 1, 55 verdicts, **24 batches**, 72 blocks, 23 terms with evidence):
+
+| percentile | proxy cost (old) | rendered (new, authoritative) |
+|---|---|---|
+| median | 1,200 | 1,399 |
+| p90 | 7,355 | 8,291 |
+| **p95** | **9,604** | **10,674** |
+| max | 31,376 | 34,873 |
+
+These numbers were measured **with 32,000 in force**, and they stand as
+measured. They are the evidence for two separate rulings, which are easier to
+read together than separately:
+
+- **The cap measures the wrong quantity** (the 14.8% proxy finding above). The
+  rendered column is authoritative; the proxy column is kept only to show the
+  gap the first implementation shipped with.
+- **The cap was the wrong size.** Rendered p95 is 10,674 — about **12× headroom**
+  under 128,000 — and the largest single block reached 34,873, already past a
+  32,000 ceiling. The cap was binding only in its extreme tail, against a
+  provider that carries at least 256k, so it truncated batches the model would
+  have read comfortably. `BATCH_CHARS` is therefore **128,000** (pinned goal).
+
+The earlier rule — *the cap is set so no more than 5% of batches are split by
+it* — no longer chooses the number and is retired rather than reworded: at
+128,000 the expected split count on this distribution is zero, which is the
+headroom the ruling asks for, not a statistic the cap is tuned to. A real book
+whose chapters run far longer than the example's still splits, and that branch
+is covered by tests sized against the shipped constant.
+
+This measurement is also what exposed the proxy/rendered gap above and forced
+the maintainer's ruling, so it did the job V2.2 exists for: a number chosen
+against an observed delta rather than a projection.
 
 **V2.3 — Rubric quality check.** Run the sentinel proof the previous campaign
 established: capture a real prompt and assert the term, chapter and both language
@@ -358,7 +413,7 @@ Two corrections to rev 0's stated rationale, both from the P1 round:
 | Risk | Mitigation |
 |---|---|
 | **Block formation lands inside the batch loop**, producing blocks that overlap across batches — model re-reads lines, saving lost, every per-prompt test green | V1.1 specifies formation-before-batching; V1.6's test 1 is scoped across all calls for a term, not per prompt |
-| **A batch exceeds the cap** | `BATCH_CHARS` is the old count-cap's implied ceiling; V1.6 test 1 plus the packer's own bound |
+| **A batch exceeds the cap** | The cap bounds the **rendered** evidence, measured by the same renderer the prompt is built from, and packing terminates on the stated floor-of-one-block invariant: a batch always carries at least one block, so an oversized block ships alone instead of looping |
 | **Trace attribution moves** (`contexts[0]`) | V1.5 decides it explicitly and pins it with a test; recorded as a behaviour change, not a surprise |
 | **The prompt edit guts the rubric** | V1.4 pins all six rules verbatim and the replacement text; the audit reads the shipped file against pinned wording |
 | **The prompt ships with an unfilled placeholder** — D3a's exact failure mode | `fill` raises; V2.3's sentinel proof is a gate step |

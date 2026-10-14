@@ -1898,12 +1898,19 @@ Stage 2 batches **by term across the whole book**, not by chapter: glossary drif
 term's usages laid against each other — a per-chapter call structurally cannot see a
 chapter that renders a term faithfully contradict one that does not, and a recurring
 name would otherwise pay the rubric once per chapter. One call carries one term plus
-**contexts**: each is the ±2-line window (`CONTEXT_WINDOW`) around one line the term
-occurs on, carrying the source lines and the translation lines at the **same 1-based
-line numbers**, plus that chapter's counts. Index N in the source is index N in the
-translation — the line-indexed protocol VALIDATE enforces — so a chapter whose
-translation line count differs from its source's is reported in `error` and left
-unchecked rather than paired by guesswork. The translation is read through
+**contexts**, and a context is a **block**: every hit's ±2-line window
+(`CONTEXT_WINDOW`) around a line the term occurs on, with windows that **overlap or
+touch merged** into one span running from the first window's start to the last one's
+end. Windows with a gap between them stay separate contexts, because joining across a
+gap would show lines no hit's window reached. Each block carries the source lines and
+the translation lines at the **same 1-based line numbers**, plus that chapter's
+counts. Index N in the source is index N in the translation — the line-indexed
+protocol VALIDATE enforces — so a chapter whose translation line count differs from
+its source's is reported in `error` and left unchecked rather than paired by
+guesswork. Blocks are formed **before** batching and are scoped to one chapter, so a
+line near two hits is presented once, inside one call, rather than twice inside one
+prompt or twice across two of them; blocks are ordered by `(chapter, first line)`,
+so the evidence arrives in book order. The translation is read through
 `read_chapter` the same way the source is: ASSEMBLE writes YAML frontmatter into
 every translated chapter, and those header lines are metadata rather than
 translated text, so counting them would leave every chapter the pipeline had
@@ -1911,10 +1918,17 @@ produced short by the size of its own header. Within that read, blank lines off
 both ends of the body are trimmed, because those trimmed source lines are what
 "line N" means to VALIDATE too.
 
-A term's contexts are sent in batches of at most `MAX_CONTEXTS_PER_CALL` (8), and a
-term with more is split into **follow-up calls until every context is covered**: a
-dropped context is exactly where a contaminating one hides, so the cap is paid for
-with more calls rather than a silent gap. The call count is printed by the command
+A term's contexts are sent in batches of at most `BATCH_CHARS` (**128,000 rendered
+characters**), and a term with more is split into **follow-up calls until every
+context is covered**: a dropped context is exactly where a contaminating one hides,
+so the cap is paid for with more calls rather than a silent gap. The cap bounds the
+batch's **rendered evidence** — exactly what its blocks render to, header line,
+`[N] ` prefix, occurrence counts, indentation and blank-line gaps included — not the
+whole prompt, because the rubric, the term block and the language names are the same
+for every call. It is measured by the same renderer the prompt is built from, so the
+bound is a statement about what the model reads. A block larger than the cap on its
+own ships as a **one-block batch**: a batch always carries at least one block, so
+packing terminates rather than looping. The call count is printed by the command
 (`across N call(s)`) and recorded as `calls` in the run event. A `(term, chapter)`
 whose contexts span batches still yields ONE finding — a batch boundary is a payload
 limit, not a second opinion. A verdict naming a term or chapter that was not offered
@@ -2128,7 +2142,7 @@ after filling — typos fail fast.
 | `glossary_merge.md` | glossary collision merge | `existing_json proposed_json` |
 | `glossary_cleanup.md` | balance drift-signal cleanup | `source_lang target_lang term_list sample_lines` |
 | `glossary_review.md` | `review glossary` model tier | `source_lang target_lang entries` |
-| `glossary_verify.md` | `verify` model tier (stage 2; one term per call, batched by term) | `source_lang target_lang term contexts context_count` |
+| `glossary_verify.md` | `verify` model tier (stage 2; one term per call, batched by term) | `source_lang target_lang term contexts context_count hit_count` |
 | `notes_review.md` | `review notes` model tier | `source_lang target_lang entries` |
 | `style_profile.md` | `--style auto` init / `profile` (legacy) | `source_lang target_lang sample_text` |
 | `consensus.md` | arbitration for a job with no `consensus_<job>.md` in either layer | `task_prompt candidates_section` |
