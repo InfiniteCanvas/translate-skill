@@ -79,6 +79,43 @@ all**, so the book-level figure is unknown until measured (§V2). The 4.17x is a
 ceiling for tightly-clustered terms, not an average, and no average is claimed
 here.
 
+### 1.1a MEASURED baseline — `example/`, 2026-10-14
+
+The bound above was superseded by a real measurement taken on the repository's
+fully translated example project **before** any code changed, using the shipped
+`_hit_lines` unmodified so the locator is the production one:
+
+| | today | after chapter-scoped coalescing |
+|---|---|---|
+| blocks | **8,414 contexts** | **3,397** (−59.6%) |
+| line payload | 42,070 | 28,239 (−32.9%, **1.49x**) |
+
+154 glossary entries, 73 source chapters, all entries matching at least one
+line. **69.5%** of consecutive hits (4,666 / 6,714) fall within coalescing range
+(≤4 lines apart); the gap histogram is the mixed picture §1.1 predicted —
+1,788 gaps at 1 line, 1,471 at 2, 859 at 3, and a long tail beyond 4 where
+nothing merges.
+
+**The measured figure is 1.49x, not the 6x the implementing note claimed and not
+the 4.17x ceiling.** A real book mixes clustered and scattered terms, so it lands
+between the two bounds. Rev 1 refused the 6x figure and committed to measuring
+instead; this is that measurement, and it landed inside the range the honest
+bound predicted.
+
+**The evidence-quality argument survives the correction better than the cost
+one.** The model is currently handed ~42,000 lines of evidence for this glossary,
+of which ~13,800 are repeats of a line already present in the same call. After
+V1 it receives ~28,000 lines, each appearing at most once.
+
+**Method note, recorded because it nearly produced a wrong headline.** The first
+measurement run reported **12.82x**, merging a term's hits across chapter
+boundaries — line indices restart at 0 per chapter, so hits from unrelated
+chapters coalesced into meaningless blocks. Blocks are chapter-scoped
+(`_context` carries exactly one `chapter`); re-run per chapter the figure is
+1.49x. A single unit error turned a 33% saving into a fabricated 93% one, and
+the output looked entirely plausible. Same class as the no-op shipped behind a
+green gate: a confident number that is wrong.
+
 ### 1.2 Two batching loops, not one
 
 `MAX_CONTEXTS_PER_CALL` appears at **two** independent sites:
@@ -217,9 +254,10 @@ with the constant. Its "across N call(s)" assertion at `:415` must keep holding.
 
 ### V2 — Measurement, and the doc mirrors
 
-**V2.1 — Measure.** Instrument and record, on a real project: hit spacing
-distribution, blocks per term, lines per block, calls per term, and payload per
-batch. Report these as observed distributions.
+**V2.1 — Measure.** §1.1a already recorded the **before** distribution on a real
+project. V2 takes the **after**: block count, lines per block, payload per batch,
+calls per term, and the P95 payload. Report both sides side by side, so the
+shipped cap is chosen against an observed delta rather than a projected one.
 
 **V2.2 — Confirm or revise the cap.** The statistic that decides the cap is
 stated in advance: **the 95th percentile of per-batch payload over the measured
