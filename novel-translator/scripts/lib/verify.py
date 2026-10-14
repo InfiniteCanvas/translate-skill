@@ -164,7 +164,14 @@ def _chapter_lines(translated_body: str) -> list[str]:
     trimmed lines are what "line N" means to the entire line-indexed protocol.
     Reading the translation raw instead would make a trailing blank line look
     like a paragraph of translation, and the pairing below would be off by one
-    against a protocol the pipeline itself is already enforcing."""
+    against a protocol the pipeline itself is already enforcing.
+
+    The body arriving here has already been through read_chapter, so the
+    frontmatter it carries on disk is gone and this is the blank-line half of
+    that same read -- the two halves together are what makes a source chapter
+    and its translation line up. Trimming what read_chapter left is therefore
+    completing it, not repeating it: the source is not trimmed a second time,
+    and must not be."""
     lines = translated_body.splitlines()
     first = 0
     while first < len(lines) and not lines[first].strip():
@@ -462,8 +469,16 @@ def verify_project(project_dir: Path, cfg: dict,
 
     A chapter is examined when translated/<file> exists next to its
     source/<file>: verify reads what the project already produced and never
-    translates. A missing or unreadable translation is simply not a chapter
-    this scan has anything to say about, so it contributes no record.
+    translates. A missing, unreadable or malformed translation -- one whose
+    frontmatter does not parse as a YAML mapping -- is simply not a chapter
+    this scan has anything to say about, so it contributes no record and its
+    error goes to `errors`.
+
+    Both sides of the pairing are read through project.read_chapter, never
+    raw. The source needs it for its own frontmatter; the translation needs it
+    because assemble.assemble writes frontmatter into every chapter it
+    produces, so reading the translation as a file counted those header lines
+    as translated text and rejected every real chapter as unpairable.
 
     `chapters`, when given, restricts the scan to those file names. It is the
     cascade check's scope: a glossary edit can only have contaminated the
@@ -491,8 +506,8 @@ def verify_project(project_dir: Path, cfg: dict,
             continue
         try:
             _frontmatter, source_body = project.read_chapter(chapter.path)
-            translated_body = translated.read_text(encoding="utf-8-sig")
-        except OSError as exc:
+            _translated_fm, translated_body = project.read_chapter(translated)
+        except (OSError, ValueError) as exc:
             errors.append(f"{chapter.file}: {exc}")
             continue
         source_lines = source_body.splitlines()

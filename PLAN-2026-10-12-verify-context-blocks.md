@@ -145,6 +145,29 @@ explicit `BATCH_CHARS` ceiling.
 
 ## 2. Phases
 
+### V0 — the line-parity guard rejects every chapter (added 2026-10-14)
+
+**Found while preparing V2's measurement, not by any audit.** `verify_project`
+reads the source through `project.read_chapter` — which strips YAML frontmatter
+(`project.py:181-191`) — but reads the **translation raw** (`verify.py:494`),
+and `_chapter_lines` strips only blank lines. `pipeline.py:1689` writes
+frontmatter into every translated chapter via `assemble.assemble(out_path, fm, …)`,
+so every chapter this pipeline produces carries 8 frontmatter lines plus one
+blank, and the parity guard at `verify.py:502` rejects it.
+
+Measured on `example/`, all 73 chapters: **0 pass parity**, every one short by
+exactly 9 lines. With frontmatter stripped, 73/73 pass, 39 chapters are flagged,
+55 under-used rows form, V1 produces 72 blocks, and stage 2 would make **39
+provider calls** instead of zero.
+
+**Consequence: `translate verify` has never checked a chapter on any project.**
+D3a's stage-2 audit, D3b's auto-verify trigger, and V1's coalescing are all
+unobservable until this lands.
+
+V0 fixes the read and adds a regression test carrying frontmatter that fails
+today. A genuine parity mismatch must still be rejected — the guard is right,
+its input was wrong. No other behaviour changes.
+
 ### V1 — Context blocks + explicit byte cap (atomic)
 
 **V1.1 — Block formation, before batching.**

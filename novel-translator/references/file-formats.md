@@ -1903,9 +1903,13 @@ occurs on, carrying the source lines and the translation lines at the **same 1-b
 line numbers**, plus that chapter's counts. Index N in the source is index N in the
 translation — the line-indexed protocol VALIDATE enforces — so a chapter whose
 translation line count differs from its source's is reported in `error` and left
-unchecked rather than paired by guesswork. Both ends of the translation are read the
-way `read_chapter` reads a source (blank lines trimmed), because those trimmed source
-lines are what "line N" means to VALIDATE too.
+unchecked rather than paired by guesswork. The translation is read through
+`read_chapter` the same way the source is: ASSEMBLE writes YAML frontmatter into
+every translated chapter, and those header lines are metadata rather than
+translated text, so counting them would leave every chapter the pipeline had
+produced short by the size of its own header. Within that read, blank lines off
+both ends of the body are trimmed, because those trimmed source lines are what
+"line N" means to VALIDATE too.
 
 A term's contexts are sent in batches of at most `MAX_CONTEXTS_PER_CALL` (8), and a
 term with more is split into **follow-up calls until every context is covered**: a

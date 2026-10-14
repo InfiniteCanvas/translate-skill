@@ -14,7 +14,8 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from lib import balance, client, config, consensus, glossary, pipeline, project, verify
+from lib import (assemble, balance, client, config, consensus, glossary,
+                  pipeline, project, verify)
 import translate
 
 PASSED = 0
@@ -784,6 +785,64 @@ def case_unpairable_chapter_is_reported_not_guessed() -> None:
               and statuses(proj) == ["translated"], f"calls={stub.calls!r}")
         check("u3 and it is not silent -- it exits non-zero and says so",
               code == 1 and "cannot be trusted" in out, f"code={code}")
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(Path(td), [
+            ("CHAPTER_0001.md", DRIFT_SOURCE, DRIFT_TRANSLATION),
+        ])
+        fm, _source_body = project.read_chapter(
+            proj / "source" / "CHAPTER_0001.md")
+        assemble.assemble(proj / "translated" / "CHAPTER_0001.md", fm,
+                          "The Way of Heaven", ["Only one line."])
+        code, out, stub = run_verify(proj, [], confirms("天道"))
+        record = chapter_records(proj)[0]
+        check("u4 frontmatter is not a loophole: a translation carrying it "
+              "whose BODY still differs in length is rejected exactly as one "
+              "without it would be",
+              "cannot be trusted" in str(record["error"])
+              and "8 lines" in record["error"]
+              and "1" in record["error"],
+              f"row={record!r}")
+        check("u5 and it is rejected the same way -- reported, never guessed "
+              "at, exit non-zero",
+              stub.calls == [] and record["findings"] == [] and code == 1
+              and statuses(proj) == ["translated"],
+              f"calls={stub.calls!r} code={code}")
+
+
+def case_a_pipeline_written_translation_is_readable() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(Path(td), [
+            ("CHAPTER_0001.md", DRIFT_SOURCE, DRIFT_TRANSLATION),
+        ])
+        fm, _source_body = project.read_chapter(
+            proj / "source" / "CHAPTER_0001.md")
+        assemble.assemble(proj / "translated" / "CHAPTER_0001.md", fm,
+                          "The Way of Heaven",
+                          DRIFT_TRANSLATION.splitlines())
+        raw = (proj / "translated" / "CHAPTER_0001.md").read_text(
+            encoding="utf-8")
+        check("v0 the fixture really is a frontmatter-bearing file longer than "
+              "its body, or every check below would pass for the wrong reason",
+              raw.startswith("---\n") and len(raw.splitlines())
+              > len(DRIFT_TRANSLATION.splitlines()),
+              f"raw={raw[:60]!r}")
+        code, out, stub = run_verify(proj, [], confirms("天道"))
+        rows = chapter_records(proj)
+        check("v1 the translation is read the way the source is, through "
+              "project.read_chapter, so the frontmatter assemble.assemble "
+              "wrote is not counted as translation lines",
+              len(rows) == 1 and rows[0]["error"] is None,
+              f"rows={rows!r} out={out!r}")
+        check("v2 the chapter is therefore EXAMINED, and its under-used term "
+              "reaches stage 2 instead of being skipped",
+              len(stub.calls) == 1 and len(rows) == 1 and rows[0]["terms"],
+              f"calls={stub.calls!r}")
+        findings = rows[0]["findings"] if rows else []
+        check("v3 and the verdict lands on it: a confirmed term, the chapter flips "
+              "and the scan exits 1, exactly as it would without frontmatter",
+              bool(findings) and findings[0]["mistranslates"] is True
+              and code == 1 and statuses(proj) == ["needs-review"],
+              f"findings={findings!r} code={code} {statuses(proj)!r}")
 
 
 def case_chapter_without_translation_is_not_examined() -> None:
@@ -910,6 +969,7 @@ def main() -> int:
     case_verdicts_outside_the_batch_are_dropped()
     case_model_failure_is_reported_not_swallowed()
     case_unpairable_chapter_is_reported_not_guessed()
+    case_a_pipeline_written_translation_is_readable()
     case_chapter_without_translation_is_not_examined()
     case_stage1_matches_the_pipeline_advisory()
     case_job_and_template_coupling()
