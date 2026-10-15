@@ -58,6 +58,22 @@ Defaults, key names, exit codes, flags, console output, or schemas that
 changed in code must be propagated to the matching docs. If code changed, run
 `uv run tests/run_all.py` and make it pass before calling the task done.
 
+**One green run is not evidence of green.** A check can be a clock race and
+stay green forever on the machine that wrote it: comparing a value against a
+SECOND, independent reading of the same quantity holds only while the clock has
+not ticked between the two calls. Two checks here were exactly that, and
+surfaced only under repeated runs — `logger._start_run` stamps `run_id` from
+`time.strftime('%Y%m%d-%H%M%S')` and `logdashboard.collect` stamps
+`generated_at` with `isoformat(timespec="seconds")`, both at one-second
+resolution. Any check spanning a written artifact and a re-collection, or both
+sides of a run reset, inherits the race: the run_id case read a whole bucket
+that a reset had left holding two runs, so it only passed because same-second
+runs collapse to one id. When a check fails like this, scope it to what it
+names — the events one run produced, the fields that are not time-derived — and
+assert a timestamp's shape rather than its equality with a separately sampled
+one. Re-run the gate a few times before believing it; the failures are rare by
+construction, so a single red run is evidence and a single green one is not.
+
 ## Comments: the code documents itself
 
 `novel-translator/scripts/**.py` carries no prose `#` comments. Docstrings are
