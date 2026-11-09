@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests>=2.31", "pyyaml>=6.0"]
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "openai>=1.60", "anthropic>=1.0"]
 # ///
 import json
 import sys

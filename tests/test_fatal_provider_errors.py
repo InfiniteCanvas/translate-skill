@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests>=2.31", "pyyaml"]
+# dependencies = ["pyyaml", "openai>=1.60", "anthropic>=1.0", "httpx2>=2.0"]
 # ///
 """Tests for the fatal-provider-error policy.
 
@@ -35,8 +35,9 @@ What is pinned here:
   * LLMFatal is BOTH an LLMError and a PipelineError, which is what routes it
     through every `except PipelineError: raise` stage guard untouched.
 
-Hermetic: client.requests is swapped for a fake whose post() records the JSON
-body and returns a scripted response. No network, restore in finally.
+Hermetic: client._openai_client is swapped for a stub whose create() records
+the effective wire body and raises REAL openai exception instances (httpx2
+responses) from a scripted queue. No network, restore in finally.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
@@ -44,13 +45,15 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 """
 from __future__ import annotations
 
+import json as _json
 import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-import requests
+import httpx2
+import openai
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -71,30 +74,39 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         print(f"FAIL  {name}" + (f"  [{detail}]" if detail else ""))
 
 
-class FakeResponse:
-    def __init__(self, status_code: int, text: str) -> None:
-        self.status_code = status_code
-        self.text = text
+def _wire_body(kwargs: dict) -> dict:
+    """The effective JSON body the SDK serializes: declared params merged
+    under extra_body (extra_body values win -- verified SDK merge order)."""
+    body = {k: v for k, v in kwargs.items()
+            if k in ("model", "messages", "temperature", "max_tokens", "top_p")}
+    body.update(kwargs.get("extra_body") or {})
+    return body
 
-    def json(self):
-        import json as _json
-        return _json.loads(self.text)
 
+class StubOpenAI:
+    """client._openai_client stand-in: chat.completions.create(**kwargs)
+    records the effective wire body and answers from a scripted queue -- a
+    SimpleNamespace payload returns as the 200 completion, an openai
+    exception instance is raised verbatim. A single-element script means the
+    second create (if any) reuses the last entry, so a test that asserts
+    post_count == 1 is asserting the retry never happened rather than just
+    observing its outcome."""
 
-class PostLog:
-    """Records every request body and replays a scripted response list.
-
-    A single-element script means the second post (if any) reuses the last
-    response, so a test that asserts post_count == 1 is asserting the retry
-    never happened rather than just observing its outcome."""
-
-    def __init__(self, script: list) -> None:
-        self.script = script
+    def __init__(self) -> None:
+        self.script: list = []
         self.bodies: list[dict] = []
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.models = SimpleNamespace(list=self._list)
 
-    def post(self, url, json=None, headers=None, timeout=None):
-        self.bodies.append(json)
-        return self.script[min(len(self.bodies) - 1, len(self.script) - 1)]
+    def _create(self, **kwargs):
+        self.bodies.append(_wire_body(kwargs))
+        step = self.script[min(len(self.bodies) - 1, len(self.script) - 1)]
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    def _list(self, timeout=None, extra_headers=None):
+        raise NotImplementedError("no resolve_model path is exercised here")
 
 
 @contextmanager
@@ -117,21 +129,44 @@ def no_backoff():
 
 @contextmanager
 def scripted(script: list):
-    log = PostLog(script)
-    orig = client.requests
-    client.requests = SimpleNamespace(post=log.post,
-                                      RequestException=requests.RequestException)
+    log = StubOpenAI()
+    log.script = list(script)
+    orig = client._openai_client
+    client._openai_client = lambda cfg: log
     try:
         with no_backoff():
             yield log
     finally:
-        client.requests = orig
+        client._openai_client = orig
 
 
-def zai(code: str, message: str = "boom", status: int = 400) -> FakeResponse:
-    import json as _json
-    return FakeResponse(status, _json.dumps(
-        {"error": {"code": code, "message": message}}))
+def zai(code: str, message: str = "boom", status: int = 400) -> openai.APIStatusError:
+    """A REAL openai.APIStatusError carrying a Z.AI-shaped body, in the
+    shape the SDK actually delivers: the parsed error envelope UNWRAPPED to
+    the inner error object (openai/_client.py lifts `error` out before
+    constructing the exception, so exc.body is {"code": ...})."""
+    body = {"code": code, "message": message}
+    request = httpx2.Request("POST", "http://fake:1/v1/chat/completions")
+    response = httpx2.Response(status, request=request,
+                               text=_json.dumps({"error": body}))
+    return openai.APIStatusError(f"Error {status}", response=response, body=body)
+
+
+def plain_error(status: int, text: str) -> openai.APIStatusError:
+    """A status error whose body the SDK kept as a string (non-JSON)."""
+    request = httpx2.Request("POST", "http://fake:1/v1/chat/completions")
+    response = httpx2.Response(status, request=request, text=text)
+    return openai.APIStatusError(f"Error {status}", response=response, body=None)
+
+
+def completion(content: str = "hi") -> SimpleNamespace:
+    """An SDK-shaped 200 completion (the fields chat() reads)."""
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content=content, reasoning_content=None),
+            finish_reason="stop")],
+        usage=None,
+    )
 
 
 def block(**kw) -> dict:
@@ -212,34 +247,33 @@ def case_c_recoverable_codes_still_retry() -> None:
 
 
 def case_d_recoverable_failures_still_succeed() -> None:
-    ok = FakeResponse(200, '{"choices": [{"message": {"content": "hi"}}]}')
     for status in (429, 500, 503):
-        with scripted([FakeResponse(status, "nope"), ok]) as log:
+        with scripted([plain_error(status, "nope"), completion("hi")]) as log:
             text = call()
         check(f"d HTTP {status}: retried, then succeeded on attempt 2",
               text == "hi" and len(log.bodies) == 2, f"text={text!r}")
 
 
 def case_e_unreadable_bodies_never_raise() -> None:
-    """`_fatal_code` is on the hot path for EVERY response, including the 200s
-    that dominate a run. It must not raise on any shape a real server can
-    produce, and a malformed body must not cost us the real HTTP status."""
-    for name, resp in [
-        ("non-JSON body", FakeResponse(400, "<html>gateway</html>")),
-        ("JSON array", FakeResponse(400, "[1,2,3]")),
-        ("no error key", FakeResponse(400, '{"detail":"nope"}')),
-        ("error is a string", FakeResponse(400, '{"error":"nope"}')),
-        ("null code", FakeResponse(400, '{"error":{"code":null}}')),
-        ("empty code", FakeResponse(400, '{"error":{"code":"  "}}')),
+    """`_fatal_code` is on the hot path for EVERY error response. It must not
+    raise on any shape a real server can produce, and a malformed body must
+    not cost us the real HTTP status."""
+    for name, payload in [
+        ("non-JSON body (the SDK keeps it a string)", "<html>gateway</html>"),
+        ("JSON array", [1, 2, 3]),
+        ("no error key", {"detail": "nope"}),
+        ("error is a string", {"error": "nope"}),
+        ("null code", {"error": {"code": None}}),
+        ("empty code", {"error": {"code": "  "}}),
     ]:
         check(f"e {name}: _fatal_code returns None, no raise",
-              client._fatal_code(resp) is None, "")
+              client._fatal_code(payload) is None, "")
 
     check("e int code is normalized to a string",
-          client._fatal_code(FakeResponse(400, '{"error":{"code":1210}}')) == "1210",
+          client._fatal_code({"error": {"code": 1210}}) == "1210",
           "")
 
-    with scripted([FakeResponse(400, "<html>gateway</html>")] * 8) as log:
+    with scripted([plain_error(400, "<html>gateway</html>")] * 8) as log:
         try:
             call()
         except Exception:
@@ -285,7 +319,7 @@ def case_g_exhausted_retries_are_still_llmerror() -> None:
     plain LLMError. It is equally terminal at the CLI -- both arms return exit 3
     -- but the type still distinguishes "the provider said no" from "we ran out
     of patience"."""
-    with scripted([FakeResponse(503, "unavailable")] * 8) as log:
+    with scripted([plain_error(503, "unavailable")] * 8) as log:
         exc: Exception | None = None
         try:
             call()
@@ -303,7 +337,7 @@ def case_h_probe_names_the_business_code() -> None:
     the code, 'HTTP 429' cannot be told apart from an empty balance (1113) vs a
     rate limit (1302) -- the difference between recharging and waiting."""
     b = block(max_tokens=None)
-    with scripted([zai("1113", "Insufficient balance", status=429)]) as log:
+    with scripted([zai("1113", "Insufficient balance", status=429)]):
         exc: Exception | None = None
         try:
             client.probe(b)

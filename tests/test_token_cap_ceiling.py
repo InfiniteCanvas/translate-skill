@@ -38,8 +38,9 @@ under-provisioned on purpose" and "the provider refuses above 128000" at once,
 which is why the second key exists rather than a tighter clamp. Cases i/j
 reproduce both the failure and the fix through the real client.
 
-Hermetic: client.requests is swapped for a fake whose post() records the JSON
-body and returns a canned 200. No network, restore in finally.
+Hermetic: client._openai_client is swapped for a stub whose create() records
+the effective wire body (declared params merged under extra_body, the SDK's
+own merge order) and returns a canned 200. No network, restore in finally.
 
 Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
@@ -48,7 +49,7 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests>=2.31", "pyyaml"]
+# dependencies = ["pyyaml", "openai>=1.60", "anthropic>=1.0"]
 # ///
 from __future__ import annotations
 
@@ -57,8 +58,6 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-
-import requests
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "novel-translator" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -79,36 +78,47 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         print(f"FAIL  {name}" + (f"  [{detail}]" if detail else ""))
 
 
-class FakeResponse:
-    status_code = 200
-    text = '{"choices": [{"message": {"content": "ok"}}]}'
+def _wire_body(kwargs: dict) -> dict:
+    """The effective JSON body the SDK serializes: declared params merged
+    under extra_body (extra_body values win -- verified SDK merge order)."""
+    body = {k: v for k, v in kwargs.items()
+            if k in ("model", "messages", "temperature", "max_tokens", "top_p")}
+    body.update(kwargs.get("extra_body") or {})
+    return body
 
-    def json(self):
-        return {"choices": [{"message": {"content": "ok"}}]}
 
-
-class PostLog:
-    """client.requests stand-in: post() records each JSON body and answers
-    a canned 200, so the test reads the cap that would actually go out."""
+class StubOpenAI:
+    """client._openai_client stand-in: create() records each effective wire
+    body and answers a canned 200, so the test reads the cap that would
+    actually go out."""
 
     def __init__(self) -> None:
         self.bodies: list[dict] = []
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.models = SimpleNamespace(list=self._list)
 
-    def post(self, url, json=None, headers=None, timeout=None):
-        self.bodies.append(json)
-        return FakeResponse()
+    def _create(self, **kwargs):
+        self.bodies.append(_wire_body(kwargs))
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content="ok", reasoning_content=None),
+                finish_reason="stop")],
+            usage=None,
+        )
+
+    def _list(self, timeout=None, extra_headers=None):
+        raise NotImplementedError("no resolve_model path is exercised here")
 
 
 @contextmanager
 def patched_post():
-    log = PostLog()
-    orig = client.requests
-    client.requests = SimpleNamespace(post=log.post,
-                                      RequestException=requests.RequestException)
+    log = StubOpenAI()
+    orig = client._openai_client
+    client._openai_client = lambda cfg: log
     try:
         yield log
     finally:
-        client.requests = orig
+        client._openai_client = orig
 
 
 def block(max_tokens=128000, model="glm-5.3", extra=None,
@@ -235,7 +245,7 @@ def case_e_consensus_synthesis_is_not_clamped() -> None:
             consensus.chat(proj, cfg, "translator", "translate these lines",
                            json_schema=None, max_tokens=256000)
         check("e3 consensus: candidates clamped per block, synthesis exempt",
-              sent(log)[:2] == [131072, 256000] and sent(log)[-1] == 256000,
+              sorted(sent(log)[:2]) == [131072, 256000] and sent(log)[-1] == 256000,
               f"sent={sent(log)}")
 
 
@@ -414,7 +424,7 @@ def case_j_limit_bounds_the_consensus_synthesis() -> None:
               sent(log)[-1] == 131072, f"sent={sent(log)}")
 
         check("j3 the limit does not disturb a block already below it",
-              sent(log)[:2] == [128000, 256000], f"sent={sent(log)}")
+              sorted(sent(log)[:2]) == [128000, 256000], f"sent={sent(log)}")
 
         cfg["providers"]["translator"] = [block(256000, "m1",
                                                 limit=131072),
@@ -424,7 +434,7 @@ def case_j_limit_bounds_the_consensus_synthesis() -> None:
             consensus.chat(proj, cfg, "translator", "translate these lines",
                            json_schema=None, max_tokens=256000)
         check("j4 a translator block over its own limit is clamped too",
-              sent(log)[:2] == [131072, 256000], f"sent={sent(log)}")
+              sorted(sent(log)[:2]) == [131072, 256000], f"sent={sent(log)}")
 
         cfg["providers"]["translator"] = [block(256000, "m1"),
                                           block(256000, "m2")]

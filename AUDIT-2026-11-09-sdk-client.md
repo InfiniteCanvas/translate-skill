@@ -65,4 +65,160 @@ majors (`uv run --with "openai>=1.60"` → **openai 3.48.0**;
 
 ## D1 — SDK client rewrite (2026-11-09)
 
-*(entries appended per round)*
+**Implemented** (orchestrator-implemented per the Flash-tier implementer role;
+all amendments A1–A8 encoded): `lib/client.py` rewritten onto the official
+packages — `chat` dispatches on `provider_cfg.get("protocol", "openai")`
+(refusing anything else with an LLMError naming the block), `_openai_client` /
+`_anthropic_client` are the swappable factory seam (`timeout=_CHAT_TIMEOUT`,
+`max_retries=0`; openai gets a placeholder key + per-call `Authorization: Omit`
+for keyless blocks, anthropic gets `api_key=""` + the same Omit), the openai
+backend merges `chat_template_kwargs`/`top_k`/`repetition_penalty` into
+`extra_body` then the user's `extra_body` then `response_format` LAST
+(wire-identical to the requests client — the SDK merges extra_body into the
+body and extra_body beats declared params), the anthropic backend speaks
+`messages.create` with `output_config={"format": ...}` guided JSON,
+null-knob omission, usage normalization and no fatal table. `resolve_model`
+gained `protocol="openai"` (cache key `(base, auth, protocol)`; the two
+production call sites and the two test fakes updated). `_fatal_code` now
+takes a parsed payload; `_status_fatal_code` reads `exc.body` with a
+`response.json()` fallback. `_usage_dict` flattens SDK pydantic usage with
+`model_dump(exclude_none=True)` — a plain `model_dump()` injects null-valued
+detail fields the server never sent, which is WORSE fidelity than the old
+verbatim server-dict passthrough.
+
+**Suites**: the three transport-coupled suites re-seamed onto the factory
+seam (real `openai`/`anthropic` exception instances over `httpx2`
+responses; effective wire bodies = declared params merged under
+`extra_body`, the SDK's own merge order); every existing assertion kept —
+cache keys gain the protocol dimension (planned), case_4 gains a fifth
+guided token (`output_config`); three NEW suites: `test_anthropic_backend.py`
+(wire shape, guided fallback, ladder, dispatch, cache, no-auth),
+`test_meta_contract.py` (call_id pairing + exactly-one-llm_response per
+terminal path + JSON-serializable metas + usage through the REAL
+`logger._count` for both protocols), `test_sdk_transport.py` (the REAL SDK
+clients over `httpx2.MockTransport`: wire bodies, headers, no-auth,
+construction pins). PEP 723 sweep: 40 files (37 transitive-client suites by
+whole-file import-line scan, translate.py, gen_cli_doc.py, run_all.py + its
+docstring union list).
+
+**Doc mirrors in this change** (A8): SKILL.md description line +
+Providers-bullet job list (the `verify` job was missing — pre-existing drift
+the edit touched); README prerequisites + hosted-provider bullet
+(per-protocol rules); file-formats.md guided-JSON-per-protocol, the
+openai-protocol-only ZAI fatal table, and the usage-normalization note.
+
+**Gate** (orchestrator-run, `uv run <worktree>/tests/run_all.py`):
+- Run 1 (post-implementation): **56 passed, 1 failed** (2739 checks) — the 1
+  is `tests/test_autobuild.py`, **pre-existing on this platform**: it fails
+  identically on the pristine main tree (`case_6` kill-tool stubbing;
+  `ValueError: substring not found` at tests/test_autobuild.py:380 both
+  trees; the file is byte-identical to base — `git diff fc04503 --
+  tests/test_autobuild.py` is empty). Adjudicated pre-existing red: out of
+  this campaign's brief, not fixed here.
+- Additional runs follow the audit's fix loop ("one green run is not
+  evidence of green").
+
+**Probes run while implementing** (all reproducible): openai 3.48.0 /
+anthropic 2.7.0 resolved by the floors; `temperature=None` serializes as
+wire `null` on the openai path (parity with the requests client); the
+anthropic empty-key wire carries `Authorization: Bearer ` (empty) until the
+Omit sentinel suppresses it; `messages.create(output_format=...)` raises
+TypeError (the dispositions' `output_config` amendment was mandatory).
+
+**D1 adversarial audit** (3 lenses — goal-conformance, conventions,
+correctness-and-security — on deepseek v4.1 flash): 20 findings. The
+correctness lens confirmed the load-bearing behaviors it probed (wire
+bodies identical to base on every non-extra-win row, no-auth suppression,
+no key leakage) and caught **one HIGH defect the stub-seam suites could not
+see**: the openai SDK hands status-error bodies UNWRAPPED (`exc.body ==
+{"code": 1214}` — `_client.py` lifts `error` out of the envelope), so
+`_fatal_code`'s `payload["error"]["code"]` never matched and the whole
+ZAI_FATAL_CODES channel was dead against real SDK errors while the suites
+(whose `zai()` helper hand-built the wrapper shape) stayed green. The
+auditors re-ran the six re-seamed/new suites themselves (38/86/44/34/25/26)
+and reproduced the `test_autobuild` red on the pristine fc04503 tree.
+
+**Dispositions and fixes (all adopted, implemented in the fixer round)**:
+- **F1 (HIGH)** — `_fatal_code` reads BOTH the SDK's unwrapped error object
+  and the wrapped envelope; the two suites' `zai()` helpers now build the
+  SDK's real shape; `test_sdk_transport` o16 drives a fatal code through
+  the REAL SDK client over MockTransport.
+- **F2 (MED)** — the anthropic empty-content terminal path normalizes usage
+  (`_anthropic_meta_usage` shared by both terminal paths); e7 asserts the
+  normalized meta usage + finish_reason there.
+- **F3 (MED)** — malformed 200s can no longer escape raw
+  (JSONDecodeError/TypeError/KeyError/InvalidURL): client construction moved
+  BEFORE the first meta (wrapped → LLMError, no trace lines, so no unpaired
+  request line); per-attempt catch-all → terminal `llm_response` meta +
+  LLMError; extraction guarded; probe given the same guards.
+- **F4 (LOW)** — a 200 carrying a ZAI error envelope raises LLMFatal again
+  (via the `completion.error` extra attribute in the not-choices branch).
+- **F5 (LOW)** — both request metas report the EFFECTIVE post-extra_body
+  param values (the base client logged the post-merge body; the first
+  implementation had regressed to pre-merge declared values).
+- **F6 (MED)** — the three prose comment blocks in client.py and the inline
+  prose comments in the new suites removed (AGENTS.md no-prose-comments).
+- **F7/F8 (MED)** — SKILL.md's Providers operating-notes bullet and
+  file-formats.md's base_url + sampling-knobs bullets now carry the
+  per-protocol wire rules (the first implementation had updated only the
+  description line and the guided/trace sections; the mirrors contradicted
+  each other).
+- **F9 (LOW)** — README's trace wording protocol-neutral.
+- **F10 (LOW)** — `tests/run_all.py`'s union list (docstring + dependency
+  line) gains `httpx2` (five suites import it directly; the runner spawns
+  children with its own interpreter).
+- **F11 (LOW)** — `test_sdk_transport`'s two placeholder `check(True)`
+  checks replaced with a real keyless-resolve assertion (o11) and a
+  deletion (a8; a9 does the real work).
+- **F12 (LOW)** — `test_meta_contract`'s terminal-path table gained seven
+  anthropic rows (success/retry/fallback/4xx/exhausted/empty/connection)
+  and the runner routes each row by the block's protocol.
+- **F13 (LOW)** — chat-path connection-ladder cases added (openai case_8,
+  anthropic e8: 4 attempts, backoff [2,4,8], paired metas); the temperature
+  default (o14) and null-temperature passthrough (o15) pinned on the real
+  wire.
+- **F14 (LOW, pre-existing flake)** — `test_token_cap_ceiling`'s candidate
+  rows (e3/j3/j4) compared thread-scheduling-dependent append order (the
+  auditor measured 2/13 failures on base AND branch); the three comparisons
+  are now order-independent (`sorted`) — the per-block clamp VALUES are
+  what they pin; no assertion lost a value. 5 consecutive runs green.
+
+**D1 delta re-audit** (2 lenses on deepseek v4.1 flash over the fixes):
+7 findings — F1/F2/F4/F11–F14 **confirmed sound and complete** (the auditors
+re-ran the six named suites and drove real-SDK MockTransport probes: the
+unwrapped fatal body reaches LLMFatal on the first response with paired
+metas; malformed 200s → LLMError with exactly one terminal meta; the
+anthropic empty path normalizes usage). Residuals, all fixed:
+- probe()/resolve_model() constructed SDK clients outside every guard —
+  raw `httpx2.InvalidURL`/`ValueError` escaped on malformed base_urls →
+  construction (and the openai `_v1_url` normalization, whose IPv6
+  `ValueError` edge is pre-existing) is now inside the guards on chat,
+  probe and resolve_model on both protocols: an LLMError names the raw
+  base and, construction being pre-meta, no trace lines are written (the
+  disposition's design; the delta ask's stricter "terminal meta" reading
+  for construction failures is adjudicated as the disposition governing).
+- the openai request meta omitted a top_p supplied ONLY via extra_body →
+  the meta now reports the effective top_p.
+- three prose comments survived in the new suites → removed.
+- file-formats' sampling-knobs bullet had NOT landed (the edit was in the
+  script that died on the README anchor before writing) → applied, plus the
+  new provider-failure sentence's "every failure takes the ladder" wording
+  corrected (anthropic non-retryable 4xx raise immediately — d4 pins it).
+
+**Post-fix gate** (four runs): `56 passed, 1 failed` each (2780 checks), the
+1 being the adjudicated pre-existing `test_autobuild` platform red.
+Suite set green individually after the residuals: client_cache 41,
+anthropic_backend 36, sdk_transport 28, meta_contract 59,
+fatal_provider_errors 86, token_cap_ceiling 44 (×5 stable), ping 19,
+consensus 34 — all 0 failed.
+
+**D1 verdict**: the pinned goal holds on the executed diff — every clause
+has an implementation path and a proving check (public API unchanged;
+ladder semantics incl. the retryable-400 branch; guided fallback per
+protocol; meta pairing incl. exactly-one-response on every terminal path;
+OpenAI-shaped usage on every terminal path; openai-protocol wire identity
+verified old-vs-new by the auditors' wirecmp on the minimal/null-temp/
+all-knobs/extra-win/extra-rf-conflict/cap-clamp rows; anthropic blocks
+speak the native Messages API with `output_config.format`). Residuals
+adjudicated: the `test_autobuild` platform red (pre-existing, out of
+brief) and the suite-flake's order-independent comparisons (recorded).

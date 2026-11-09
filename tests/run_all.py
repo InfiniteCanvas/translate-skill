@@ -24,8 +24,9 @@ and a script reporting zero checks is failed here. The check count is
 also totaled, so the summary reports assertions rather than scripts.
 
 Stdlib only, no pytest. The inline dependencies below are the union the
-test scripts themselves import (pyyaml, requests, ebooklib, pillow): uv
-materializes them for this interpreter, which the spawned children inherit.
+test scripts themselves import (pyyaml, requests, ebooklib, pillow, openai,
+anthropic, httpx2): uv materializes them for this interpreter, which the
+spawned children inherit.
 Run from anywhere:
 
     uv run tests/run_all.py
@@ -46,7 +47,7 @@ on entry rather than hiding nothing and leaving the maintainer with no layer 1.
 
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0", "openai>=1.60", "anthropic>=1.0", "httpx2>=2.0"]
 # ///
 
 import contextlib

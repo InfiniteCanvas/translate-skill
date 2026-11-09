@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0", "openai>=1.60", "anthropic>=1.0"]
 # ///
 from __future__ import annotations
 
@@ -453,7 +453,7 @@ def case_i_unresolved_model_label() -> None:
         cfg = two_block_cfg(block("c-merge", temperature=0.2),
                             b1=block(None, base_url="http://127.0.0.1:9/v1"))
 
-        def boom_resolve(base_url, headers=None):
+        def boom_resolve(base_url, headers=None, protocol="openai"):
             raise RuntimeError("no models here")
 
         fake = FakeChat()

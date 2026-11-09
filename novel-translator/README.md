@@ -14,7 +14,9 @@ far. Finished chapters assemble into a validated epub3.
 - Docker with an `epubcheck` image available (EPUB validation; used by
   `build-epub`, including the automatic background rebuilds, or pass
   `--skip-check`)
-- A running sglang endpoint serving an OpenAI-compatible `/v1` API
+- A running sglang endpoint serving an OpenAI-compatible `/v1` API (or any
+  OpenAI-compatible / Anthropic-compatible hosted endpoint -- each provider
+  block declares its wire `protocol`)
 
 All commands look like this:
 
@@ -912,7 +914,11 @@ to exit`; details land in
   `https://api.z.ai/api/paas/v4`) is trusted exactly as written.
   `extra_body` on a provider block merges provider-specific parameters
   verbatim into the request body (after the known knobs, before
-  `response_format`; not sent by ping's minimal probe).
+  `response_format`; not sent by ping's minimal probe). A block may
+  declare `protocol: "anthropic"` to speak the native Messages API
+  instead (bare-origin `base_url`, guided JSON via `output_config`,
+  sampling knobs via `extra_body`); the default is `"openai"`.
+
 - Don't want to re-enter the same settings for every new novel? Keep them
   in `config.local.json` beside the skill's `scripts/` directory (gitignored,
   any subset of `config.json`'s keys). Every command resolves through it --
@@ -997,8 +1003,9 @@ accident.
 (`logs/chapters/CHAPTER_NNNN/run-<run_id>.jsonl`): what the models were given
 and said for one chapter. `llm_request` (params + full prompt, written before
 the call) and `llm_response` (raw response, finish_reason, usage, timing),
-paired by `call_id`; a call that hits the 400 fallback (retry without
-`response_format`) adds one extra `llm_request` line for the retried request.
+paired by `call_id`; a call that hits the 400 fallback (a retry without the
+guided schema -- `response_format` on the openai protocol, `output_config`
+on the anthropic protocol) adds one extra `llm_request` line for the retried request.
 A multi-model job's fan-out logs one request/response pair per candidate (meta
 `{"job": <job>, "candidate": i, "candidates": n}`, i 1-based) plus the
 consensus call (meta `{"job": "consensus", "consensus_for": <job>}`), so a job

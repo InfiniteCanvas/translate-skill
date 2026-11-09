@@ -98,7 +98,7 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0", "openai>=1.60", "anthropic>=1.0"]
 # ///
 from __future__ import annotations
 

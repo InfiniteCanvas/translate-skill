@@ -328,12 +328,16 @@ stamp; `init` copies no defaults and no overlay values into it.
 }
 ```
 
-- `base_url` includes `/v1` (OpenAI-compatible) and is **required** — see §
-  Overlay layers. `model: null` means "ask
-  `/models` and use the first model" — resolved at runtime (cached per
-  base_url + resolved auth identity, so two jobs sharing a URL with
-  different keys keep distinct resolutions), works with any sglang/vLLM
-  server.
+- `base_url` is **required** — see § Overlay layers. On the openai protocol
+  (the default) a bare origin gets `/v1` appended and a base with a real
+  path is trusted verbatim; on the `anthropic` protocol the bare origin is
+  passed to the SDK verbatim (it appends `/v1/messages` and `/v1/models`
+  itself — e.g. `https://api.minimax.io/anthropic`). `model: null` means
+  "ask `/models` and use the first model" — resolved at runtime through the
+  block's protocol SDK (cached per base_url + resolved auth identity +
+  protocol, so two jobs sharing a URL with different keys — or two
+  protocols sharing an origin — keep distinct resolutions), works with any
+  sglang/vLLM server.
 - `providers.<job>` is an **array of provider blocks** — one block per
   model. A bare block object (no array) is the legacy single-model shape
   and loads unchanged: it normalizes to a one-element array, so pre-v8
@@ -459,6 +463,15 @@ stamp; `init` copies no defaults and no overlay values into it.
     too when the provider's real ceiling differs.
 - **Sampling knobs**: `temperature` and `top_p` (plus optional `top_k`,
   `repetition_penalty`) are per-provider and passed through to the server.
+  The wire rules are per protocol: on the openai protocol (the default)
+  `temperature` is ALWAYS sent (default 0.2), `top_p`/`top_k`/
+  `repetition_penalty` only when non-null, and `thinking` maps to
+  `chat_template_kwargs.enable_thinking`; the user's `extra_body` overrides
+  all of them and `response_format` overrides nothing. On the `anthropic`
+  protocol `temperature`/`top_p`/`top_k` ride `extra_body` and NULL-VALUED
+  knobs are omitted (a null temperature would 400 there); `thinking` and
+  `repetition_penalty` are openai-protocol knobs and are ignored on
+  anthropic blocks (native thinking goes through `extra_body.thinking`).
   Only `translator` carries `top_p` by default (1.0, per the model card);
   the other jobs send no `top_p` (the server default applies). Translator
   defaults follow the Hy-MT2 model card (0.7 / 1.0) — tune to taste
@@ -1635,6 +1648,10 @@ with `phase: begin|end` and `elapsed_s`), `gate` (the verdict plus its
 `balance_advisory`, `glossary_cleanup`, and one `llm_call` metadata summary
 per model call. **Tier 1 never carries a prompt or a response** — `llm_call`
 holds `model`, `usage`, `finish_reason`, `elapsed_s` and `error` only.
+`usage` is always the OpenAI shape (`prompt_tokens` / `completion_tokens` /
+`total_tokens`) regardless of protocol — the anthropic backend normalizes
+`input_tokens`/`output_tokens` (raw anthropic extras such as cache tokens
+pass through) — because the token counters read those keys.
 
 **Tier 2 — model IO, per chapter**
 (`logs/chapters/<stem>/run-<run_id>.jsonl`). What the models were given and
@@ -2231,8 +2248,14 @@ see Draft artifacts), so a crash mid-TRANSLATE resumes at the next part.
 
 ## Model response schemas
 
-Requested with sglang guided JSON (`response_format`) when available, with
-robust extraction as fallback:
+Requested with the endpoint's guided JSON when available, with robust
+extraction as fallback. The mechanism is per provider block's `protocol`:
+openai protocol blocks (the default) arm `response_format` (`{"type":
+"json_schema", "json_schema": {...}}`); anthropic protocol blocks arm the
+native `output_config` (`{"format": {"type": "json_schema", "schema": ...}}`).
+A 400 whose error text names the mechanism strips it and retries once
+immediately; on the openai protocol a 400 received WITH the schema armed but
+NOT blaming it is a real failure and stays on the retry ladder.
 
 - TRANSLATE → `{"title": str, "lines": [{"i": int, "t": str}, ...]}` — the
   numbered-line protocol: input lines arrive as `{"i", "t"}` objects (1-based
@@ -2378,7 +2401,12 @@ exit 3, never a traceback). There is no survivor fallback and no partial
 chapter. Two kinds:
 
 - **Irrecoverable, per the provider** — raised on the *first* response, with
-  no retry and no backoff. Z.AI's table
+  no retry and no backoff. The numeric fatal table (`client.ZAI_FATAL_CODES`,
+  matched by the body's `error.code` and never by message text) is
+  **openai-protocol only** — anthropic protocol blocks have no numeric fatal
+  table (anthropic errors are typed, not coded): their retryable failures
+  (armed-400 with a non-matching text, `429`, `5xx`) take the ladder below
+  and every other failure raises immediately. Z.AI's table
   (<https://docs.z.ai/api-reference/api-code>, transcribed into
   `client.ZAI_FATAL_CODES`, matched by the body's `error.code` and never by
   message text) covers auth failures (`1000`, `1001`, `1003`, `1005`,

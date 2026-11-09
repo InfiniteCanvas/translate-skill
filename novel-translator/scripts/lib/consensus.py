@@ -104,7 +104,8 @@ def _model_label(block: dict) -> str:
         return str(model)
     try:
         return client.resolve_model(str(block.get("base_url", "")),
-                                    headers=client.auth_headers(block))
+                                    headers=client.auth_headers(block),
+                                    protocol=block.get("protocol", "openai"))
     except Exception:
         return "(unresolved model)"
 

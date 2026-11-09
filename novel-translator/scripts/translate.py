@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0", "openai>=1.60", "anthropic>=1.0"]
 # ///
 """novel-translator: staged, resumable CJK novel translation CLI.
 
@@ -600,7 +600,8 @@ def _ping_one(label: str, pcfg: dict) -> tuple[bool, str | None]:
     base_url = str(pcfg.get("base_url", ""))
     try:
         resolved = client.resolve_model(
-            base_url, headers=client.auth_headers(pcfg))
+            base_url, headers=client.auth_headers(pcfg),
+            protocol=pcfg.get("protocol", "openai"))
         extra = f" (config model: {pcfg['model']})" if pcfg.get("model") else ""
         print(f"[ok] {label} {base_url} -> {resolved}{extra}")
         return True, str(pcfg["model"]) if pcfg.get("model") else resolved

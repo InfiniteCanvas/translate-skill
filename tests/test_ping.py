@@ -34,7 +34,7 @@ Self-contained PASS/FAIL script (no pytest). Run from anywhere:
 
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0"]
+# dependencies = ["requests>=2.31", "pyyaml>=6.0", "ebooklib>=0.18", "pillow>=10.0", "openai>=1.60", "anthropic>=1.0"]
 # ///
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ class FakeNet:
         self.broken = set(broken)
         self.no_models = set(no_models)
 
-    def resolve_model(self, base_url: str, headers=None) -> str:
+    def resolve_model(self, base_url: str, headers=None, protocol="openai") -> str:
         self.resolved.append(base_url)
         if base_url in self.broken or base_url in self.no_models:
             raise RuntimeError(f"cannot reach {base_url}")

@@ -1,6 +1,6 @@
 ---
 name: novel-translator
-description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint, reviews glossary and translation-note quality, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, downloading or scraping a novel from the web to set up a translation project, translation glossaries, glossary quality, translation notes, re-evaluating or auditing translator's notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters", "review the glossary", "recheck the translation notes", or "rebuild the epub".
+description: Multi-pass CJK novel translation orchestrator. Scaffolds translation projects, seeds and grows a term glossary, translates chapters through a staged pipeline (line-indexed JSON translation, advisory glossary-balance signals with a model faithfulness gate, deduplicated translation notes) against a self-hosted sglang/OpenAI-compatible endpoint or any Anthropic-compatible endpoint (each provider block declares its wire protocol), reviews glossary and translation-note quality, and exports epub3 ebooks validated with epubcheck. Use whenever the user mentions translating novels or web-novel chapters, setting up or resuming a translation project, downloading or scraping a novel from the web to set up a translation project, translation glossaries, glossary quality, translation notes, re-evaluating or auditing translator's notes, or building/fixing translated epubs — even for casual asks like "translate the next few chapters", "review the glossary", "recheck the translation notes", or "rebuild the epub".
 ---
 
 # Novel Translator
@@ -556,10 +556,17 @@ background build too. Builds produce no git commits — `export/`,
   adaptation threshold pattern for translation notes. Keep new template
   edits aligned with those patterns.
 - **Providers are per job** in `config.json` (`translator`, `glossary`,
-  `reviewer`, `annotator`, `recap`, `profile`, `consensus`; the `recap` job
+  `reviewer`, `annotator`, `recap`, `profile`, `verify`, `consensus`; the `recap` job
   generates the rolling story-so-far recap — a cheap model is a good fit —
   the `profile` job only serves `--style auto`, and `consensus` merges
-  multi-model candidates). Each job's value is an ARRAY of provider blocks
+  multi-model candidates). Each block declares its wire `protocol` —
+  `"openai"` (the default, absent included) speaks chat.completions against
+  the OpenAI-compatible shape; `"anthropic"` speaks the native Messages API
+  (bare-origin `base_url`, guided JSON via `output_config`, sampling knobs
+  via `extra_body`, null-valued knobs omitted; `thinking` and
+  `repetition_penalty` are openai-protocol knobs and are ignored there), so
+  a mixed setup can point jobs at Claude alongside Z.AI/MiniMax/sglang).
+  Each job's value is an ARRAY of provider blocks
   (a bare block object is the legacy single-model shape and loads
   unchanged); two or more blocks fan the job's prompts out to all models
   in parallel and merge via that job's arbitrator (see the multi-model
