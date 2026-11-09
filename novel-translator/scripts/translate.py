@@ -40,7 +40,12 @@ from typing import Any
 for _stream in (sys.stdout, sys.stderr):
     if _stream is not None:
         try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
+            # line_buffering keeps progress prints live when stdout is piped
+            # (the orchestrator's run console): a block-buffered stream would
+            # hold every [CHAPTER_NNNN] line until the buffer fills or the
+            # process exits. Pair with the runner's PYTHONUNBUFFERED=1.
+            _stream.reconfigure(encoding="utf-8", errors="replace",
+                                line_buffering=True)
         except (AttributeError, OSError):
             pass
 

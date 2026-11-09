@@ -114,6 +114,12 @@ def _trace_hook(project_dir: Path, job: str, extra: dict | None = None,
     """meta_hook that trace-logs with a job tag -- the single logging owner
     for every call routed through this module.
 
+    On each llm_request meta it also prints one stdout progress line
+    (`[llm] <job>: calling <model> ...`) before the HTTP request blocks --
+    the JSONL lines are for the dashboard, this one is for a live viewer of
+    the run, which otherwise sees nothing between the stage lines that
+    bracket the call.
+
     `chapter` is bound HERE, on the calling (main) thread, before any fan-out
     worker starts; ThreadPoolExecutor does not copy context to workers and does
     not need to, because the value is already a closure constant.
@@ -125,6 +131,18 @@ def _trace_hook(project_dir: Path, job: str, extra: dict | None = None,
     caller's cfg here would create a second flag source that disagrees with
     log_event's in any sandbox without a config.json."""
     def hook(meta: dict) -> None:
+        if meta.get("event") == "llm_request":
+            # Progress line before the request blocks: a model call is the
+            # pipeline's longest silent wait, and stdout says nothing between
+            # the stage lines that bracket it. Same vocabulary as the
+            # [consensus] announce; one print, so fan-out threads interleave
+            # only line-wise.
+            detail = chapter or ""
+            if extra and "candidate" in extra:
+                cand = f"candidate {extra['candidate']}/{extra['candidates']}"
+                detail = f"{detail}, {cand}" if detail else cand
+            suffix = f" ({detail})" if detail else ""
+            print(f"[llm] {job}: calling {meta.get('model')}{suffix}")
         if meta.get("event") == "llm_response":
             logger.log_event(project_dir, {
                 "event": "llm_call", "job": job, "chapter": chapter,
