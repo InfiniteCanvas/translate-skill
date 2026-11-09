@@ -1343,7 +1343,7 @@ including one `--force` did not overwrite.
 
 `v020` (DESCRIPTION: `a provider block can declare its wire protocol: `protocol`
 picks the openai (default) or anthropic SDK per block; report which protocol each
-block resolves to`) is **report-only** and rewrites nothing, on v013's and
+project block declares`) is **report-only** and rewrites nothing, on v013's and
 v015's reasoning: absent still means "openai", so no value on disk is wrong that
 was right before, and which blocks should speak the native Messages API is the
 operator's choice, not a migration's. Materializing the key was explicitly
@@ -1351,8 +1351,8 @@ rejected: a fresh config would carry dead `"protocol": "openai"` blocks
 duplicating what absence already means. What it reports is which blocks in the
 PROJECT's config.json declare which protocol, named like the load-time refusal
 does — a raw-file scan (a protocol set only in the skill's config.local.json is
-layer 1, which migrations do not read; the run's actual resolution is what
-`sync-config` reports) — and a block declaring something the client cannot
+layer 1, which migrations do not read, and no CLI command prints a block's
+resolved protocol) — and a block declaring something the client cannot
 speak (an unknown value or a present null) is a `[FAIL]`. Note `migrate` loads
 the config BEFORE any step runs, so through the CLI that refusal fires at the
 pre-flight with the same message and the step's `[FAIL]` line is not reached —
@@ -1361,7 +1361,8 @@ the step's branch is the belt for direct module use:
 ```
 [ok] config: 2 provider block(s) in config.json declare a protocol -
 translator[1], consensus[0] declare "anthropic"; the other 5 block(s)
-declare none. Nothing was rewritten.
+declare none. Nothing was rewritten. (A protocol set in the skill's
+config.local.json is layer 1 and not visible to this report.)
 ```
 
 A config where no block declares anything gets a single line saying the default

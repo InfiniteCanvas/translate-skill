@@ -361,3 +361,56 @@ config.py / file-formats.md / the app mirror, the hand-built-cfg dispatch
 backstop covers the bypass paths, the anthropic example loads through both
 loaders, and v020's report says exactly what it reads and what it cannot
 see. Adjudicated residuals recorded above.
+
+---
+
+## Dn — whole-branch walkthrough (2026-11-10)
+
+Whole-branch audit (deepseek v4.1 flash) of `fc04503..HEAD` before the merge.
+Verdict on arrival: **hold**, on exactly one medium defect — file-formats' new
+v020 entry quoted the STALE DESCRIPTION ("each block resolves to") and still
+carried the adjudicated-false sync-config resolution claim, contradicting the
+delta-fixed v020.py and SKILL.md — plus four low leftovers. Everything else
+verified positively by the walkthrough: every pinned-goal clause has BOTH an
+implementation path and an in-tree proving check (the auditor enumerated all
+eight); the PEP 723 sweep is mechanically complete (40 test files = 37 swept
+suites + 3 born-new; the 5 httpx2 importers all declare it; run_all's union
+line + docstring carry openai/anthropic/httpx2); `import requests` survives
+only in cover.py as planned; the docs mirror is complete (maintenance.md
+correctly untouched); ff-only merge safety confirmed (main == fc04503 ==
+merge-base, worktree clean, tip cd38605); the auditor re-ran the gate itself
+(56/1, the byte-identical pre-existing red).
+
+**Findings closed before the merge** (all fixed in the merge-commit batch):
+- file-formats' v020 entry now quotes v020.py's DESCRIPTION verbatim
+  (declare-framing) and carries the layer-1 caveat instead of the false
+  sync-config pointer (house convention is a verbatim quote — the auditor
+  checked the v018 entry word-for-word);
+- v020.py's last prose `#` comment removed;
+- `test_token_cap_ceiling.sent()`'s dangling `PostLog` annotation renamed to
+  the `StubOpenAI` the re-seam actually introduced (pyflakes-caught);
+- the unused `SimpleNamespace` import in `test_sdk_transport` removed;
+- the declared-protocol `[ok]` sample in v020.py's docstring and the
+  file-formats entry gained the CAVEAT_LINE the code appends to every
+  `[ok]` line.
+
+**Evidence caveat recorded** (the auditor's): the "fails identically on
+main" adjudication for `test_autobuild` remains ledger evidence — the
+auditor verified byte-identity with base (dispositive) and reproduced a
+platform-shaped case_6 failure, but did not re-run the suite on a pristine
+main tree.
+
+**Post-fix**: `test_token_cap_ceiling` 44, `test_sdk_transport` 28,
+`test_migrate` 242 — all green; full gate `56 passed, 1 failed` (2806
+checks, the adjudicated red only). **Merge proceeds** (P4).
+
+**Owner-run live checks** (A17, not runnable in this session — the
+owner's plans): `uv run novel-translator/scripts/translate.py ping
+--project <example>` against the real Z.AI + MiniMax endpoints proves the
+openai-protocol path on real hosts; an optional `ANTHROPIC_API_KEY`-set
+ping proves the anthropic path. The in-tree proving equivalent is
+`test_sdk_transport`'s real-SDK MockTransport wire assertions.
+
+**Gate-run history**: 12 full `run_all.py` runs across the campaign, all
+`56 passed, 1 failed` (the adjudicated red), checks growing 2739 → 2780 →
+2806 with the new coverage; plus the per-suite reruns recorded above.

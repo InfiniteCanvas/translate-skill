@@ -39,7 +39,6 @@ import json
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 
 import httpx2
 import anthropic as anthropic_sdk

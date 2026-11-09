@@ -132,7 +132,7 @@ def block(max_tokens=128000, model="glm-5.3", extra=None,
     return b
 
 
-def sent(log: PostLog) -> list:
+def sent(log: StubOpenAI) -> list:
     return [b["max_tokens"] for b in log.bodies]
 
 

@@ -33,7 +33,8 @@ or, where blocks declare it:
 
     [ok] config: 2 provider block(s) in config.json declare a protocol -
     translator[1], consensus[0] declare "anthropic"; the other 5 block(s)
-    declare none. Nothing was rewritten.
+    declare none. Nothing was rewritten. (A protocol set in the skill's
+    config.local.json is layer 1 and not visible to this report.)
 
 and, where a block declares something the client cannot speak (the got
 value is the JSON literal the config carries):
@@ -83,9 +84,6 @@ def migrate(project_dir: Path, templates_src: Path,
                    "1 and not visible to this report.)")
     providers = raw.get("providers")
     if not isinstance(providers, dict):
-        # a non-dict providers is refused by a normal load (migrate's own
-        # pre-flight with require_base_url=False tolerates it); the report
-        # simply has nothing to scan
         lines.append(
             f"[ok] config: config.json's providers is {type(providers).__name__}, "
             f"not a JSON object - no protocol declarations to report (a normal "
