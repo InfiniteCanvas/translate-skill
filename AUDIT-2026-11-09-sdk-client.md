@@ -222,3 +222,142 @@ all-knobs/extra-win/extra-rf-conflict/cap-clamp rows; anthropic blocks
 speak the native Messages API with `output_config.format`). Residuals
 adjudicated: the `test_autobuild` platform red (pre-existing, out of
 brief) and the suite-flake's order-independent comparisons (recorded).
+
+---
+
+## D2 — config validation + v020 + docs mirror (2026-11-09)
+
+**Implemented**: `config.py` gains `PROTOCOLS = ("openai", "anthropic")` and
+`_check_protocol(job, element, index)` — called in `_normalize_providers`'s
+fold loop (every authored block of every known job) and in
+`_normalize_per_job_consensus` (arbitrators under their own key name). The
+ValueError text `providers.{job}[{i}] protocol must be "openai" or
+"anthropic"` is contractual (mirrored + asserted verbatim). A PRESENT null is
+refused like any other invalid value (it survives the defaults fold and
+would otherwise die per call at the client dispatch); ABSENT means the
+"openai" default, so existing configs load unchanged. The client-side
+dispatch `LLMError` remains the backstop for hand-built cfgs. No
+PROVIDER_DEFAULTS change.
+
+`migrations/v020.py`: report-only (v013/v015 precedent) — VERSION=20,
+one-line DESCRIPTION, reads the RAW config (bare-dict tolerated), walks
+PROVIDER_JOBS + consensus_<job> keys, reports which blocks declare which
+protocol (`[ok]`), refuses `[FAIL]` on unknown values (predicting the
+matching load-time refusal), writes nothing, delegates to
+`common.sync_templates` (house idiom — silent no-op when nothing to sync).
+
+**Tests**: `test_migrate.py` head pin 13k → 20 + v019/v020 module-shape
+checks (13w–13z); `test_provider_arrays.py` e5–e8 (the verbatim refusal for
+arrays/bare dicts/arbitrators, null-is-refused, a load-clean config carrying
+both protocols + absence + an arbitrator); `test_sync_config.py` case_10
+gains `config.local.example.anthropic.json` (loader-validated; its
+`extra_body.thinking: {"type": "disabled"}` is the NATIVE anthropic thinking
+param, satisfying the MiniMax-M3 thinking guard per provider family).
+
+**Docs mirror**: file-formats.md (the resolved-view protocol field, a
+`protocol` bullet after `base_url`'s per-protocol rules, the four→five
+messages validation contract, the v020 prose entry, the per-protocol
+sampling-knobs wire rules, the anthropic ladder wording);
+config.local.EXAMPLES.md (intro table + the anthropic row, honest
+live-verification claims, per-protocol sending rules, the protocol field
+row); NEW `config.local.example.anthropic.json` (MiniMax via its documented
+Anthropic-compatible endpoint `https://api.minimax.io/anthropic` — Z.AI's
+`https://api.z.ai/api/anthropic` documented alongside; the provider SDK-doc
+shapes per A18); SKILL.md's migration summary now covers v018–v020 (v018 and
+v019 were missing — pre-existing drift the edit touch made worth fixing);
+translate.py's `--api-base` help reworded and `references/cli.md`
+REGENERATED via `gen_cli_doc.py` (never hand-edited — test_cli_doc passes).
+
+**Gate** (orchestrator-run): 4 runs post-D2 — `56 passed, 1 failed` (2800
+checks), the 1 being the adjudicated pre-existing `test_autobuild` platform
+red; three more repeats follow the audit.
+
+**D2 adversarial audit** (3 lenses on deepseek v4.1 flash): 19 findings.
+The validation itself held — the goal-conformance lens diffed
+`_normalize_providers` against the base config.py over 10 valid shapes (0
+normalized-dict mismatches; every base contractual refusal reproduced
+verbatim), found no `_check_protocol` bypass (bare-dict, arbitrators, the
+consensus fallback, defaults-only, merged loads all clean or exact-text),
+and drove an anthropic block through `load_config` → `client.chat` dispatch
+end to end. v020 was where it broke:
+
+- **G1 (HIGH)** — v020's `[ok]` f-string carried a backslash inside an
+  expression: a **SyntaxError on the declared Python 3.11 floor** (the gate
+  ran on 3.14, so it passed; `migrations.chain()` would fail on 3.11). The
+  quoted protocol list is now built outside the f-string; a
+  `compileall` sweep under 3.11 passes.
+- **G2 (MED)** — `_collect` conflated a present `protocol: null` with
+  absent; now `\"protocol\" not in block` distinguishes them and the null
+  gets the `[FAIL]` (matching the load-time refusal), with the `got` value
+  double-quoted to match the documented sample.
+- **G3 (MED)** — a config with no authored `providers` printed nothing;
+  now it gets its `[ok]` line.
+- **G4 (MED)** — the "resolution map" wording was wrong twice over: the
+  report is a raw-project-file DECLARATION scan (layers 0–2 only; a layer-1
+  protocol is invisible — `sync-config` reports the actual resolution), and
+  `migrate`'s load pre-flight refuses an invalid-protocol config BEFORE any
+  step, so the CLI never reaches the step's `[FAIL]`. The docstring,
+  file-formats' v020 entry and SKILL.md's summary now say exactly that (the
+  `[FAIL]` branch is the belt for direct module use).
+- **G5 (MED)** — the two prose `#` lines above `PROTOCOLS` removed (the
+  no-prose-comments rule).
+- **G6 (LOW/MED)** — docs nits: the arbitrator sentence in the five-message
+  contract, EXAMPLES' mixed-row protocol cell + the Four/three/All-four
+  counts + per-protocol qualifiers on the base_url/temperature/
+  repetition_penalty rows, SKILL's v019 sentence (synthesis prompt/one
+  block per candidate → verify stage 2's prompt/one window per hit).
+- **G7 (LOW)** — `test_migrate.py` gains `case_20b_v020_report`: six
+  behavioral checks driving `v020.migrate` directly (default line, declared
+  block named like the refusal, byte-identity, null `[FAIL]`, unknown-value
+  `[FAIL]` with the got quoting, the no-providers line).
+
+**Adjudicated, no change**: the protocol check runs before the
+fan-out/base_url refusals (only configs failing the NEW check change which
+error they see; no previously-loading config is affected); the
+array-wholesale overlay rule can silently drop a layer-1 protocol when a
+project re-points the job as an array (the documented merge contract;
+residual risk recorded in this ledger); the worktree's hermetic
+`config.local.json` was verified present (an auditor noted a stranded
+`.runall-hidden` from a concurrently-running gate — the gate's own
+recovery reinstalled it).
+
+**Post-fix gate**: 3.11 `compileall` sweep OK; `uv run tests/run_all.py` →
+`56 passed, 1 failed` (2806 checks, the 1 the adjudicated pre-existing
+`test_autobuild` red).
+
+**D2 delta re-audit** (deepseek v4.1 flash): 6 findings. G1 (the 3.11
+SyntaxError) verified fixed by an in-memory 3.11 compile of all 51 script
+sources PLUS a `compileall` run on a byte-identical copy (the worktree kept
+read-only); G2/G3/G5/G6/G7 confirmed by code read and 19 temp-config
+v020.migrate probes; no regression (gate re-run by the auditor: 56/1).
+G4 was only PARTLY fixed — the delta caught the residuals, now closed:
+- the docstring's "the run's actual resolution is what sync-config reports"
+  pointer was FALSE (sync-config prints only base_url + model, never
+  protocol — probed live): removed; no CLI command prints a resolved
+  protocol, and the docs say so;
+- the user-visible DESCRIPTION and the emitted `[ok]` lines still claimed
+  resolution ("each block resolves to" / "uses the default") — rewritten to
+  declare-framing ("in config.json declare a protocol" / "declare none"),
+  with a layer-1 caveat appended to every `[ok]` line ("A protocol set in
+  the skill's config.local.json is layer 1 and not visible to this
+  report.");
+- a non-dict `providers` now reports the shape it saw ("providers is list,
+  not a JSON object - no protocol declarations to report") instead of a
+  false "no provider blocks are authored";
+- the `[FAIL]` got value renders as the JSON literal the config carries
+  (`json.dumps`: `null`/`123`/`"gRPC"`), not a fake string literal;
+- EXAMPLES' one remaining stale count ("Every Z.AI block in all three
+  files" — Z.AI blocks exist in two of four) fixed;
+- the docstring's default-line sample matches the emitted text and the
+  `[FAIL]` lead-in precedes the `[FAIL]` sample.
+
+**Post-delta gate**: `56 passed, 1 failed` (2806 checks; `test_migrate` 242
+with all six 20b behavioral checks). 3.11 compile OK.
+
+**D2 verdict**: the config surface holds the pinned goal — no
+previously-loading config changes behavior (auditor-verified across 10
+valid shapes), the refusal text is contractual and byte-identical across
+config.py / file-formats.md / the app mirror, the hand-built-cfg dispatch
+backstop covers the bypass paths, the anthropic example loads through both
+loaders, and v020's report says exactly what it reads and what it cannot
+see. Adjudicated residuals recorded above.

@@ -208,7 +208,7 @@ initialize a project from source/ chapters
 | `--source-lang SOURCE_LANG` | zh | source language code (default: zh) |
 | `--target-lang TARGET_LANG` | en | target language code (default: en) |
 | `--tags TAGS` | (empty) | comma-separated tag list |
-| `--api-base API_BASE` | (empty) | OpenAI-compatible API base URL written into the new project (omit to resolve the endpoint through config.local.json or the project's own config.json) |
+| `--api-base API_BASE` | (empty) | OpenAI-compatible API base URL written into the new project (omit to resolve the endpoint through config.local.json or the project's own config.json; the wire protocol is chosen per provider block via the block's protocol field, defaulting to openai) |
 | `--cover-url COVER_URL` | (unset) | URL to download the cover image from |
 | `--style NAME\|PATH\|auto` | classic | style guide: a preset name, a path to a .md file, or 'auto' for a model-generated profile (default: classic) |
 | `--background BACKGROUND` | (unset) | 2-4 sentences of novel background for the translator's context frame |

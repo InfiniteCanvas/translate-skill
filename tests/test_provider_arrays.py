@@ -233,6 +233,25 @@ def case_errors() -> None:
     check("e4 error: non-object array element",
           raises_value_error({"translator": [{"model": "a"}, 5]})
           == "providers.translator[1] must be an object")
+    check("e5 error: a block protocol outside the two wire protocols",
+          raises_value_error({"translator": [{"base_url": "x", "protocol": "grpc"}]})
+          == 'providers.translator[0] protocol must be "openai" or "anthropic"')
+    check("e6 error: a null protocol is present-but-invalid (absent is the default)",
+          raises_value_error({"translator": {"base_url": "x", "protocol": None}})
+          == 'providers.translator[0] protocol must be "openai" or "anthropic"')
+    check("e7 error: a per-job arbitrator is checked under its own key name",
+          raises_value_error({"consensus_translator": [{"base_url": "x", "protocol": 3}]})
+          == 'providers.consensus_translator[0] protocol must be "openai" or "anthropic"')
+    check("e8 valid: both protocols and absence load clean",
+          raises_value_error({
+              "translator": [
+                  {"base_url": "x", "protocol": "openai"},
+                  {"base_url": "y", "protocol": "anthropic"},
+                  {"base_url": "z"}],
+              "consensus": [{"base_url": "c", "protocol": "openai"}],
+              "consensus_translator": [{"base_url": "c", "protocol": "anthropic"}],
+          }) is None,
+          "")
 
 
 def case_unknown_and_missing() -> None:

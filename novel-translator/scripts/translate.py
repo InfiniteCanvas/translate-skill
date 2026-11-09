@@ -1879,7 +1879,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--api-base", default="",
                    help="OpenAI-compatible API base URL written into the new "
                         "project (omit to resolve the endpoint through "
-                        "config.local.json or the project's own config.json)")
+                        "config.local.json or the project's own config.json; "
+                        "the wire protocol is chosen per provider block via "
+                        "the block's protocol field, defaulting to openai)")
     p.add_argument("--cover-url", default=None, help="URL to download the cover image from")
     p.add_argument("--style", default="classic", metavar="NAME|PATH|auto",
                    help="style guide: a preset name, a path to a .md file, or 'auto' for a model-generated profile (default: classic)")

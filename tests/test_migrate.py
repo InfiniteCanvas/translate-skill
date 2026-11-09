@@ -92,7 +92,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import config
 import migrations
-from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015, v016, v017, v018, v019
+from migrations import v002, v004, v005, v006, v007, v008, v010, v011, v012, v013, v014, v015, v016, v017, v018, v019, v020
 import translate
 
 PASSED = 0
@@ -1425,9 +1425,9 @@ def case_13_v011() -> None:
               isinstance(v011.DESCRIPTION, str)
               and "\n" not in v011.DESCRIPTION, "")
 
-        check("13k v019 is the chain head",
-              migrations.chain()[-1].VERSION == 19
-              and migrations.current_version() == 19,
+        check("13k v020 is the chain head",
+              migrations.chain()[-1].VERSION == 20
+              and migrations.current_version() == 20,
               f"chain_head={migrations.chain()[-1].VERSION} "
               f"current={migrations.current_version()}")
 
@@ -1452,6 +1452,14 @@ def case_13_v011() -> None:
         check("13u v016: DESCRIPTION is one line",
               isinstance(v016.DESCRIPTION, str)
               and "\n" not in v016.DESCRIPTION, "")
+        check("13w v019: VERSION matches the filename", v019.VERSION == 19, "")
+        check("13x v019: DESCRIPTION is one line",
+              isinstance(v019.DESCRIPTION, str)
+              and "\n" not in v019.DESCRIPTION, "")
+        check("13y v020: VERSION matches the filename", v020.VERSION == 20, "")
+        check("13z v020: DESCRIPTION is one line",
+              isinstance(v020.DESCRIPTION, str)
+              and "\n" not in v020.DESCRIPTION, "")
         check("13v v016: the four steps whose DESCRIPTION claims "
               "materialization still call materialize_config directly",
               all("materialize_config" in inspect.getsource(step)
@@ -2130,6 +2138,63 @@ def case_19_v017() -> None:
                   f"lines={out_broken!r}")
 
 
+def case_20b_v020_report() -> None:
+    """v020.migrate called directly: report-only, and the report line names
+    the blocks that declare a protocol like the load-time refusal does. A
+    PRESENT null is invalid (the load refuses it), so the report's [FAIL]
+    fires for direct module use -- through the CLI, migrate's own load
+    pre-flight refuses the config before any step runs."""
+    import json as _json
+
+    def run(cfg: dict, td: Path) -> list[str]:
+        proj = td / "proj"
+        proj.mkdir(exist_ok=True)
+        (proj / "config.json").write_text(_json.dumps(cfg, indent=2) + "\n",
+                                          encoding="utf-8")
+        return v020.migrate(proj, td / "templates")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+
+        lines = run({"source_lang": "zh", "target_lang": "en", "version": 19,
+                     "providers": {"translator": {"base_url": "http://x/v1",
+                                                  "model": "m"}}}, root)
+        check("20b-a v020: a no-protocol config reports the default openai",
+              any("no provider block in config.json declares a protocol" in ln
+                  and "[ok]" in ln and "layer 1" in ln
+                  for ln in lines), f"lines={lines}")
+
+        lines = run({"providers": {"translator": [
+            {"base_url": "http://x/v1", "model": "m1", "protocol": "anthropic"},
+            {"base_url": "http://y/v1", "model": "m2"}],
+            "consensus": {"base_url": "http://x/v1", "model": "m1"}}}, root)
+        before_text = (root / "proj" / "config.json").read_text(encoding="utf-8")
+        check("20b-b v020: the declared block is named like the load refusal names it",
+              any('translator[0] declare "anthropic"' in ln and "[ok]" in ln
+                  for ln in lines), f"lines={lines}")
+        check("20b-c v020: config.json is BYTE-IDENTICAL afterwards",
+              (root / "proj" / "config.json").read_text(encoding="utf-8")
+              == before_text,
+              "v020 rewrote config.json")
+
+        lines = run({"providers": {"translator": {"base_url": "http://x/v1",
+                                                  "model": "m", "protocol": None}}}, root)
+        check("20b-d v020: a PRESENT null is a [FAIL] (the load refuses it too)",
+              any("[FAIL]" in ln and "protocol must be" in ln for ln in lines),
+              f"lines={lines}")
+
+        lines = run({"providers": {"translator": {"base_url": "http://x/v1",
+                                                  "model": "m", "protocol": "gRPC"}}}, root)
+        check("20b-e v020: an unknown value is a [FAIL] naming the got value",
+              any('[FAIL]' in ln and '(got "gRPC")' in ln for ln in lines),
+              f"lines={lines}")
+
+        lines = run({"source_lang": "zh", "target_lang": "en", "version": 19}, root)
+        check("20b-f v020: no authored providers still gets its line",
+              any("no protocol declarations to report" in ln and "[ok]" in ln
+                  for ln in lines), f"lines={lines}")
+
+
 def case_20_v018() -> None:
     """v018.migrate called directly: report-only for CONFIG, but NOT a no-op.
 
@@ -2357,6 +2422,7 @@ def main() -> int:
     case_18_migrate_never_requires_the_endpoint_it_repairs()
     case_19_v017()
     case_20_v018()
+    case_20b_v020_report()
     case_21_v019()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")

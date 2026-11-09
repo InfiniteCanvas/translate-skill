@@ -22,6 +22,8 @@ PROVIDER_JOBS = ("translator", "glossary", "reviewer", "annotator", "recap", "pr
 CONSENSUS_PREFIX = "consensus_"
 CONSENSUS_JOBS = tuple(j for j in PROVIDER_JOBS if j != "consensus")
 
+PROTOCOLS = ("openai", "anthropic")
+
 DEFAULTS: dict = {
     "seed_min_count": 3,
     "min_term_occurrences": 3,
@@ -111,6 +113,26 @@ def _with_defaults(job: str, element: dict) -> dict:
     return merged
 
 
+def _check_protocol(job: str, element: dict, index: int) -> None:
+    """Refuse a block whose `protocol` is present but not a wire protocol this
+    client speaks. Absent (and PROVIDER_DEFAULTS never set one) means the
+    "openai" default, so existing configs load unchanged; anything present
+    must be exact -- a typo'd protocol would otherwise load cleanly and only
+    fail per call, far from the config that caused it (the base_url
+    fail-fast posture). The ValueError text is contractual (mirrored in
+    references/file-formats.md and asserted verbatim by the tests); the
+    client-side dispatch LLMError remains the backstop for hand-built cfgs
+    that never pass through here. A PRESENT null is refused like any other
+    invalid value -- it survives the defaults fold and would otherwise die
+    per call at the client dispatch, far from the config that caused it."""
+    if "protocol" not in element:
+        return
+    if element["protocol"] in PROTOCOLS:
+        return
+    raise ValueError(
+        f"providers.{job}[{index}] protocol must be \"openai\" or \"anthropic\"")
+
+
 def _normalize_per_job_consensus(providers: dict, normalized: dict) -> None:
     """Validate and shape-normalize every authored `consensus_<job>` key into
     `normalized`, WITHOUT pre-filling its keys.
@@ -144,6 +166,7 @@ def _normalize_per_job_consensus(providers: dict, normalized: dict) -> None:
         if len(blocks) > 1:
             raise ValueError(
                 f"providers.{key} must list exactly one model (got {len(blocks)})")
+        _check_protocol(key, blocks[0], 0)
         normalized[key] = blocks
 
 
@@ -191,6 +214,8 @@ def _normalize_providers(providers: dict, require_base_url: bool = True) -> dict
         if job == "consensus" and len(authored) > 1:
             raise ValueError(
                 f"providers.consensus must list exactly one model (got {len(authored)})")
+        for i, element in enumerate(authored):
+            _check_protocol(job, element, i)
         normalized[job] = [_with_defaults(job, element) for element in authored]
     _require_consensus_when_fanning_out(providers, normalized)
     _normalize_per_job_consensus(providers, normalized)

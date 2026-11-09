@@ -687,6 +687,7 @@ def case_10_shipped_examples_are_valid() -> None:
     skill_root = Path(__file__).resolve().parent.parent / "novel-translator"
     examples = ["config.local.example.zai.json",
                 "config.local.example.minimax.json",
+                "config.local.example.anthropic.json",
                 "config.local.example.mixed.json"]
     for name in examples:
         path = skill_root / name

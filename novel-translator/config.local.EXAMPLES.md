@@ -1,21 +1,29 @@
 # config.local.json examples
 
-Two ready-to-copy overlays for `novel-translator/config.local.json` — one
-per hosted provider family. Each is validated against the real loader, so it
-loads, normalizes, and lands on every job correctly.
+Four ready-to-copy overlays for `novel-translator/config.local.json` — one
+per hosted provider family, plus one speaking the Anthropic wire protocol.
+Each is validated against the real loader, so it loads, normalizes, and lands
+on every job correctly.
 
-| File | Provider | Endpoint | Auth env var |
-|---|---|---|---|
-| `config.local.example.zai.json` | Z.AI (GLM) | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` |
-| `config.local.example.minimax.json` | MiniMax (M3) | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` |
-| `config.local.example.mixed.json` | both — see below | both | both |
+| File | Provider | Endpoint | Protocol | Auth env var |
+|---|---|---|---|---|
+| `config.local.example.zai.json` | Z.AI (GLM) | `https://api.z.ai/api/coding/paas/v4` | openai | `ZAI_API_KEY` |
+| `config.local.example.minimax.json` | MiniMax (M3) | `https://api.minimax.io/v1` | openai | `MINIMAX_API_KEY` |
+| `config.local.example.anthropic.json` | MiniMax via its Anthropic-compatible endpoint | `https://api.minimax.io/anthropic` | anthropic | `MINIMAX_API_KEY` |
+| `config.local.example.mixed.json` | both — see below | both | openai | both |
 
 The **mixed** file is the one to reach for when you hold both plans: it
-routes each job to the model that is actually good at it. Both single-provider
-files remain for when only one plan is available.
+routes each job to the model that is actually good at it. The three
+single-provider files remain for when only one plan is available, and the **anthropic** file
+shows the same MiniMax plan spoken through its documented
+Anthropic-compatible endpoint (`protocol: "anthropic"` — the native Messages
+API instead of chat.completions).
 
-All three were verified end-to-end against the live APIs: every provider job
-pings reachable, and a full chapter translates cleanly.
+The three openai-protocol files were verified end-to-end against the live
+APIs: every provider job pings reachable, and a full chapter translates
+cleanly. The anthropic file is loader-validated (it joins the shipped-example
+load test) but its live `ping` is owner-run — the endpoint and key shape
+follow MiniMax's documented Anthropic-compatible API.
 
 ## Use
 
@@ -34,17 +42,39 @@ projects pick it up at `init`; existing ones take it via `sync-config`.
 
 | Field | Type | Sent as | Notes |
 |---|---|---|---|
-| `base_url` | string | – | Bare origin gets `/v1` appended; a base with a real path (`https://api.z.ai/api/paas/v4`) is used verbatim. |
+| `base_url` | string | – | openai protocol: bare origin gets `/v1` appended, a base with a real path (`https://api.z.ai/api/paas/v4`) is used verbatim. anthropic protocol: the bare origin is passed to the SDK verbatim (it appends `/v1/messages` itself). |
 | `model` | string | `model` | Omit to auto-resolve from `GET {base_url}/models` (first id). |
 | `api_key` | string | `Authorization: Bearer` | **Inline secret.** Merged into the project `config.json`, which the project repo commits — prefer `api_key_env`. |
 | `api_key_env` | string | `Authorization: Bearer` | Name of an env var holding the key. Preferred; the key never touches a file. If unset, the request goes out with no auth header and no warning. |
-| `temperature` | number | `temperature` | Always sent (defaults to the job's value). |
+| `temperature` | number | `temperature` | openai protocol: always sent (defaults to the job's value). anthropic: rides `extra_body`, and a present `null` is omitted. |
 | `top_p` | number | `top_p` | Sent only when non-`null`. |
 | `top_k` | int | `top_k` | Sent only when non-`null`. `-1` legitimately means "disabled". |
 | `max_tokens` | int | `max_tokens` | Always sent. |
-| `repetition_penalty` | number | `repetition_penalty` | Sent only when non-`null`. |
-| `thinking` | bool | `chat_template_kwargs.enable_thinking` | **sglang-specific — ignored by hosted APIs.** See "Reasoning budget" below; hosted reasoning is bounded with `extra_body`. |
-| `extra_body` | object | merged verbatim | Escape hatch for provider-specific parameters. Merged after the known knobs, so it can override them. |
+| `repetition_penalty` | number | `repetition_penalty` | openai protocol only; sent only when non-`null` (ignored on anthropic blocks). |
+| `thinking` | bool | `chat_template_kwargs.enable_thinking` | **sglang-specific — ignored by hosted APIs.** See "Reasoning budget" below; hosted reasoning is bounded with `extra_body`. **openai-protocol only** — ignored (and never sent) on `anthropic` blocks. |
+| `protocol` | string | – (picked at client construction) | Which wire protocol the block speaks: `"openai"` (the default when absent; a present `null` refuses the load) or `"anthropic"` (the native Messages API). Anything else refuses the config load, naming the job and block index. |
+| `extra_body` | object | merged verbatim | Escape hatch for provider-specific parameters. Merged after the known knobs, so it can override them. On `anthropic` blocks it is also how `temperature`/`top_p`/`top_k` and the native `thinking` reach the wire (see below). |
+
+### Per-protocol sending rules (v020)
+
+- **openai protocol** (the default; every block above): `temperature` is
+  ALWAYS sent (the job default, 0.2 where unset), `top_p`/`top_k`/
+  `repetition_penalty` only when non-null, `thinking` →
+  `chat_template_kwargs.enable_thinking`, and the user's `extra_body`
+  overrides all of them — `response_format` (guided JSON) overrides nothing.
+- **anthropic protocol** (`"protocol": "anthropic"`): the block goes to the
+  native Messages API — `base_url` is the bare origin passed to the SDK
+  verbatim (it appends `/v1/messages` and `/v1/models` itself; MiniMax's is
+  `https://api.minimax.io/anthropic`, Z.AI's `https://api.z.ai/api/anthropic`).
+  `temperature`/`top_p`/`top_k` ride `extra_body` and NULL-valued knobs are
+  OMITTED (a null temperature would 400 there — unlike the openai protocol,
+  which sends even null for wire parity). `thinking` and
+  `repetition_penalty` are openai-protocol knobs and are ignored on
+  anthropic blocks; anthropic's native thinking is reachable through
+  `extra_body.thinking` (e.g. `{"type": "disabled"}`, exactly what the
+  shipped anthropic example sets for MiniMax-M3). Guided JSON rides
+  `output_config.format` and the model is resolved from `/v1/models` on the
+  same bare origin.
 
 Top-level keys used here: `providers` (the map above) plus
 `translate_max_output_tokens` (the output CEILING the pipeline asks the
@@ -94,7 +124,7 @@ Two consequences worth knowing:
   LOWER it, and where it is lower than the ceiling the block wins and chapters
   pack to `min(ceiling, smallest block)`. A block below 8192 cannot be packed
   into at all.
-- **The caps, as shipped.** All three files set the ceiling to 256000. What a
+- **The caps, as shipped.** All four files set the ceiling to 256000. What a
   block actually receives is whatever that provider will accept:
 
   | Provider | `max_tokens` | `max_tokens_limit` | why |
@@ -232,7 +262,7 @@ retries.
 
 ### `max_tokens_limit`: when a block's `max_tokens` IS the provider's wall
 
-Every Z.AI block in all three files declares `"max_tokens_limit": 131072`
+Every Z.AI block in both files that carry Z.AI blocks declares `"max_tokens_limit": 131072`
 alongside `"max_tokens": 128000`, and it is worth knowing why, because the two
 keys look redundant and are not.
 

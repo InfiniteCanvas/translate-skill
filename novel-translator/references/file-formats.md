@@ -281,7 +281,9 @@ stamp; `init` copies no defaults and no overlay values into it.
       { "base_url": "https://api.example.com/v1", "model": null,
         "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536,
         "max_tokens_limit": null,   // optional: the PROVIDER's hard ceiling (e.g. 131072 on Z.AI); bounds every call to this block, including the consensus merge. Omit = no declared limit
-        "thinking": false },   // sglang chat_template_kwargs.enable_thinking; false = output budget spent on the answer, not a reasoning chain
+        "thinking": false,   // sglang chat_template_kwargs.enable_thinking; false = output budget spent on the answer, not a reasoning chain
+        // "protocol": "anthropic" },   // optional: the wire protocol this block speaks — "openai" (the default, absent included) or "anthropic" (native Messages API); see the sampling-knobs bullet for the per-protocol wire rules
+        "protocol": "openai" },
       { "base_url": "http://192.168.1.20:8000/v1", "model": "Qwen3-235B-A22B",
         "temperature": 0.7, "top_p": 1.0, "max_tokens": 65536,
         "thinking": false }    // 2nd block = 2nd model: multi-model consensus (see below)
@@ -338,6 +340,14 @@ stamp; `init` copies no defaults and no overlay values into it.
   protocol, so two jobs sharing a URL with different keys — or two
   protocols sharing an origin — keep distinct resolutions), works with any
   sglang/vLLM server.
+- `protocol` (per block, optional, v020) — which wire protocol the client
+  speaks to this block: `"openai"` (the default when absent — no config
+  needs the key to behave as it always has) or `"anthropic"` (the native
+  Messages API: bare-origin `base_url`, guided JSON via `output_config`,
+  sampling knobs via `extra_body` with null-valued knobs omitted,
+  `thinking`/`repetition_penalty` ignored — see the sampling-knobs bullet).
+  Anything else present (a typo, a null) refuses the load, naming the job
+  and block index.
 - `providers.<job>` is an **array of provider blocks** — one block per
   model. A bare block object (no array) is the legacy single-model shape
   and loads unchanged: it normalizes to a one-element array, so pre-v8
@@ -490,13 +500,14 @@ stamp; `init` copies no defaults and no overlay values into it.
   absent, null and 0 all mean "no declared limit".
 - A `providers.<job>` value that is neither a block object nor an array of
   block objects fails config load (`[FAIL] cannot read config.json: ...`,
-  exit 2), with one of four messages — `providers.{job} must be a provider
+  exit 2), with one of five messages — `providers.{job} must be a provider
   block (object) or an array of blocks`, `providers.{job} must not be an
-  empty array`, `providers.{job}[{i}] must be an object`, and
-  `providers.consensus must list exactly one model (got {n})`. A per-job
-  arbitrator `providers.consensus_<job>` raises the same four with its own key
+  empty array`, `providers.{job}[{i}] must be an object`,
+  `providers.consensus must list exactly one model (got {n})`, and
+  `providers.{job}[{i}] protocol must be "openai" or "anthropic"` (v020). A per-job
+  arbitrator `providers.consensus_<job>` raises the same messages with its own key
   name substituted (so `providers.consensus_translator must not be an empty
-  array`), and additionally raises `providers.consensus_<job> must list exactly
+  array`, and the protocol refusal names `providers.consensus_<job>[0]`), and additionally raises `providers.consensus_<job> must list exactly
   one model (got {n})` for a two-block arbitrator, or
   `providers.consensus_<job> names no job: expected consensus_<job> where
   <job> is one of ...` for a suffix that is not a real job. The last one is
@@ -1329,6 +1340,36 @@ Round-trip note, same shape as v016's: a below-v017 project's earlier steps stil
 ones. Those materialized copies are byte-identical to the shipped file by construction,
 so v017 deletes exactly the ones that step wrote and keeps every customization —
 including one `--force` did not overwrite.
+
+`v020` (DESCRIPTION: `a provider block can declare its wire protocol: `protocol`
+picks the openai (default) or anthropic SDK per block; report which protocol each
+block resolves to`) is **report-only** and rewrites nothing, on v013's and
+v015's reasoning: absent still means "openai", so no value on disk is wrong that
+was right before, and which blocks should speak the native Messages API is the
+operator's choice, not a migration's. Materializing the key was explicitly
+rejected: a fresh config would carry dead `"protocol": "openai"` blocks
+duplicating what absence already means. What it reports is which blocks in the
+PROJECT's config.json declare which protocol, named like the load-time refusal
+does — a raw-file scan (a protocol set only in the skill's config.local.json is
+layer 1, which migrations do not read; the run's actual resolution is what
+`sync-config` reports) — and a block declaring something the client cannot
+speak (an unknown value or a present null) is a `[FAIL]`. Note `migrate` loads
+the config BEFORE any step runs, so through the CLI that refusal fires at the
+pre-flight with the same message and the step's `[FAIL]` line is not reached —
+the step's branch is the belt for direct module use:
+
+```
+[ok] config: 2 provider block(s) in config.json declare a protocol -
+translator[1], consensus[0] declare "anthropic"; the other 5 block(s)
+declare none. Nothing was rewritten.
+```
+
+A config where no block declares anything gets a single line saying the default
+applies everywhere, and a config with no authored `providers` gets one saying
+so. The per-block walk reads the RAW file (a bare-dict block is the legacy
+shape) and the job set comes from `config.PROVIDER_JOBS` +
+`config.CONSENSUS_PREFIX`, not a frozen list, so the report stays honest across
+schema additions. Idempotent by construction: it reads, reports, writes nothing.
 
 `v018` (DESCRIPTION: `record the `verify` provider job added for `translate verify`
 (report-only: it inherits the translator's blocks until authored; config.json is not

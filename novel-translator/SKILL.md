@@ -779,9 +779,17 @@ background build too. Builds produce no git commits — `export/`,
   committing `migrate: backfill git repository` when only the repo was
   created). The
   chain still gates structural steps; template refresh is maintenance,
-  not a chain step. Exit 0 ok/no-op, 2 usage error (missing
-  config.json, missing skill templates dir, unreadable version key,
-  broken chain, project newer than the skill).
+  not a chain step. Later steps: v018 records the `verify` provider job
+  (report-only for config; it syncs the job's two prompt templates), v019
+  reworks verify stage 2's prompt (merged evidence blocks instead of one
+  window per hit; templates only), and v020 reports which provider blocks
+  in the project's config.json declare a wire `protocol` (`"openai"` default
+  or `"anthropic"` for native-Messages endpoints — report-only, nothing
+  materialized; an unknown or present-null value is a `[FAIL]`, though
+  through the CLI `migrate`'s own load pre-flight refuses that config
+  first). Exit 0 ok/no-op, 2 usage
+  error (missing config.json, missing skill templates dir, unreadable
+  version key, broken chain, project newer than the skill).
 - **Glossary and notes maintenance**: hand-fixes to `glossary.json` are
   safe any time — the balance check reads it fresh for every chapter. The
   maintenance workflows — `review glossary` (entry audit, `--fix`),
