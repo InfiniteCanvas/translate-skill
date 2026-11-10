@@ -2384,7 +2384,8 @@ def _collect_events(project_dir: Path, stems: list[str],
 
 
 def _printable(event: dict, include_io: bool) -> dict:
-    if include_io or event.get("event") not in ("llm_request", "llm_response"):
+    if include_io or event.get("event") not in ("llm_request", "llm_retry",
+                                                "llm_response"):
         return event
     return {k: v for k, v in event.items() if k not in ("prompt", "response")}
 
@@ -2395,7 +2396,8 @@ def _describe(event: dict, include_io: bool) -> str:
     prefix = f"{chapter} " if chapter else ""
     bits = [f"{prefix}{name}"]
     for key in ("stage", "phase", "outcome", "verdict", "job",
-                "model", "finish_reason", "elapsed_s", "calls", "attempts"):
+                "model", "finish_reason", "elapsed_s", "calls", "attempts",
+                "attempt", "kind", "backoff_s", "error"):
         if key in event and event[key] is not None:
             bits.append(f"{key}={event[key]}")
     if include_io:

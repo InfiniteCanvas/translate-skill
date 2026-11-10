@@ -260,7 +260,8 @@ def case_3_failures_not_cached() -> None:
 def case_4_guided_400_fallback() -> None:
     """A 400 whose error text names the guided-JSON mechanism (any of the
     six tokens, case-insensitively) disarms response_format and retries
-    once immediately: no backoff, one extra llm_request meta line."""
+    once immediately: no backoff, one llm_retry meta + one extra
+    llm_request meta line."""
     metas: list[dict] = []
     sleep_log, orig_time = install_sleep()
     log, orig = install([
@@ -278,12 +279,15 @@ def case_4_guided_400_fallback() -> None:
               f"bodies={[sorted(b) for b in log.bodies]}")
         check("4c guided-400: no backoff sleep on the immediate fallback",
               sleep_log.calls == [], f"sleeps={sleep_log.calls}")
-        check("4d guided-400: metas are request, request, response with "
-              "guided_json True then False",
+        check("4d guided-400: the retry is announced between the two requests",
               [m["event"] for m in metas]
-              == ["llm_request", "llm_request", "llm_response"]
+              == ["llm_request", "llm_retry", "llm_request", "llm_response"]
               and metas[0]["guided_json"] is True
-              and metas[1]["guided_json"] is False,
+              and metas[2]["guided_json"] is False
+              and metas[1]["kind"] == "guided_fallback"
+              and metas[1]["attempt"] == 1
+              and metas[1]["backoff_s"] is None
+              and "response_format" in metas[1]["error"],
               f"metas={[(m['event'], m.get('guided_json')) for m in metas]}")
     finally:
         client._openai_client = orig
@@ -330,8 +334,11 @@ def case_5_unrelated_400_retries_then_raises() -> None:
         check("5c unrelated-400: backoff 2/4/8 consumed",
               sleep_log.calls == [2, 4, 8], f"sleeps={sleep_log.calls}")
         check("5d unrelated-400: the response meta carries the error",
-              [m["event"] for m in metas] == ["llm_request", "llm_response"]
-              and metas[1].get("error") == str(exc),
+              [m["event"] for m in metas]
+              == ["llm_request", "llm_retry", "llm_retry", "llm_retry",
+                  "llm_response"]
+              and metas[-1].get("error") == str(exc)
+              and all(m["kind"] == "status" for m in metas[1:4]),
               f"metas={[(m['event'], m.get('error')) for m in metas]}")
     finally:
         client._openai_client = orig
@@ -454,9 +461,15 @@ def case_8_connection_ladder() -> None:
               and log.n == 4, f"exc={exc!r} n={log.n}")
         check("8b connection ladder: backoff 2/4/8 consumed",
               sleep_log.calls == [2, 4, 8], f"sleeps={sleep_log.calls}")
-        check("8c connection ladder: the metas still pair on one call_id",
+        retries = [m for m in metas if m["event"] == "llm_retry"]
+        check("8c connection ladder: every retry announces itself before the wait",
               len({m["call_id"] for m in metas}) == 1
-              and [m["event"] for m in metas] == ["llm_request", "llm_response"],
+              and [m["event"] for m in metas]
+              == ["llm_request", "llm_retry", "llm_retry", "llm_retry",
+                  "llm_response"]
+              and [m["attempt"] for m in retries] == [1, 2, 3]
+              and [m["backoff_s"] for m in retries] == [2, 4, 8]
+              and all(m["kind"] == "connection" for m in retries),
               f"metas={[(m['event'], m.get('call_id')) for m in metas]}")
     finally:
         client._openai_client = orig

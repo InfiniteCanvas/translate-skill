@@ -243,6 +243,55 @@ def case_pairing_and_one_response_per_path() -> None:
               f"events={events}")
 
 
+def case_retry_metas_announce_the_ladder() -> None:
+    """Every in-call retry announces itself through meta_hook: one
+    llm_retry per retry, BEFORE the retry goes out, carrying the failed
+    wire attempt's ordinal (the guided fallback's extra send counts), a
+    kind, a one-line error, and the wait -- absent only for the immediate
+    guided fallback. (call_id pairing across these metas is already pinned
+    by case_pairing_and_one_response_per_path.)"""
+    retry_paths = [
+        ("retry success", OPENAI_BLOCK, [(429, "slow down"), openai_ok()],
+         scripted_openai, [("status", 1)], False),
+        ("guided fallback", OPENAI_BLOCK,
+         [(400, "response_format is not supported"), openai_ok()],
+         scripted_openai, [("guided_fallback", 1)], True),
+        ("exhausted ladder", OPENAI_BLOCK, [(503, "down")] * 4,
+         scripted_openai, [("status", 1), ("status", 2), ("status", 3)], False),
+        ("anthropic retry success", ANTHROPIC_BLOCK,
+         [(429, "slow down"), anthropic_ok()], scripted_anthropic,
+         [("status", 1)], False),
+        ("anthropic guided fallback", ANTHROPIC_BLOCK,
+         [(400, "output_config is not supported here"), anthropic_ok()],
+         scripted_anthropic, [("guided_fallback", 1)], True),
+        ("anthropic connection ladder", ANTHROPIC_BLOCK,
+         [anthropic.APIConnectionError(request=httpx2.Request(
+             "POST", "http://meta.test/v1/messages"))] * 4, scripted_anthropic,
+         [("connection", 1), ("connection", 2), ("connection", 3)], False),
+    ]
+    for label, block, script, seam, expected, immediate in retry_paths:
+        metas: list[dict] = []
+        with seam(script):
+            with no_backoff():
+                try:
+                    client.chat(block, "hi", json_schema=SCHEMA,
+                                meta_hook=metas.append)
+                except Exception:
+                    pass
+        retries = [m for m in metas if m["event"] == "llm_retry"]
+        check(f"{label}: one llm_retry per retry with kind and failed attempt",
+              [(m.get("kind"), m.get("attempt")) for m in retries] == expected,
+              f"retries={[(m.get('kind'), m.get('attempt')) for m in retries]}")
+        check(f"{label}: the wait is {'absent' if immediate else 'present'} "
+              "on every retry meta",
+              all((m.get("backoff_s") is None) == immediate for m in retries),
+              f"backoffs={[m.get('backoff_s') for m in retries]}")
+        check(f"{label}: retry errors are one line",
+              all(isinstance(m.get("error"), str)
+                  and "\n" not in m["error"] for m in retries),
+              f"errors={[m.get('error') for m in retries]}")
+
+
 def case_metas_serialize_and_usage_counts() -> None:
     """Every meta JSON-serializes and the usage dict carries exactly the keys
     logger._count reads -- for BOTH protocols. logger._append runs
@@ -296,6 +345,7 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     case_pairing_and_one_response_per_path()
+    case_retry_metas_announce_the_ladder()
     case_metas_serialize_and_usage_counts()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")

@@ -8,8 +8,8 @@ Every event belongs to exactly one tier, and the tiers never mix:
     response, so the timeline can never grow a body by accident.
 
   Tier 2 -- logs/chapters/<stem>/run-<run_id>.jsonl. What the models were
-    given and said for ONE chapter: llm_request / llm_response plus the
-    pipeline's reading of individual model outputs (result / chunk /
+    given and said for ONE chapter: llm_request / llm_retry / llm_response
+    plus the pipeline's reading of individual model outputs (result / chunk /
     feedback). A tier-2 event with no chapter lands in the project bucket,
     logs/project/run-<run_id>.jsonl (profile and the review passes).
 
@@ -48,8 +48,13 @@ RUN_PREFIX = "run-"
 INDEX_NAME = "index.jsonl"
 
 TIER_2_EVENTS = frozenset({
-    "llm_request", "llm_response", "result", "chunk", "feedback",
+    "llm_request", "llm_retry", "llm_response", "result", "chunk", "feedback",
 })
+
+# Model-IO events gated by log_llm: with the gate off, a chapter's tier-2
+# file keeps result/chunk/feedback but carries no per-call record at all --
+# a retry line without its request/response pair would be an orphan.
+_LLM_IO_EVENTS = frozenset({"llm_request", "llm_retry", "llm_response"})
 
 _BODY_EVENTS = frozenset({"llm_request", "llm_response"})
 _BODY_FIELDS = (("prompt", "prompt_chars"), ("response", "response_chars"))
@@ -283,8 +288,8 @@ def log_event(project_dir: Path | str, event: dict[str, Any]) -> None:
 
     Each event is routed by name (TIER_2_EVENTS, defaulting to tier 1) and
     gated against this project's flags resolved once per invocation: tier-1
-    events require log_orchestration; llm_request/llm_response require
-    log_llm, with the bodies stripped when log_prompt_bodies is off.
+    events require log_orchestration; llm_request/llm_retry/llm_response
+    require log_llm, with the bodies stripped when log_prompt_bodies is off.
     result/chunk/feedback are unconditional, so log_llm: false still leaves
     a chapter's tier-2 file with the pipeline's own per-chunk record.
 
@@ -304,7 +309,7 @@ def log_event(project_dir: Path | str, event: dict[str, Any]) -> None:
                 _count(run, chapter, event)
 
             if name in TIER_2_EVENTS:
-                if name in _BODY_EVENTS and not run.flags["llm"]:
+                if name in _LLM_IO_EVENTS and not run.flags["llm"]:
                     return
                 path = _tier2_file(proj, run, chapter)
                 payload = (event if run.flags["prompt_bodies"] or name not in _BODY_EVENTS

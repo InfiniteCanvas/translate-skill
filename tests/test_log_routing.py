@@ -45,7 +45,8 @@ from lib import client, config, consensus, logger, story, tn_recheck
 PASSED = 0
 FAILED: list[str] = []
 
-TIER_2 = ("llm_request", "llm_response", "result", "chunk", "feedback")
+TIER_2 = ("llm_request", "llm_retry", "llm_response", "result", "chunk",
+          "feedback")
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -307,8 +308,9 @@ def case_6_tn_recheck_binding() -> None:
 
 
 def case_7_log_llm_gate() -> None:
-    """log_llm:false removes the two model lines but leaves the pipeline's
-    own per-chunk record in place."""
+    """log_llm:false removes the model lines (including the retry lines --
+    a retry without its request/response pair would be an orphan) but leaves
+    the pipeline's own per-chunk record in place."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         write_cfg(root, log_llm=False)
@@ -319,10 +321,14 @@ def case_7_log_llm_gate() -> None:
                            chapter="CHAPTER_0001.md")
         finally:
             client.chat = _REAL_CHAT
+        logger.log_event(root, {"event": "llm_retry", "chapter": "CHAPTER_0001",
+                                "attempt": 1, "kind": "status",
+                                "error": "HTTP 503", "backoff_s": 2})
         names = [e["event"] for e in events(chapter_dir(root, "CHAPTER_0001"))]
         timeline = [e["event"] for e in events(root / "logs")]
-        check("7a log_llm: no llm_request / llm_response",
-              "llm_request" not in names and "llm_response" not in names,
+        check("7a log_llm: no llm_request / llm_retry / llm_response",
+              "llm_request" not in names and "llm_response" not in names
+              and "llm_retry" not in names,
               f"{names}")
         check("7b log_llm: llm_call survives in tier 1 (not log_llm's concern)",
               timeline == ["llm_call"], f"{timeline}")
@@ -334,6 +340,14 @@ def case_7_log_llm_gate() -> None:
         names = [e["event"] for e in events(chapter_dir(root, "CHAPTER_0001"))]
         check("7c log_llm: result/chunk are unconditional",
               names == ["chunk", "result"], f"{names}")
+        reset()
+        write_cfg(root, log_llm=True)
+        logger.log_event(root, {"event": "llm_retry", "chapter": "CHAPTER_0001",
+                                "attempt": 1, "kind": "guided_fallback",
+                                "error": "HTTP 400: no schemas", "backoff_s": None})
+        names = [e["event"] for e in events(chapter_dir(root, "CHAPTER_0001"))]
+        check("7d log_llm: an llm_retry reaches the chapter bucket when on",
+              "llm_retry" in names, f"{names}")
 
 
 def case_8_prompt_bodies_gate() -> None:

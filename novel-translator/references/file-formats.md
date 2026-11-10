@@ -320,7 +320,7 @@ stamp; `init` copies no defaults and no overlay values into it.
   "style_sample_chapters": 4,    // chapters sampled (at random) for style-profile generation (--style auto only)
   "style_sample_chars": 12000,   // rough source-character budget for the sample (--style auto only)
   "log_orchestration": true,    // tier-1 structural events (see § Two-tier trace logs); false leaves the chapter tier-2 files and both indexes untouched
-  "log_llm": true,               // llm_request/llm_response ONLY; result/chunk/feedback and both indexes are unconditional, so the chapter tier-2 file survives
+  "log_llm": true,               // llm_request/llm_response/llm_retry ONLY; result/chunk/feedback and both indexes are unconditional, so the chapter tier-2 file survives
   "log_prompt_bodies": true,     // the prompt/response TEXT; false records prompt_chars / response_chars and keeps finish_reason/usage/elapsed_s/error
   "log_llm_keep_runs": 10,       // retention for logs/ and logs/project/; older runs pruned to the newest N (by mtime)
   "log_chapter_keep_runs": 3,    // retention per chapter directory, independent of every other chapter
@@ -1697,10 +1697,16 @@ pass through) — because the token counters read those keys.
 
 **Tier 2 — model IO, per chapter**
 (`logs/chapters/<stem>/run-<run_id>.jsonl`). What the models were given and
-said for one chapter: `llm_request`, `llm_response`, plus the pipeline's own
-reading of individual model outputs — `chunk` (per-part bounds and outcome),
-`result` (the verdict it accepted, the terms it proposed, the notes it kept),
-and `feedback` (the complete accumulated reason history).
+said for one chapter: `llm_request`, `llm_response`, `llm_retry` (one line
+per in-call retry, emitted BEFORE the retry goes out — the failed wire
+attempt's ordinal, `kind`: `connection` / `status` / `guided_fallback`, a
+one-line `error`, and `backoff_s`, `None` for the immediate guided-schema
+fallback — all under the call's `call_id`, so the retry ladder reads
+directly instead of being inferred from a doubled request line), plus the
+pipeline's own reading of individual model outputs — `chunk` (per-part
+bounds and outcome), `result` (the verdict it accepted, the terms it
+proposed, the notes it kept), and `feedback` (the complete accumulated
+reason history).
 
 A tier-2 event with **no** chapter lands in the project bucket,
 `logs/project/run-<run_id>.jsonl` — that is where `profile` and the `review`
@@ -1899,7 +1905,7 @@ the page on the next run.
 | key | default | what `false` removes |
 |---|---|---|
 | `log_orchestration` | `true` | the tier-1 run file only |
-| `log_llm` | `true` | `llm_request` / `llm_response` only — `result`, `chunk` and `feedback` are unconditional |
+| `log_llm` | `true` | `llm_request` / `llm_retry` / `llm_response` only — `result`, `chunk` and `feedback` are unconditional |
 | `log_prompt_bodies` | `true` | the `prompt` / `response` strings, replaced by `prompt_chars` / `response_chars` |
 
 The per-call counters are incremented **before** gating, so `chapter_end` and

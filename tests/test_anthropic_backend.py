@@ -316,12 +316,15 @@ def case_c_structured_outputs_and_fallback() -> None:
               and "output_config" not in log.calls[1],
               f"armed={('output_config' in log.calls[0])} "
               f"rearmed={('output_config' in log.calls[1])}")
-        check("c3 guided-400: metas are request, request, response with "
-              "guided_json True then False",
+        check("c3 guided-400: metas announce the retry between the two requests",
               [m["event"] for m in metas]
-              == ["llm_request", "llm_request", "llm_response"]
+              == ["llm_request", "llm_retry", "llm_request", "llm_response"]
               and metas[0]["guided_json"] is True
-              and metas[1]["guided_json"] is False,
+              and metas[2]["guided_json"] is False
+              and metas[1]["kind"] == "guided_fallback"
+              and metas[1]["attempt"] == 1
+              and metas[1]["backoff_s"] is None
+              and "output_config" in metas[1]["error"],
               f"metas={[(m['event'], m.get('guided_json')) for m in metas]}")
 
     with install_anthropic([(400, "output_format rejected here"), message("ok")]) as (log, orig):

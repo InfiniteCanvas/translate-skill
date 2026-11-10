@@ -4,8 +4,8 @@ job's array, then let the consensus provider synthesize the final response.
 A job with a single provider block behaves exactly as the pre-consensus
 pipeline did -- one client.chat call. Every call is trace-logged by the
 _trace_hook below: an llm_call summary on the tier-1 orchestration timeline
-(never a body), plus llm_request/llm_response in the calling chapter's
-tier-2 bucket, or the project bucket when the call is chapter-less.
+(never a body), plus llm_request/llm_retry/llm_response in the calling
+chapter's tier-2 bucket, or the project bucket when the call is chapter-less.
 A job with two or more blocks runs the same prompt through every model in
 parallel; each response becomes a labeled candidate, and one extra call to
 the "consensus" job's provider (always exactly one block, enforced by
@@ -119,32 +119,50 @@ def _trace_hook(project_dir: Path, job: str, extra: dict | None = None,
     (`[llm] <job>: calling <model> ...`) before the HTTP request blocks --
     the JSONL lines are for the dashboard, this one is for a live viewer of
     the run, which otherwise sees nothing between the stage lines that
-    bracket the call.
+    bracket the call. On each llm_retry meta it prints the retry itself
+    (`[llm] <job>: attempt N failed (...) - retrying ...`), and the
+    re-emitted request meta of a guided-schema fallback prints NOTHING: the
+    retry line already says why the request goes out again, so stdout must
+    not read as a doubled call. The JSONL keeps every event regardless.
 
     `chapter` is bound HERE, on the calling (main) thread, before any fan-out
     worker starts; ThreadPoolExecutor does not copy context to workers and does
     not need to, because the value is already a closure constant.
 
-    The hook reads no config and applies no gate: log_event routes both lines
-    by tier and gates them against the per-project flags it resolved itself.
-    That matters twice over -- the two lines have DIFFERENT gates (llm_call is
-    orchestration, llm_request/llm_response are model IO), and reading the
-    caller's cfg here would create a second flag source that disagrees with
-    log_event's in any sandbox without a config.json."""
+    The hook reads no config and applies no gate: log_event routes every
+    line by tier and gates them against the per-project flags it resolved
+    itself. That matters twice over -- the lines have DIFFERENT gates
+    (llm_call is orchestration, llm_request/llm_retry/llm_response are model
+    IO), and reading the caller's cfg here would create a second flag source
+    that disagrees with log_event's in any sandbox without a config.json."""
+    printed: set = set()
+
     def hook(meta: dict) -> None:
-        if meta.get("event") == "llm_request":
+        detail = chapter or ""
+        if extra and "candidate" in extra:
+            cand = f"candidate {extra['candidate']}/{extra['candidates']}"
+            detail = f"{detail}, {cand}" if detail else cand
+        suffix = f" ({detail})" if detail else ""
+        event = meta.get("event")
+        if event == "llm_request":
             # Progress line before the request blocks: a model call is the
             # pipeline's longest silent wait, and stdout says nothing between
             # the stage lines that bracket it. Same vocabulary as the
             # [consensus] announce; one print, so fan-out threads interleave
-            # only line-wise.
-            detail = chapter or ""
-            if extra and "candidate" in extra:
-                cand = f"candidate {extra['candidate']}/{extra['candidates']}"
-                detail = f"{detail}, {cand}" if detail else cand
-            suffix = f" ({detail})" if detail else ""
-            print(f"[llm] {job}: calling {meta.get('model')}{suffix}")
-        if meta.get("event") == "llm_response":
+            # only line-wise. Deduped on call_id: the guided-schema fallback
+            # re-emits the request meta for the SAME call, and its retry
+            # line below already says why.
+            call_id = meta.get("call_id")
+            if call_id and call_id not in printed:
+                printed.add(call_id)
+                print(f"[llm] {job}: calling {meta.get('model')}{suffix}")
+        elif event == "llm_retry":
+            backoff = meta.get("backoff_s")
+            how = (f"retrying in {backoff}s" if backoff is not None
+                   else "retrying without the guided schema")
+            print(f"[llm] {job}: attempt {meta.get('attempt')} failed "
+                  f"({meta.get('error')}) - {how}{suffix}")
+        if event == "llm_response":
             logger.log_event(project_dir, {
                 "event": "llm_call", "job": job, "chapter": chapter,
                 **(extra or {}),

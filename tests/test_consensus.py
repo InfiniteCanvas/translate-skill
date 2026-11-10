@@ -594,6 +594,46 @@ def case_j_per_job_arbitrator() -> None:
               r_t == r_a == "merged-final", f"t={r_t!r} a={r_a!r}")
 
 
+def case_k_retry_stdout() -> None:
+    """The hook's stdout is transparent about retries: one "calling" line
+    per call (the guided fallback's re-emitted request meta must not double
+    it -- the retry line already says why), one explicit line per llm_retry
+    meta, and every event still reaching the JSONL trace."""
+    reset_globals()
+    with tempfile.TemporaryDirectory() as td:
+        proj = make_project(Path(td), "proj")
+        hook = consensus._trace_hook(proj, "reviewer",
+                                     chapter="CHAPTER_0001.md")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hook({"event": "llm_request", "call_id": "c1", "model": "m1"})
+            hook({"event": "llm_retry", "call_id": "c1", "attempt": 1,
+                  "kind": "guided_fallback", "error": "HTTP 400: no schemas",
+                  "backoff_s": None})
+            hook({"event": "llm_request", "call_id": "c1", "model": "m1"})
+            hook({"event": "llm_retry", "call_id": "c1", "attempt": 2,
+                  "kind": "status", "error": "HTTP 502: bad gateway",
+                  "backoff_s": 2})
+            hook({"event": "llm_response", "call_id": "c1", "model": "m1",
+                  "usage": {"total_tokens": 5}, "error": None})
+        out = buf.getvalue()
+        check("k1 retry stdout: one calling line despite the re-emitted request",
+              out.count("[llm] reviewer: calling m1") == 1
+              and "(CHAPTER_0001.md)" in out, f"out={out!r}")
+        check("k2 retry stdout: the guided fallback names the failure and the fix",
+              "attempt 1 failed (HTTP 400: no schemas) - retrying without "
+              "the guided schema (CHAPTER_0001.md)" in out, f"out={out!r}")
+        check("k3 retry stdout: a backoff retry announces the wait",
+              "attempt 2 failed (HTTP 502: bad gateway) - retrying in 2s "
+              "(CHAPTER_0001.md)" in out, f"out={out!r}")
+        events = read_log_events(proj)
+        check("k4 retry jsonl: every event reaches the trace regardless",
+              [e.get("event") for e in events]
+              == ["llm_request", "llm_retry", "llm_request", "llm_retry",
+                  "llm_response", "llm_call"],
+              f"events={[e.get('event') for e in events]}")
+
+
 def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -609,6 +649,7 @@ def main() -> int:
     case_i_unresolved_model_label()
     case_j_per_job_arbitrator()
     case_local_template_wins()
+    case_k_retry_stdout()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

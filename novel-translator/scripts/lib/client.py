@@ -137,6 +137,14 @@ def _error_text(exc) -> str:
         return str(exc)
 
 
+def _oneline(text: object, limit: int = 200) -> str:
+    """Error text flattened to one line and capped, for stdout progress
+    lines -- a provider error body can be multi-line JSON, and the retry
+    ladder's stdout notice must stay one line. The JSONL trace keeps the
+    exception's full text where one is raised."""
+    return " ".join(str(text).split())[:limit]
+
+
 def _v1_url(base_url: str) -> str:
     """Normalize a base URL for OpenAI-compatible routing.
 
@@ -460,16 +468,24 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     raise LLMError with the status code and the first 400 chars of the
     response text. On the openai protocol, a body carrying a
     ZAI_FATAL_CODES member raises LLMFatal on the FIRST response, checked
-    before the guided fallback.
+    before the guided fallback. Every retry announces itself through
+    meta_hook BEFORE the retry goes out, so the ladder is visible in the
+    trace and on stdout instead of reading as a doubled or silently
+    repeated call.
 
     meta_hook, when given, is invoked with call metadata for trace logs:
     once with the request (url, model, params, full prompt) BEFORE the call,
-    and once with the response (raw content, finish_reason, usage, elapsed,
-    error) after it completes or exhausts retries. Both metas carry the same
-    call_id and an "event" field ("llm_request" / "llm_response") so they
-    pair up as two JSONL lines per call -- a call that hits the 400 fallback
-    (retry without the guided schema) adds one extra "llm_request" line for
-    the retried request.
+    once with the response (raw content, finish_reason, usage, elapsed,
+    error) after it completes or exhausts retries, and once before EVERY
+    in-call retry with an "llm_retry" meta (kind: "connection" / "status" /
+    "guided_fallback"; the ordinal of the wire attempt that just failed --
+    the guided fallback's extra send counts; a one-line error; and
+    backoff_s, None for the immediate guided fallback). Every meta carries
+    the same call_id and an "event" field ("llm_request" / "llm_retry" /
+    "llm_response") so they pair up as the JSONL record of one call -- a
+    call that hits the 400 fallback (retry without the guided schema) adds
+    one extra "llm_request" line for the retried request, alongside its
+    "llm_retry" line.
 
     `max_tokens` is the caller's ceiling and is clamped DOWN to the block's
     own cap (see _resolve_cap); it can never raise a block above its declared
@@ -564,10 +580,27 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
             "error": error,
         }
 
+    def _retry_meta(attempt: int, kind: str, error: str,
+                    backoff_s: float | None) -> dict[str, Any]:
+        """One line per in-call retry, BEFORE the retry goes out: the ladder
+        must be visible in the trace and on stdout, not inferred from a
+        doubled request line (or from nothing at all)."""
+        return {
+            "event": "llm_retry",
+            "call_id": call_id,
+            "url": url,
+            "model": model,
+            "attempt": attempt,
+            "kind": kind,
+            "error": error,
+            "backoff_s": backoff_s,
+        }
+
     if meta_hook:
         meta_hook(_request_meta())
     started = time.monotonic()
     failures = 0
+    attempts = 0
     while True:
         try:
             kwargs: dict[str, Any] = {
@@ -582,6 +615,7 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
                 kwargs["extra_body"] = dict(body_extra)
             if no_auth:
                 kwargs["extra_headers"] = no_auth
+            attempts += 1
             completion = client.chat.completions.create(**kwargs)
         except openai.APIConnectionError as exc:
             failures += 1
@@ -590,6 +624,10 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
                 if meta_hook:
                     meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
                 raise LLMError(err) from exc
+            if meta_hook:
+                meta_hook(_retry_meta(attempts, "connection",
+                                      f"connection error: {_oneline(exc)}",
+                                      _BACKOFF[failures - 1]))
             time.sleep(_BACKOFF[failures - 1])
             continue
         except openai.APIStatusError as exc:
@@ -607,6 +645,9 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
                 if _GUIDED_UNSUPPORTED_RE.search(_error_text(exc)):
                     body_extra.pop("response_format")
                     if meta_hook:
+                        meta_hook(_retry_meta(
+                            attempts, "guided_fallback",
+                            f"HTTP 400: {_oneline(_error_text(exc))}", None))
                         meta_hook(_request_meta())
                     continue
                 retryable_400 = True
@@ -620,6 +661,11 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
                         meta_hook(_response_meta(elapsed=time.monotonic() - started,
                                                  error=err))
                     raise LLMError(err)
+                if meta_hook:
+                    meta_hook(_retry_meta(
+                        attempts, "status",
+                        f"HTTP {exc.status_code}: {_oneline(_error_text(exc))}",
+                        _BACKOFF[failures - 1]))
                 time.sleep(_BACKOFF[failures - 1])
                 continue
 
@@ -751,10 +797,27 @@ def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
             "error": error,
         }
 
+    def _retry_meta(attempt: int, kind: str, error: str,
+                    backoff_s: float | None) -> dict[str, Any]:
+        """One line per in-call retry, BEFORE the retry goes out (see the
+        openai path for the full rationale -- the ladder must be visible,
+        not inferred from a doubled request line or nothing at all)."""
+        return {
+            "event": "llm_retry",
+            "call_id": call_id,
+            "url": url,
+            "model": model,
+            "attempt": attempt,
+            "kind": kind,
+            "error": error,
+            "backoff_s": backoff_s,
+        }
+
     if meta_hook:
         meta_hook(_request_meta())
     started = time.monotonic()
     failures = 0
+    attempts = 0
     while True:
         try:
             kwargs: dict[str, Any] = {
@@ -769,6 +832,7 @@ def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
                                                       "schema": json_schema}}
             if no_auth:
                 kwargs["extra_headers"] = no_auth
+            attempts += 1
             message = client.messages.create(**kwargs)
         except anthropic.APIConnectionError as exc:
             failures += 1
@@ -777,6 +841,10 @@ def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
                 if meta_hook:
                     meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
                 raise LLMError(err) from exc
+            if meta_hook:
+                meta_hook(_retry_meta(attempts, "connection",
+                                      f"connection error: {_oneline(exc)}",
+                                      _BACKOFF[failures - 1]))
             time.sleep(_BACKOFF[failures - 1])
             continue
         except anthropic.APIStatusError as exc:
@@ -785,6 +853,9 @@ def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
                 if _GUIDED_UNSUPPORTED_RE.search(_error_text(exc)):
                     armed = False
                     if meta_hook:
+                        meta_hook(_retry_meta(
+                            attempts, "guided_fallback",
+                            f"HTTP 400: {_oneline(_error_text(exc))}", None))
                         meta_hook(_request_meta())
                     continue
                 retryable_400 = True
@@ -798,6 +869,11 @@ def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
                         meta_hook(_response_meta(elapsed=time.monotonic() - started,
                                                  error=err))
                     raise LLMError(err)
+                if meta_hook:
+                    meta_hook(_retry_meta(
+                        attempts, "status",
+                        f"HTTP {exc.status_code}: {_oneline(_error_text(exc))}",
+                        _BACKOFF[failures - 1]))
                 time.sleep(_BACKOFF[failures - 1])
                 continue
 
