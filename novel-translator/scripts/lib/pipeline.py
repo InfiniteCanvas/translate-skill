@@ -1195,13 +1195,18 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
 
         Called just inside the stage's resume guard, so a resumed chapter
         enters only the stages it actually reaches and emits no TRANSLATE
-        event."""
+        event. Every stage that runs also announces itself on stdout: the
+        orchestrator's progress board advances the per-chapter seal chain
+        from these lines, so a stage that stays silent can never be shown.
+        """
         if stage not in stages_run:
             stages_run.append(stage)
+        attempt = int(state.get("attempt", 0) or 0) + 1
+        print(f"{tag} [init] {stage} (attempt {attempt})")
         started = time.monotonic()
         logger.log_event(project_dir, {
             "event": "stage", "chapter": file, "stage": stage, "phase": "begin",
-            "attempt": int(state.get("attempt", 0) or 0) + 1})
+            "attempt": attempt})
         return started
 
     def stage_exit(stage: str, started: float) -> None:
@@ -1290,7 +1295,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
         if start_idx <= _STAGE_IDX["TRANSLATE"]:
             _t0 = stage_enter("TRANSLATE")
             try:
-                print(f"{tag} [init] TRANSLATE (attempt {state['attempt'] + 1})")
                 logger.log_event(project_dir, {"event": "attempt", "chapter": file,
                                     "attempt": state["attempt"] + 1})
                 max_out = int(_cfg_value(cfg, "translate_max_output_tokens"))
@@ -1544,7 +1548,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                     build_ctx(lines, extra={"balance_signals_section": balance_signals_section()}),
                     "faithfulness.md",
                 )
-                print(f"{tag} [init] FAITH")
                 resp = _chat(project_dir, cfg, "reviewer", prompt,
                               json_schema=VERDICT_SCHEMA, chapter=file)
                 data = client.extract_json(resp)
@@ -1592,7 +1595,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                     build_ctx(lines, extra={"max_terms": str(max_terms)}),
                     "glossary_expand.md",
                 )
-                print(f"{tag} [init] GLOSSARY_EXPAND")
                 resp = _chat(project_dir, cfg, "glossary", prompt,
                               json_schema=TERMS_SCHEMA, chapter=file)
                 data = client.extract_json(resp)
@@ -1644,7 +1646,6 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                     build_ctx(lines, extra={"max_notes": str(max_notes)}),
                     "tn_generate.md",
                 )
-                print(f"{tag} [init] TN_GENERATE")
                 resp = _chat(project_dir, cfg, "annotator", prompt,
                               json_schema=NOTES_SCHEMA, chapter=file)
                 data = client.extract_json(resp)

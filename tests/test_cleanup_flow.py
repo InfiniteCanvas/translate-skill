@@ -17,7 +17,10 @@ deferred retirement lands only after the SUCCESS faithfulness verdict.
 
 Covered: the run completes with outcome "translated"; the exact console
 line `[CHAPTER_0001] [glossary] retired mundane term '灵石' (mundane mock
-term)` prints between the FAITH and GLOSSARY_EXPAND init lines; glossary.json
+term)` prints inside the GLOSSARY_EXPAND stage -- after that stage's init
+line, before TN_GENERATE's; every stage that runs announces itself with an
+`[init] STAGE (attempt N)` line (the orchestrator's progress board reads
+them to advance the per-chapter seal chain); glossary.json
 after the run is exactly {"terms": [], "retired": ["灵石"]} (whole-file
 equality -- the deferred retire and the GLOSSARY_EXPAND save must agree),
 find() no longer resolves 灵石, and retired_sources() == {"灵石"}; the
@@ -187,11 +190,15 @@ RETIRED_LINE = (
 
 EXPECTED_OUTPUT = (
     "[CHAPTER_0001] [init] TRANSLATE (attempt 1)\n"
-    "[CHAPTER_0001] [init] FAITH\n"
+    "[CHAPTER_0001] [init] VALIDATE (attempt 1)\n"
+    "[CHAPTER_0001] [init] BALANCE (attempt 1)\n"
+    "[CHAPTER_0001] [init] FAITH (attempt 1)\n"
+    "[CHAPTER_0001] [init] GLOSSARY_EXPAND (attempt 1)\n"
     + RETIRED_LINE +
-    "[CHAPTER_0001] [init] GLOSSARY_EXPAND\n"
-    "[CHAPTER_0001] [init] TN_GENERATE\n"
+    "[CHAPTER_0001] [init] TN_GENERATE (attempt 1)\n"
+    "[CHAPTER_0001] [init] TN_DEDUP (attempt 1)\n"
     "[CHAPTER_0001] [ok] notes: 0 kept\n"
+    "[CHAPTER_0001] [init] ASSEMBLE (attempt 1)\n"
     "[CHAPTER_0001] [ok] translated -> CHAPTER_0001.md "
     "(title: Mock Chapter Title, notes: 0)\n"
     "[CHAPTER_0001] [init] recap\n"
@@ -220,8 +227,9 @@ def case_cleanup_flow() -> None:
               RETIRED_LINE in out, f"out={out!r}")
         check("1c run: the translated summary line printed",
               "[CHAPTER_0001] [ok] translated ->" in out, f"out={out!r}")
-        check("1d run: full deterministic console output (8 lines, retired "
-              "line after FAITH init, before GLOSSARY_EXPAND init)",
+        check("1d run: full deterministic console output (12 lines: every "
+              "stage announces itself, the retired line inside GLOSSARY_EXPAND, "
+              "before TN_GENERATE)",
               out == EXPECTED_OUTPUT, f"out={out!r}")
 
         after = glossary.load(proj)
