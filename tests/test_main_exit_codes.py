@@ -371,6 +371,60 @@ def case_8_llmfatal_is_never_absorbed_by_a_stage_guard() -> None:
           raised, "the chapter was absorbed into needs-review")
 
 
+def case_9_llm_exhausted_arm() -> None:
+    """LLMExhausted -> exit 4 (the resumable lane), not 3.
+
+    Exit 3 stays the permanent-refusal lane (LLMFatal, and any non-retryable
+    LLMError escape). Exit 4 tells the orchestrator the provider was temporarily
+    unavailable and the saved chapter state can be resumed; the terminal line
+    carries the stable retry_after_s=N token when a provider hint was present.
+    The same class must also cross the real stage guard, exactly like
+    LLMFatal (it is a PipelineError sibling, not a subclass).
+    """
+    exc = client.LLMExhausted("HTTP 429 from x after 4 attempts: slow down",
+                              retry_after_s=42)
+    orig = translate.cmd_status
+    translate.cmd_status = _dispatch_raiser(exc)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            out, err, code = run_main_inproc(["status", "--project", td])
+    finally:
+        translate.cmd_status = orig
+    check("9a LLMExhausted: exit code 4", code == 4, f"rc={code}")
+    check("9b LLMExhausted: stable retry_after_s token and resume hint on stderr",
+          "[FAIL]" in err and "retry_after_s=42" in err and "resume" in err,
+          f"err={err!r}")
+    check("9c LLMExhausted: no traceback", "Traceback" not in out + err,
+          f"out={out!r} err={err!r}")
+
+    def _boom(project_dir, file, cfg, force=False, verify_on_faith=True,
+              prepare=None):
+        raise client.LLMExhausted("HTTP 429 after 4 attempts")
+
+    orig_run = pipeline.run_chapter
+    pipeline.run_chapter = _boom
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "source").mkdir(parents=True)
+            (root / "source" / "CHAPTER_0001.md").write_text(
+                "---\nchapter_title: One\n---\n\n文字。\n",
+                encoding="utf-8", newline="\n")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                raised = False
+                try:
+                    pipeline.run_range(root, ["CHAPTER_0001.md"], {}, force=False)
+                except client.LLMExhausted:
+                    raised = True
+                except Exception:
+                    raised = False
+    finally:
+        pipeline.run_chapter = orig_run
+    check("9d run_range lets an LLMExhausted out instead of marking needs-review",
+          raised, "the chapter was absorbed into needs-review")
+
+
 def main() -> int:
     case_1_bad_frontmatter_is_fail_exit_2()
     case_2_healthy_project_exits_0()
@@ -380,6 +434,7 @@ def main() -> int:
     case_6_keyboard_interrupt_arm()
     case_7_provider_failure_arms()
     case_8_llmfatal_is_never_absorbed_by_a_stage_guard()
+    case_9_llm_exhausted_arm()
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

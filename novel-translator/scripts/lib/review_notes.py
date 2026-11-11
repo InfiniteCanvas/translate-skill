@@ -281,7 +281,7 @@ def _model_findings(
                     "suggestion": suggestion if isinstance(suggestion, str) else "",
                     "origin": "model",
                 })
-        except client.LLMFatal:
+        except (client.LLMFatal, client.LLMExhausted):
             raise
         except Exception as exc:
             errors.append(f"batch {i}/{n}: {exc}")

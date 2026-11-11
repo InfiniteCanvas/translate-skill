@@ -259,12 +259,12 @@ def case_openai_wire_identity_facts() -> None:
 
 @contextmanager
 def no_backoff():
-    orig = client._BACKOFF
-    client._BACKOFF = (0, 0, 0)
+    orig = client._DEFAULT_RETRY
+    client._DEFAULT_RETRY = {**orig, "backoff_seconds": [0, 0, 0], "jitter": 0}
     try:
         yield
     finally:
-        client._BACKOFF = orig
+        client._DEFAULT_RETRY = orig
 
 
 def case_openai_no_auth() -> None:

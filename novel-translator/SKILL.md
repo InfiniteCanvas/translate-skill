@@ -410,12 +410,17 @@ resolved PER JOB (v015): `providers.consensus_<job>` if authored, else the
 global `providers.consensus` — so the translation merge and the notes merge can
 use different models, and a project that authors no per-job key is unchanged.
 **As of v014 a
-provider failure is terminal rather than degrading**: any call that fails after
-its retries stops the run — one `[FAIL]` line, exit 3 — instead of falling back
-to a surviving candidate or a lone one, and a code the provider itself calls
-irrecoverable (Z.AI auth / balance / invalid-parameter) skips the retry ladder
-entirely. A run that cannot reach its provider should say so rather than emit a
-chapter that looks translated; the ladder is in
+provider failure is terminal rather than degrading**, with two lanes: a code
+the provider itself calls irrecoverable (Z.AI auth / balance /
+invalid-parameter) skips the retry ladder and exits **3**; a
+`429`/`5xx`/connection failure that outlasts the ladder exits **4**
+(resumable — chapter state is saved, and re-running the same command resumes
+at the saved stage/chunk). Either way: one `[FAIL]` line, never a silent
+fallback to a surviving candidate or a lone one. The ladder honors
+`Retry-After` / `X-RateLimit-Reset` and is tunable through the top-level
+`retry` object (`max_attempts`, `backoff_seconds`, `max_wait_seconds`,
+`jitter`, `respect_retry_after`). A run that cannot reach its provider should
+say so rather than emit a chapter that looks translated; the ladder is in
 `references/file-formats.md` § Exit codes.
 The merge is the one call allowed past its own block's `max_tokens` (an
 arbitrator set to 65536 still merges full-size candidates), so a provider block
@@ -794,6 +799,8 @@ background build too. Builds produce no git commits — `export/`,
   safe any time — the balance check reads it fresh for every chapter. The
   maintenance workflows — `review glossary` (entry audit, `--fix`),
   `review notes` + `tn` (translator's-note quality and re-check),
+  `recap` (regenerate rolling recaps), `glossary expand` (re-run glossary
+  expansion for already-translated chapters),
   `review fix` (apply a review report), `glossary
   set|merge|retire|replace|search|count`, `util replace` — are documented
   in `references/maintenance.md`; read it before running any of them, or

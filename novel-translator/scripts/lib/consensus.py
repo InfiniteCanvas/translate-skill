@@ -239,11 +239,16 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
     silently degraded to the first candidate.
     """
     blocks = config.provider_list(cfg, job)
+    # One policy for the whole fan-out: the candidates and the arbitrator
+    # share the project's retry budget/backoff, so a rate-limited provider is
+    # waited out consistently instead of each call inventing its own ladder.
+    policy = config.retry_policy(cfg)
     if len(blocks) == 1:
         return client.chat(blocks[0], prompt, json_schema=json_schema,
                            max_tokens=max_tokens,
                            meta_hook=_trace_hook(project_dir, job,
-                                                 chapter=chapter))
+                                                 chapter=chapter),
+                           retry=policy)
 
     n = len(blocks)
     if (job, n) not in _ANNOUNCED:
@@ -262,7 +267,8 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
                         json_schema=json_schema, max_tokens=max_tokens,
                         meta_hook=_trace_hook(project_dir, job,
                                               {"candidate": i, "candidates": n},
-                                              chapter))
+                                              chapter),
+                        retry=policy)
             for i, block in enumerate(blocks, start=1)
         ]
         for i, future in enumerate(futures):
@@ -288,6 +294,17 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
         _log_fatal(project_dir, chapter, job,
                    f"{len(failures)}/{n} candidates failed after their retries "
                    f"- the run stops rather than merging a partial fan-out")
+        # Raise the most actionable failure: a permanent provider refusal must
+        # win over a resumable exhaustion, and exhaustion must win over a plain
+        # content error. Otherwise failures[0] can mask the signal the caller
+        # needs to decide between "stop forever" (exit 3) and "resume later"
+        # (exit 4). The failure set is still terminal either way -- there is no
+        # survivor fallback.
+        for failure_type in (client.LLMFatal, client.LLMExhausted):
+            preferred = next(
+                (exc for _, exc in failures if isinstance(exc, failure_type)), None)
+            if preferred is not None:
+                raise preferred
         raise failures[0][1]
 
     from lib import pipeline
@@ -307,4 +324,5 @@ def chat(project_dir: Path, cfg: dict, job: str, prompt: str,
         cblock, c_prompt, json_schema=json_schema, max_tokens=c_max,
         enforce_ceiling=False,
         meta_hook=_trace_hook(project_dir, "consensus",
-                              {"consensus_for": job}, chapter))
+                              {"consensus_for": job}, chapter),
+        retry=policy)

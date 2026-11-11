@@ -312,7 +312,14 @@ stamp; `init` copies no defaults and no overlay values into it.
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "tn_keep_low_confidence": false, // keep threshold:"low" notes instead of dropping them (default drops)
   "auto_build_epub": true,      // rebuild the epub in the background after every translated chapter (serialized; final build at batch end); false = manual `build-epub` only
-  "max_attempts": 3,             // translation attempts before needs-review
+  "max_attempts": 3,             // translation attempts (whole-chapter gate) before needs-review
+  "retry": {                     // per-call transport retry policy; see § Exit codes
+    "max_attempts": 4,           // total wire attempts for ONE model call
+    "backoff_seconds": [5, 30, 120], // waits between attempts; the last entry repeats
+    "max_wait_seconds": 300,     // longest single in-run wait honored; a provider hint above this aborts (exit 4)
+    "jitter": 0.25,              // +/- fraction on a computed backoff (never on a provider hint)
+    "respect_retry_after": true  // honor Retry-After / X-RateLimit-Reset
+  },
   "contextual_glossary_cap": 200, // safety valve only — every glossary term present in the chapter goes in
   "max_new_terms_per_chapter": 15,
   "max_notes_per_chapter": 10,
@@ -2435,7 +2442,8 @@ Every command exits 0 on success. The non-zero exits:
 |---|---|
 | 1 | `translate` / `retry` — at least one chapter ended `needs-review`; `build-epub` — epubcheck reported errors (the epub failed validation); `review glossary` — warns remain after the run; `review fix` — at least one command failed, or the report was refused as stale; `glossary search` — nothing found; `glossary count` — below the significance threshold; `tn` — failed chapters (annotator call or unreadable chapter) or no eligible chapters in range; `profile` — generation failed; `verify` — at least one chapter had glossary drift CONFIRMED by the model stage, or at least one chapter could not be checked |
 | 2 | usage or setup error — bad arguments, missing files, corrupt project JSON (one `[FAIL]` line, never a traceback); a config that resolves no `base_url` (§ Overlay layers); `build-epub` — the builder subprocess crashed; `ping` — one or more providers unreachable; `sync-config` — the skill's `config.local.json` is unreadable/malformed, or the project has no `config.json` |
-| 3 | a provider call failed and the run stopped — see "Provider failure is fatal" below |
+| 3 | a provider call failed permanently and the run stopped — see "Provider failure is fatal" below |
+| 4 | provider unavailable after the retry ladder (`429` / `5xx` / connection) — the resumable lane: chapter state (stage, chunks) is saved, re-run the same command to resume. The `[FAIL]` line carries `retry_after_s=N` when the provider supplied a reset hint, so a wrapper can schedule the resume |
 | 130 | interrupted at the keyboard (`Ctrl-C`) — chapter state is saved, re-run to resume |
 
 `build-epub` splits its failures: epubcheck failing validation exits 1,
@@ -2462,12 +2470,24 @@ chapter. Two kinds:
   refuse (`1210`–`1215`, `1221`, `1222`, `1261`), filtered content (`1301`),
   and plan/key problems (`1309`, `1311`, `1313`, `1314`, `1315`). `ping` names
   the code too, so a wrong URL can be told apart from an empty balance.
-- **Exhausted** — anything else, after `_MAX_ATTEMPTS` (4) attempts with
-  `(2, 4, 8)`s backoff, including every `429` and `5xx`. `429` rate limits
-  (`1302`, `1305`) and the quota *windows* (`1308`, `1310`, `1316`–`1321`,
-  which publish a reset time a multi-hour run may well clear) stay on the retry
-  ladder deliberately: the difference is how many attempts are spent, not
-  whether the run survives.
+- **Exhausted (resumable)** — a `429`, `5xx`, or connection failure that
+  outlasts the ladder raises `client.LLMExhausted`, which is also a
+  `PipelineError`: the run stops with exit 4 and the chapter's saved state
+  (current stage, completed TRANSLATE chunks) is preserved for a re-run. The
+  ladder is configurable through the top-level `retry` object:
+  `max_attempts` (default 4), `backoff_seconds` (default `[5, 30, 120]`; the
+  last entry repeats), `max_wait_seconds` (default 300), `jitter` (0.25,
+  +/- fraction applied only when the provider gave no hint), and
+  `respect_retry_after` (default true). Provider hints — `Retry-After` in
+  seconds or HTTP-date form, and `X-RateLimit-Reset` as epoch milliseconds,
+  epoch seconds, ISO 8601, or plain seconds — raise the wait to at least the
+  hint. A hint above `max_wait_seconds` aborts immediately (no sleep) with
+  `retry_after_s=N` in the message, so the caller can resume at the reset
+  time instead of blocking. A retryable `400` (guided schema armed, error
+  text not blaming it) is a CONTENT failure: it uses the ladder but ends as a
+  plain `LLMError`, never the resumable lane. `429` quota windows
+  (`1302`, `1305`, `1308`, `1310`, `1316`–`1321`) stay on the ladder
+  deliberately.
 
 The check runs before the guided-JSON fallback, so a `1214` whose message names
 `response_format` cannot drop `response_format` and re-POST the same request.
@@ -2478,5 +2498,8 @@ instead of being absorbed into retry feedback or a `needs-review` chapter.
 Non-provider shape errors are unaffected: a missing template or an unfilled
 placeholder is still `PipelineError` and still exit 2.
 
-Re-running after exit 3 is safe. Completed chapters stay `translated`; the
+Re-running after exit 3 or exit 4 is safe. After exit 4,
+`translate --chapters <spec>` resumes at the saved stage (or the next
+TRANSLATE chunk) — do NOT use `retry`, which deliberately wipes chapter
+artifacts first. After exit 3, completed chapters stay `translated`; the
 chapter that failed returns to `needs-review` on the next run.

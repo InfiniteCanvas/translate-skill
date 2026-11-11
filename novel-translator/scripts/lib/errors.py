@@ -13,9 +13,11 @@ stage guards are all written as
         ... degrade, retry, or skip ...
 
 so `PipelineError` already means "this is fatal, do not absorb me" at every
-stage boundary. `client.LLMFatal` inherits from BOTH `LLMError` and
-`PipelineError`, which routes a dead provider key through all six of those
-guards with no edits to any of them — see `client.LLMFatal`.
+stage boundary. `client.LLMFatal` (permanent provider refusal) and
+`client.LLMExhausted` (provider unavailable after the retry ladder, resumable)
+both inherit from BOTH `LLMError` and `PipelineError`, which routes them
+through all six of those guards with no edits to any of them — see
+`client.LLMFatal` / `client.LLMExhausted`.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from __future__ import annotations
 class PipelineError(Exception):
     """Fatal pipeline error (bad spec, missing template, unfilled placeholder).
 
-    Also the base of `client.LLMFatal`, so anything that must never be absorbed
-    by a stage's broad handler inherits it and passes through untouched.
+    Also the base of `client.LLMFatal` and `client.LLMExhausted`, so anything that
+    must never be absorbed by a stage's broad handler inherits it and passes
+    through untouched.
     """

@@ -143,12 +143,12 @@ def scripted_anthropic(script: list):
 
 @contextmanager
 def no_backoff():
-    orig = client._BACKOFF
-    client._BACKOFF = (0, 0, 0)
+    orig = client._DEFAULT_RETRY
+    client._DEFAULT_RETRY = {**orig, "backoff_seconds": [0, 0, 0], "jitter": 0}
     try:
         yield
     finally:
-        client._BACKOFF = orig
+        client._DEFAULT_RETRY = orig
 
 
 def openai_ok(content="ok", usage: dict | None = None):
@@ -191,7 +191,7 @@ def _paths():
                         body={"code": "1214"})],
          client.LLMFatal),
         ("exhausted ladder", OPENAI_BLOCK,
-         [(503, "down")] * 4, client.LLMError),
+         [(503, "down")] * 4, client.LLMExhausted),
         ("malformed payload", OPENAI_BLOCK,
          [SimpleNamespace(id="x")], client.LLMError),
         ("anthropic success", ANTHROPIC_BLOCK, [anthropic_ok()], None),
@@ -202,14 +202,14 @@ def _paths():
         ("anthropic other-4xx", ANTHROPIC_BLOCK,
          [(403, "forbidden")], client.LLMError),
         ("anthropic exhausted ladder", ANTHROPIC_BLOCK,
-         [(503, "down")] * 4, client.LLMError),
+         [(503, "down")] * 4, client.LLMExhausted),
         ("anthropic empty content", ANTHROPIC_BLOCK,
          [anthropic_ok(text="", blocks=[SimpleNamespace(type="thinking"),
                                         SimpleNamespace(type="text", text="")])],
          client.LLMError),
         ("anthropic connection ladder", ANTHROPIC_BLOCK,
          [anthropic.APIConnectionError(request=httpx2.Request(
-             "POST", "http://meta.test/v1/messages"))] * 4, client.LLMError),
+             "POST", "http://meta.test/v1/messages"))] * 4, client.LLMExhausted),
     ]
 
 

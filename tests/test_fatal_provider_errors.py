@@ -60,6 +60,9 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import client, config, logger, pipeline
 
+# The shipped attempt budget, read from the policy the client actually uses.
+MAX_ATTEMPTS = client._DEFAULT_RETRY["max_attempts"]
+
 PASSED = 0
 FAILED: list[str] = []
 
@@ -114,17 +117,17 @@ def no_backoff():
     """Zero the retry sleeps.
 
     These cases deliberately drive the full ladder (case_c asserts
-    _MAX_ATTEMPTS posts for each of ten retryable codes), and the real _BACKOFF
-    of (2, 4, 8) would make that ten x 14s of pure sleeping. The attempt
-    COUNT is what is under test, not the delay; the delays themselves are not
-    asserted anywhere in this file.
+    _DEFAULT_RETRY["max_attempts"] posts for each of ten retryable codes), and
+    the real backoff would make that ten x ~2.5 minutes of pure sleeping. The
+    attempt COUNT is what is under test, not the delay; the delays themselves
+    are not asserted anywhere in this file.
     """
-    orig = client._BACKOFF
-    client._BACKOFF = (0, 0, 0)
+    orig = client._DEFAULT_RETRY
+    client._DEFAULT_RETRY = {**orig, "backoff_seconds": [0, 0, 0], "jitter": 0}
     try:
         yield
     finally:
-        client._BACKOFF = orig
+        client._DEFAULT_RETRY = orig
 
 
 @contextmanager
@@ -242,7 +245,7 @@ def case_c_recoverable_codes_still_retry() -> None:
         check(f"c {code}: a reset-window/rate-limit code is NOT fatal",
               not isinstance(exc, client.LLMFatal), f"exc={exc!r}")
         check(f"c {code}: it spends the full retry ladder",
-              len(log.bodies) == client._MAX_ATTEMPTS,
+              len(log.bodies) == MAX_ATTEMPTS,
               f"posts={len(log.bodies)}")
 
 
@@ -279,7 +282,7 @@ def case_e_unreadable_bodies_never_raise() -> None:
         except Exception:
             pass
     check("e an unparseable 400 keeps the ordinary retry ladder",
-          len(log.bodies) == client._MAX_ATTEMPTS, f"posts={len(log.bodies)}")
+          len(log.bodies) == MAX_ATTEMPTS, f"posts={len(log.bodies)}")
 
 
 def case_f_the_fatal_channel_rides_pipeline_error() -> None:
@@ -329,7 +332,7 @@ def case_g_exhausted_retries_are_still_llmerror() -> None:
           isinstance(exc, client.LLMError)
           and not isinstance(exc, client.LLMFatal), f"exc={exc!r}")
     check("g2 after exactly _MAX_ATTEMPTS attempts",
-          len(log.bodies) == client._MAX_ATTEMPTS, f"posts={len(log.bodies)}")
+          len(log.bodies) == MAX_ATTEMPTS, f"posts={len(log.bodies)}")
 
 
 def case_h_probe_names_the_business_code() -> None:

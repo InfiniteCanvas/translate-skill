@@ -195,12 +195,12 @@ class _SleepLog:
 
 @contextmanager
 def no_backoff():
-    orig = client._BACKOFF
-    client._BACKOFF = (0, 0, 0)
+    orig = client._DEFAULT_RETRY
+    client._DEFAULT_RETRY = {**orig, "backoff_seconds": [0, 0, 0], "jitter": 0}
     try:
         yield
     finally:
-        client._BACKOFF = orig
+        client._DEFAULT_RETRY = orig
 
 
 BASE = "http://x.test"
@@ -432,6 +432,10 @@ def case_e_response_shape_and_usage() -> None:
     with install_anthropic([conn] * 4) as (log, orig):
         sleep_log = _SleepLog()
         orig_time = client.time
+        orig_policy = client._DEFAULT_RETRY
+        # Pin the legacy schedule: the shipped default is longer and jittered.
+        client._DEFAULT_RETRY = {**orig_policy,
+                                 "backoff_seconds": [2, 4, 8], "jitter": 0}
         client.time = sleep_log
         try:
             exc = None
@@ -441,6 +445,7 @@ def case_e_response_shape_and_usage() -> None:
                 exc = caught
         finally:
             client.time = orig_time
+            client._DEFAULT_RETRY = orig_policy
         check("e8 connection ladder: 4 attempts with the 2/4/8 backoff",
               exc is not None and "failed after 4 attempts" in str(exc)
               and log.n == 4 and sleep_log.calls == [2, 4, 8],

@@ -17,6 +17,18 @@ sys.path.insert(0, str(SCRIPTS))
 
 from lib import client
 
+# The ladder cases pin the MECHANISM, not the shipped defaults: use the
+# legacy deterministic 2/4/8 schedule with no jitter so the sleep assertions
+# are exact and no case waits on the product's longer, jittered default
+# backoff. A separate suite covers the default policy and provider hints.
+client._DEFAULT_RETRY = {
+    "max_attempts": 4,
+    "backoff_seconds": [2, 4, 8],
+    "max_wait_seconds": 0,
+    "jitter": 0,
+    "respect_retry_after": True,
+}
+
 PASSED = 0
 FAILED: list[str] = []
 

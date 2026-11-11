@@ -351,7 +351,7 @@ def case_6_profile_template_bom() -> None:
         prompts: list[str] = []
 
         def fake_chat(provider_cfg, prompt, json_schema=None, temperature=None,
-                      max_tokens=None, meta_hook=None):
+                      max_tokens=None, meta_hook=None, **kwargs):
             prompts.append(prompt)
             return json.dumps({"style_summary": "Plain, steady wuxia prose.",
                                "background": "A cultivation epic."},

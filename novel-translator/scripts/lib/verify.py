@@ -379,7 +379,7 @@ def _verdicts(project_dir: Path, cfg: dict, term: dict,
                               json_schema=VERIFY_SCHEMA,
                               chapter=Path(blocks[0]["chapter"]).stem)
         data = client.extract_json(resp)
-    except client.LLMFatal:
+    except (client.LLMFatal, client.LLMExhausted):
         raise
     except Exception as exc:
         return [], f"{label}: {type(exc).__name__}: {exc}"

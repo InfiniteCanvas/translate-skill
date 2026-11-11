@@ -16,11 +16,12 @@ rewrite); annotator failure (file recorded in `failed`, pre-existing
 sidecar + history byte-unchanged, and — regression — a LEGACY chapter is
 left byte-unchanged too: the migration rewrite must land only after the
 annotator succeeded); unreadable chapter YAML (recorded in `failed`, the
-run continues); the cmd_retry wipe loop (deletes draft artifacts, the
-translated file, the notes sidecar, AND the dropped-candidates artifact —
-regression: the sidecar unlink
-once passed the paths dict where tn.notes_path expects the project dir and
-crashed retry mid-wipe); manifest-order processing (files
+run continues); the cmd_retry per-chapter wipe (run_range's prepare callback
+deletes draft artifacts, the translated file, the notes sidecar, AND the
+dropped-candidates artifact just before that chapter runs — regression: the
+sidecar unlink once passed the paths dict where tn.notes_path expects the
+project dir and crashed retry mid-wipe; lazy clearing means an aborted batch
+leaves later chapters untouched); manifest-order processing (files
 passed out of order are still processed by `order`, so the gap rule
 suppresses the same term in the immediately following chapter); the
 history-only-drift commit (re-annotated notes identical to the sidecar
@@ -531,9 +532,18 @@ def case_11_retry_wipe_sidecar() -> None:
         )
 
         real_run_range = translate.pipeline.run_range
-        translate.pipeline.run_range = (
-            lambda *a, **k: {"translated": [], "needs-review": [],
-                             "skipped": []})
+
+        def fake_run_range(project_dir, files, cfg, **kwargs):
+            # Mirror run_range's contract: prepare runs per chapter, just
+            # before that chapter. (The real lazy-clear ordering is pinned by
+            # test_retry_lazy_clear.)
+            prepare = kwargs.get("prepare")
+            for file in files:
+                if prepare is not None:
+                    prepare(file)
+            return {"translated": [], "needs-review": [], "skipped": []}
+
+        translate.pipeline.run_range = fake_run_range
         try:
             code = translate.cmd_retry(
                 argparse.Namespace(failed=False, chapters="CHAPTER_0001.md"),

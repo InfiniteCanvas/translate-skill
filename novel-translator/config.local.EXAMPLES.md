@@ -79,8 +79,10 @@ projects pick it up at `init`; existing ones take it via `sync-config`.
 Top-level keys used here: `providers` (the map above) plus
 `translate_max_output_tokens` (the output CEILING the pipeline asks the
 translator call for; each block is then clamped to its own `max_tokens`, so
-where a block is lower the block wins) and `max_attempts` (retries per LLM
-call).
+where a block is lower the block wins) and `max_attempts` (whole-chapter gate
+attempts before needs-review — NOT the per-call transport retries, which live
+in the top-level `retry` object: `max_attempts`, `backoff_seconds`,
+`max_wait_seconds`, `jitter`, `respect_retry_after`).
 
 ## Thinking, and how big the budget needs to be
 

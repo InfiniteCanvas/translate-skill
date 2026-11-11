@@ -610,6 +610,105 @@ def _apply_glossary_proposal(
     glossary.upsert(g, updated)
 
 
+def expand_glossary_terms(
+    project_dir: Path, cfg: dict, file: str, chapter_order: int, tag: str,
+    g: dict, template: str, merge_template: str, ctx: dict[str, str],
+    log_result: Callable[..., None] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Run ONE glossary-expansion model call and apply its proposals.
+
+    Shared by the pipeline's GLOSSARY_EXPAND stage and the `glossary expand`
+    regeneration command, so both propose, gate, merge and report identically.
+    `ctx` is the prompt context: the stage passes its own build_ctx(lines)
+    (source/title/translation/glossary all already resolved); the command
+    rebuilds the same keys from the translated chapter via
+    glossary_expand_context().
+
+    Returns (applied_sources, skipped_descriptions). A malformed proposal is
+    skipped and reported -- one bad row must not lose the others -- but a
+    provider failure (LLMExhausted) propagates so the caller aborts and the
+    run can resume.
+    """
+    max_terms = int(_cfg_value(cfg, "max_new_terms_per_chapter"))
+    prompt = fill(
+        template,
+        {**ctx, "max_terms": str(max_terms)},
+        "glossary_expand.md",
+    )
+    resp = _chat(project_dir, cfg, "glossary", prompt,
+                 json_schema=TERMS_SCHEMA, chapter=file)
+    data = client.extract_json(resp)
+    raw_terms = data.get("terms") if isinstance(data, dict) else None
+    if not isinstance(raw_terms, list):
+        raise ValueError("expected a 'terms' array")
+    eligible = raw_terms[:max_terms]
+    min_occ = int(_cfg_value(cfg, "min_term_occurrences"))
+    corpus = ""
+    if min_occ > 0 and eligible:
+        try:
+            corpus = _gate_corpus(project_dir)
+        except Exception as exc:
+            print(f"{tag} [warn] occurrence gate disabled - source corpus "
+                  f"unreadable: {type(exc).__name__}: {exc}")
+            min_occ = 0
+    applied_terms: list[str] = []
+    skipped_terms: list[str] = []
+    for proposal in eligible:
+        try:
+            _apply_glossary_proposal(
+                g, proposal, chapter_order, cfg, merge_template, tag,
+                project_dir, corpus=corpus, min_occurrences=min_occ,
+                chapter=file)
+            source = (proposal.get("source")
+                      if isinstance(proposal, dict) else None)
+            applied_terms.append(str(source))
+        except PipelineError:
+            raise
+        except Exception as exc:
+            print(f"{tag} [warn] skipped glossary proposal: {exc}")
+            skipped_terms.append(
+                f"{proposal.get('source') if isinstance(proposal, dict) else '?'}: {exc}")
+    if log_result is not None:
+        log_result("glossary_expand", proposed=len(raw_terms),
+                   eligible=len(eligible), applied=applied_terms,
+                   skipped=skipped_terms)
+    return applied_terms, skipped_terms
+
+
+def glossary_expand_context(project_dir: Path, cfg: dict, file: str,
+                            g: dict) -> dict[str, str]:
+    """The GLOSSARY_EXPAND prompt context for an already-translated chapter.
+
+    Mirrors _run_chapter's build_ctx(lines) at the moment the stage runs:
+    source lines (leading chapter-title line dropped), the translated body as
+    `translation_lines`, the contextual glossary rendering, and the chapter
+    title from the translated frontmatter. The regeneration command has no
+    pipeline state, so it derives exactly these values from disk instead of
+    reconstructing a half-state.
+    """
+    paths = project.paths(project_dir)
+    src_fm, src_body = project.read_chapter(paths["source"] / file)
+    source_lines = src_body.split("\n")
+    source_lines, _ = project.drop_leading_chapter_title(source_lines, src_fm)
+    tr_fm, tr_body = project.read_chapter(paths["translated"] / file)
+    title = str(tr_fm.get("title") or tr_fm.get("chapter_title")
+                or src_fm.get("chapter_title") or "")
+    pairs = glossary.contextual(
+        g, "\n".join(source_lines),
+        int(_cfg_value(cfg, "contextual_glossary_cap")))
+    return {
+        "source_lang": _lang_name(cfg.get("source_lang", "")),
+        "target_lang": _lang_name(cfg.get("target_lang", "")),
+        "chapter_title": title,
+        "chapter_file": file,
+        "line_count": str(len(source_lines)),
+        "source_lines": json.dumps(source_lines, ensure_ascii=False),
+        "translation_lines": json.dumps(tr_body.split("\n"), ensure_ascii=False),
+        "glossary": glossary.render_contextual(pairs),
+        "feedback_section": "",
+    }
+
+
 def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
                            signals: list[dict], source_body: str,
                            tag: str, chapter: str | None = None
@@ -676,7 +775,7 @@ def _cleanup_drift_signals(project_dir: Path, cfg: dict, tpl: str,
             "retirements": retirements,
             "kept_sources": [s["source"] for s in signals],
         }
-    except client.LLMFatal:
+    except (client.LLMFatal, client.LLMExhausted):
         raise
     except Exception as exc:
         logger.log_event(project_dir, {
@@ -984,7 +1083,7 @@ def _investigate_glossary_rejection(project_dir: Path, cfg: dict, g: dict,
     try:
         result = verify_mod.investigate_faith(
             project_dir, cfg, g, file, source_lines, lines)
-    except client.LLMFatal:
+    except (client.LLMFatal, client.LLMExhausted):
         raise
     except Exception as exc:
         print(f"{tag} [warn] glossary investigation skipped: "
@@ -1589,52 +1688,21 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                     g = glossary.load(project_dir)
                 pending_cleanup = None
             try:
-                max_terms = int(_cfg_value(cfg, "max_new_terms_per_chapter"))
-                prompt = fill(
-                    tpl_glossary_expand,
-                    build_ctx(lines, extra={"max_terms": str(max_terms)}),
-                    "glossary_expand.md",
-                )
-                resp = _chat(project_dir, cfg, "glossary", prompt,
-                              json_schema=TERMS_SCHEMA, chapter=file)
-                data = client.extract_json(resp)
-                raw_terms = data.get("terms") if isinstance(data, dict) else None
-                if not isinstance(raw_terms, list):
-                    raise ValueError("expected a 'terms' array")
-                eligible = raw_terms[:max_terms]
-                min_occ = int(_cfg_value(cfg, "min_term_occurrences"))
-                corpus = ""
-                if min_occ > 0 and eligible:
-                    try:
-                        corpus = _gate_corpus(project_dir)
-                    except Exception as exc:
-                        print(f"{tag} [warn] occurrence gate disabled - source corpus unreadable: {type(exc).__name__}: {exc}")
-                        min_occ = 0
-                applied_terms: list[str] = []
-                skipped_terms: list[str] = []
-                for proposal in eligible:
-                    try:
-                        _apply_glossary_proposal(g, proposal, chapter_order, cfg, tpl_glossary_merge, tag, project_dir,
-                                                 corpus=corpus, min_occurrences=min_occ,
-                                                 chapter=file)
-                        source = (proposal.get("source")
-                                  if isinstance(proposal, dict) else None)
-                        applied_terms.append(str(source))
-                    except PipelineError:
-                        raise
-                    except Exception as exc:
-                        print(f"{tag} [warn] skipped glossary proposal: {exc}")
-                        skipped_terms.append(
-                            f"{proposal.get('source') if isinstance(proposal, dict) else '?'}: {exc}")
-                log_result("glossary_expand", proposed=len(raw_terms),
-                           eligible=len(eligible), applied=applied_terms,
-                           skipped=skipped_terms)
+                expand_glossary_terms(
+                    project_dir, cfg, file, chapter_order, tag, g,
+                    tpl_glossary_expand, tpl_glossary_merge, build_ctx(lines),
+                    log_result=log_result)
             except PipelineError:
                 raise
             except Exception as exc:
                 print(f"{tag} [warn] glossary expansion failed: {type(exc).__name__}: {exc}")
+            finally:
+                # Persist whatever was applied before a provider failure
+                # aborted the stage: re-running GLOSSARY_EXPAND re-proposes
+                # (merges are idempotent), but terms already applied must not
+                # vanish with the in-memory `g`.
+                glossary.save(project_dir, g)
             stage_exit("GLOSSARY_EXPAND", _t0)
-            glossary.save(project_dir, g)
 
         if failed_stage is None and start_idx <= _STAGE_IDX["TN_GENERATE"]:
             _t0 = stage_enter("TN_GENERATE")
@@ -1737,7 +1805,8 @@ def _chapter_subject(file: str, outcome: str) -> str:
 
 
 def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = False,
-              verify_on_faith: bool = True) -> dict:
+              verify_on_faith: bool = True,
+              prepare: Callable[[str], None] | None = None) -> dict:
     """Run run_chapter sequentially over files.
 
     Returns {"translated": [...], "needs-review": [...], "skipped": [...]}.
@@ -1747,6 +1816,14 @@ def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = Fals
     derives from BaseException, not Exception). When auto_build_epub is
     enabled, a serialized background epub build runs after each translated
     chapter and finalize() guarantees a complete final epub.
+
+    `prepare`, when given, runs for each chapter immediately BEFORE its
+    run_chapter. `retry` uses it to clear that chapter's artifacts just in
+    time: a provider failure (or Ctrl-C) that aborts the batch must leave the
+    chapters it never reached untouched, instead of erasing every selected
+    chapter's state up front. (A PipelineError raised by run_chapter
+    deliberately aborts the whole range; that is what makes abort-and-resume
+    possible.)
     """
     scheduler = (
         autobuild.AutoBuildScheduler(project_dir)
@@ -1756,6 +1833,8 @@ def run_range(project_dir: Path, files: list[str], cfg: dict, force: bool = Fals
     try:
         for file in files:
             try:
+                if prepare is not None:
+                    prepare(file)
                 outcome = run_chapter(project_dir, file, cfg, force=force,
                                      verify_on_faith=verify_on_faith)
             except (PipelineError, client.LLMFatal):

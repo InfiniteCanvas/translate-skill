@@ -17,9 +17,11 @@ nothing eligible / profile generation failed / verify confirmed glossary drift
 or could not check a chapter / a glossary or review-fix command run with
 --strict confirmed glossary drift, 2 usage or setup error / build-epub builder
 crashed / ping with one or more providers unreachable / exit 3 a provider call
-failed and the run stopped, which is terminal rather than degrading to a
-surviving candidate (references/file-formats.md section "Provider failure is
-fatal"), 130 interrupted (Ctrl-C).
+failed permanently and the run stopped, which is terminal rather than degrading
+to a surviving candidate / exit 4 the provider stayed rate-limited or
+unreachable for the whole retry ladder — resumable: chapter state is saved and
+re-running the same command continues at the saved stage (references/file-
+formats.md section "Provider failure is fatal"), 130 interrupted (Ctrl-C).
 
 Glossary-changing commands (glossary replace|set|merge|retire, and review fix)
 additionally run the drift scan over the chapters the edited term occurs in; it
@@ -53,7 +55,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import client, config, consensus, cover, epub, fix, glossary, logger, logdashboard, logreport, pipeline, project, replace, review, review_notes, tn, tn_recheck, vcs
+from lib import client, config, consensus, cover, epub, fix, glossary, logger, logdashboard, logreport, pipeline, project, replace, review, review_notes, story, tn, tn_recheck, vcs
 from lib import profile as profile_mod
 from lib import styles as styles_mod
 from lib import verify as verify_mod
@@ -466,7 +468,7 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
                 json.dumps(novel_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
             )
             print(f"[init] style profile: {prof.get('style_summary', '')[:100]}")
-        except client.LLMFatal:
+        except (client.LLMFatal, client.LLMExhausted):
             raise
         except Exception as exc:
             print(f"[warn] style profile generation failed: {exc}")
@@ -825,6 +827,9 @@ def cmd_profile(args: argparse.Namespace, project_dir: Path) -> int:
         _run_start(project_dir, cfg, None, "profile",
                    chapters=sample_chapters, chars=sample_chars)
         prof = profile_mod.generate_profile(project_dir, cfg, sample_chapters, sample_chars)
+    except (client.LLMFatal, client.LLMExhausted):
+        _run_end(project_dir, "profile", "failed")
+        raise
     except Exception as exc:
         _fail(f"style profile generation failed: {type(exc).__name__}: {exc}")
         _run_end(project_dir, "profile", "failed")
@@ -994,19 +999,27 @@ def cmd_retry(args: argparse.Namespace, project_dir: Path) -> int:
         files = pipeline.parse_range(args.chapters, manifest)
     paths = project.paths(project_dir)
 
-    for file in files:
+    def clear_one(file: str) -> None:
+        """Clear ONE chapter's artifacts immediately before it runs.
+
+        Deliberately not a batch loop before run_range: an abort (Ctrl-C, or
+        an LLMExhausted provider outage) must not erase the artifacts of
+        chapters the batch never reached. run_chapter reloads the manifest
+        after this callback, so the pending status is what it sees."""
         stem = Path(file).stem
         for artifact in (f"{stem}.state.json", f"{stem}.md", f"{stem}.lines.json"):
             (paths["draft"] / artifact).unlink(missing_ok=True)
         (paths["translated"] / file).unlink(missing_ok=True)
         (tn.notes_path(project_dir, file)).unlink(missing_ok=True)
         (tn.dropped_path(project_dir, file)).unlink(missing_ok=True)
-        project.set_status(manifest, file, "pending")
+        manifest_now = project.load_manifest(project_dir)
+        project.set_status(manifest_now, file, "pending")
+        project.save_manifest(project_dir, manifest_now)
         print(f"[init] {file}: cleared artifacts, status pending")
-    project.save_manifest(project_dir, manifest)
 
     results = pipeline.run_range(project_dir, files, cfg, force=False,
-                                verify_on_faith=not bool(getattr(args, "no_verify", False)))
+                                verify_on_faith=not bool(getattr(args, "no_verify", False)),
+                                prepare=clear_one)
     _run_end(project_dir, "retry", "completed", results)
 
     print()
@@ -1070,6 +1083,52 @@ def cmd_tn(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
+def cmd_recap(args: argparse.Namespace, project_dir: Path) -> int:
+    """Regenerate rolling recaps for already-translated chapters.
+
+    The pipeline treats recap generation as advisory (a missing recap only
+    loses cross-chapter context), so a provider hiccup during ASSEMBLE leaves
+    the chapter translated with a gap in story_state.json. This command is the
+    deliberate repair path: it rebuilds the selected entries from translated/
+    and reports per-chapter failures instead of swallowing them.
+    """
+    cfg = _load_config(project_dir)
+    manifest = _load_manifest(project_dir)
+    files = pipeline.parse_range(args.chapters, manifest)
+    _run_start(project_dir, cfg, manifest, "recap", chapters=len(files))
+    paths = project.paths(project_dir)
+    done: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    for file in files:
+        if not (paths["translated"] / file).is_file():
+            print(f"[recap] {file}: [warn] skipped - not translated yet")
+            skipped.append(file)
+            continue
+        try:
+            recap = story.regenerate_recap(project_dir, cfg, manifest, file)
+        except (client.LLMFatal, client.LLMExhausted):
+            _run_end(project_dir, "recap", "failed")
+            raise
+        except Exception as exc:
+            print(f"[recap] {file}: [warn] failed: {type(exc).__name__}: {exc}")
+            failed.append(file)
+            continue
+        print(f"[recap] {file}: regenerated ({len(recap.split())} words)")
+        done.append(file)
+    _run_end(project_dir, "recap", "completed",
+             {"regenerated": done, "skipped": skipped, "failed": failed})
+    print(f"[ok] recap: {len(done)} regenerated, {len(skipped)} skipped, "
+          f"{len(failed)} failed")
+    if failed:
+        _fail("recap: failed for " + ", ".join(failed))
+        return 1
+    if not done:
+        _fail("recap: no eligible translated chapters in range")
+        return 1
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace, project_dir: Path) -> int:
     """Whole-book glossary-drift scan: two stages, one JSONL, advisory only.
 
@@ -1101,7 +1160,7 @@ def cmd_verify(args: argparse.Namespace, project_dir: Path) -> int:
     _run_start(project_dir, cfg, manifest, "verify", out=str(out_path))
     try:
         result = verify_mod.verify_project(project_dir, cfg)
-    except client.LLMFatal:
+    except (client.LLMFatal, client.LLMExhausted):
         _run_end(project_dir, "verify", "failed")
         raise
 
@@ -1453,6 +1512,76 @@ def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
     if args.action == "count":
         return _cmd_glossary_count(args, project_dir)
     raise CliError(f"unknown glossary action: {args.action}")
+
+
+def cmd_glossary_expand(args: argparse.Namespace, project_dir: Path) -> int:
+    """Re-run GLOSSARY_EXPAND for already-translated chapters.
+
+    The deliberate regeneration path for a stage whose in-pipeline failure is
+    only a warning (`[warn] glossary expansion failed - continuing`): it reads
+    the source + existing translation, proposes terms through the same helper
+    the stage uses, and merges them into glossary.json. Translated text is
+    never rewritten. Per-chapter failures are reported and counted; a provider
+    outage (LLMExhausted) still aborts the whole command so it can resume.
+    """
+    cfg = _load_config(project_dir)
+    manifest = _load_manifest(project_dir)
+    _probe_glossary(project_dir)
+    files = pipeline.parse_range(args.chapters, manifest)
+    _run_start(project_dir, cfg, manifest, "glossary expand",
+               chapters=len(files))
+    paths = project.paths(project_dir)
+    template = pipeline._load_template(paths["templates"], "glossary_expand.md")
+    merge_template = pipeline._load_template(paths["templates"], "glossary_merge.md")
+    g = glossary.load(project_dir)
+    applied: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    for file in files:
+        entry = project.find_entry(manifest, file)
+        if entry is None:
+            print(f"[glossary] {file}: [warn] skipped - not in the manifest")
+            skipped.append(file)
+            continue
+        if not (paths["source"] / file).is_file():
+            print(f"[glossary] {file}: [warn] skipped - source chapter missing")
+            skipped.append(file)
+            continue
+        if not (paths["translated"] / file).is_file():
+            print(f"[glossary] {file}: [warn] skipped - not translated yet")
+            skipped.append(file)
+            continue
+        tag = f"[CHAPTER_{int(entry.get('number', 0)):04d}]"
+        try:
+            ctx = pipeline.glossary_expand_context(project_dir, cfg, file, g)
+            got, _skipped_terms = pipeline.expand_glossary_terms(
+                project_dir, cfg, file, int(entry.get("order", 0)), tag, g,
+                template, merge_template, ctx)
+            glossary.save(project_dir, g)
+        except pipeline.PipelineError:
+            # Keep whatever the call applied before the outage; a resume will
+            # re-propose and merge idempotently.
+            glossary.save(project_dir, g)
+            _run_end(project_dir, "glossary expand", "failed")
+            raise
+        except Exception as exc:
+            print(f"[glossary] {file}: [warn] expansion failed: "
+                  f"{type(exc).__name__}: {exc}")
+            failed.append(file)
+            continue
+        print(f"[glossary] {file}: applied {len(got)} term(s)")
+        applied.append(file)
+    _run_end(project_dir, "glossary expand", "completed",
+             {"expanded": applied, "skipped": skipped, "failed": failed})
+    print(f"[ok] glossary expand: {len(applied)} chapter(s) expanded, "
+          f"{len(skipped)} skipped, {len(failed)} failed")
+    if failed:
+        _fail("glossary expand: failed for " + ", ".join(failed))
+        return 1
+    if not applied:
+        _fail("glossary expand: no eligible translated chapters in range")
+        return 1
+    return 0
 
 
 def _flip_confirmed(project_dir: Path, manifest: list[dict],
@@ -1978,6 +2107,13 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="skip the post-run auto epub rebuild")
     p.set_defaults(func=cmd_tn)
 
+    p = sub.add_parser(
+        "recap", parents=[common], allow_abbrev=False,
+        help="regenerate the rolling story-so-far recap for already-translated chapters")
+    p.add_argument("--chapters", metavar="SPEC", required=True,
+                   help="chapter spec, e.g. 1,3-5,CHAPTER_0007.md")
+    p.set_defaults(func=cmd_recap)
+
     p = sub.add_parser("review", parents=[common], allow_abbrev=False,
                        help="advisory quality review (glossary: source-translation alignment audit; notes: translator's-note quality audit; fix: apply a report's machine-applicable findings)")
     p.add_argument("subject", choices=["glossary", "notes", "fix"],
@@ -2045,7 +2181,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_util)
 
     p = sub.add_parser("glossary", parents=[common], allow_abbrev=False,
-                       help="glossary upkeep (replace | set | merge | retire | search | count)")
+                       help="glossary upkeep (replace | set | merge | retire | search | count | expand)")
     gloss_sub = p.add_subparsers(dest="action", required=True, metavar="action")
 
     nested = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
@@ -2127,6 +2263,13 @@ def _build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--min", type=int, default=None, metavar="N",
                     help="significance threshold override (default: config min_term_occurrences)")
     pc.set_defaults(func=cmd_glossary)
+
+    pex = gloss_sub.add_parser(
+        "expand", parents=[nested], allow_abbrev=False,
+        help="re-run glossary expansion for already-translated chapters (regenerates missed terms)")
+    pex.add_argument("--chapters", metavar="SPEC", required=True,
+                     help="chapter spec, e.g. 1,3-5,CHAPTER_0007.md")
+    pex.set_defaults(func=cmd_glossary_expand)
 
     p = sub.add_parser("build-epub", parents=[common], allow_abbrev=False,
                        help="assemble translated chapters into an EPUB")
@@ -2419,6 +2562,18 @@ def main(argv: list[str] | None = None) -> int:
     except client.LLMFatal as exc:
         _fail(f"provider refused the request and retrying cannot help: {exc}")
         return 3
+    except client.LLMExhausted as exc:
+        # Exit 4 is the resumable lane: the provider was rate-limited or
+        # unreachable for the whole ladder, not wrong about the request. The
+        # terminal line carries a stable retry_after_s=N token when the
+        # provider supplied a hint; the orchestrator parses it to schedule an
+        # automatic resume at the right moment (see runner.ts/autoresume.ts).
+        hint = (f" (retry_after_s={int(exc.retry_after_s)})"
+                if getattr(exc, "retry_after_s", None) is not None else "")
+        _fail(f"provider unavailable after the retry ladder - rate-limited or "
+              f"unreachable{hint}; state is saved, rerun the same command to "
+              f"resume: {exc}")
+        return 4
     except pipeline.PipelineError as exc:
         _fail(str(exc))
         return 2

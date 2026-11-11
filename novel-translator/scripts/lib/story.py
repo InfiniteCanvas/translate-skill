@@ -277,3 +277,32 @@ def record_recap(project_dir: Path, cfg: dict, file: str,
         raise
     except Exception as exc:
         print(f"{tag} [warn] recap generation failed for {file}: {exc}")
+
+
+def regenerate_recap(project_dir: Path, cfg: dict, manifest: list[dict],
+                     file: str, chat: Callable[[str], str] | None = None) -> str:
+    """Regenerate `file`'s recap entry from its ALREADY-TRANSLATED chapter.
+
+    The `recap --chapters` command's engine: record_recap's counterpart for a
+    chapter whose pipeline state is gone. {{previous_recap}} is the nearest
+    earlier stored recap (the same anchor a backfill uses), so regenerating
+    chapter N does not invent context it never had. Writes story_state.json
+    and returns the recap.
+
+    Raises on any failure -- unlike the pipeline's advisory ensure_recap /
+    record_recap calls, this one was invoked deliberately by the user, so a
+    failed chapter must be reported (the command counts it and exits 1), not
+    swallowed into a warning.
+    """
+    path = project.paths(project_dir)["translated"] / file
+    if not path.is_file():
+        raise FileNotFoundError(f"translated chapter missing: {path}")
+    fm, body = project.read_chapter(path)
+    title = str(fm.get("title") or fm.get("chapter_title") or "")
+    state = load_state(project_dir)
+    previous = _nearest_earlier_recap(state, manifest, file)
+    recap = _generate(project_dir, cfg, title, body, previous, chat,
+                      chapter=file)
+    state.setdefault("chapters", {})[Path(file).stem] = _stamp(recap)
+    save_state(project_dir, state)
+    return recap

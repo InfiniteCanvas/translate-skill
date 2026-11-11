@@ -100,7 +100,7 @@ def run_with_fake_chat(project_dir: Path, rows_by_call: list,
     prompts: list[str] = []
 
     def fake_chat(provider_cfg, prompt, json_schema=None, temperature=None,
-                  max_tokens=None, meta_hook=None):
+                  max_tokens=None, meta_hook=None, **kwargs):
         prompts.append(prompt)
         step = rows_by_call[len(prompts) - 1]
         if isinstance(step, Exception):

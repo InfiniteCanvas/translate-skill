@@ -119,7 +119,8 @@ class FakeChat:
                  json_schema: dict | None = None,
                  max_tokens: int | None = None,
                  meta_hook=None,
-                 enforce_ceiling: bool = True) -> str:
+                 enforce_ceiling: bool = True,
+                 **kwargs) -> str:
         self.calls.append({"block": provider_cfg, "prompt": prompt,
                            "json_schema": json_schema,
                            "max_tokens": max_tokens,

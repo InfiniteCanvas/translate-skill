@@ -41,8 +41,9 @@ does not, and both resolve the same directory.
 | command | what it does |
 |---|---|
 | `build-epub` | assemble translated chapters into an EPUB |
-| `glossary` | glossary upkeep (replace \| set \| merge \| retire \| search \| count) |
+| `glossary` | glossary upkeep (replace \| set \| merge \| retire \| search \| count \| expand) |
 | `glossary count` | count a term's occurrences across the source chapters (significance check) |
+| `glossary expand` | re-run glossary expansion for already-translated chapters (regenerates missed terms) |
 | `glossary merge` | merge --remove into --keep; retire --remove |
 | `glossary replace` | change a term's translation and rewrite chapters |
 | `glossary retire` | retire a single source from the glossary |
@@ -54,6 +55,7 @@ does not, and both resolve the same directory.
 | `migrate` | upgrade a project to the current skill version (walks per-version migration scripts) |
 | `ping` | check provider endpoints and resolved models |
 | `profile` | regenerate the style profile for an initialized project |
+| `recap` | regenerate the rolling story-so-far recap for already-translated chapters |
 | `retry` | wipe chapter artifacts and translate from scratch |
 | `review` | advisory quality review (glossary: source-translation alignment audit; notes: translator's-note quality audit; fix: apply a report's machine-applicable findings) |
 | `seed` | seed the glossary from asset catalogues |
@@ -85,14 +87,14 @@ assemble translated chapters into an EPUB
 
 ### `glossary`
 
-glossary upkeep (replace | set | merge | retire | search | count)
+glossary upkeep (replace | set | merge | retire | search | count | expand)
 
     translate.py glossary [--project PROJECT] action ...
 
 | argument | default | meaning |
 |---|---|---|
 | `--project PROJECT` | (unset) | project directory (default: current directory) |
-| `action` | (unset) | one of: `count`, `merge`, `replace`, `retire`, `search`, `set` -- each has its own section below |
+| `action` | (unset) | one of: `count`, `expand`, `merge`, `replace`, `retire`, `search`, `set` -- each has its own section below |
 
 ### `glossary count`
 
@@ -108,6 +110,17 @@ count a term's occurrences across the source chapters (significance check)
 | `--chapters SPEC` | (unset) | restrict counting to these chapters (same SPEC as 'translate --chapters') |
 | `--min N` | (unset) | significance threshold override (default: config min_term_occurrences) |
 | `term TERM` | (unset) | source-language term to count (required) |
+
+### `glossary expand`
+
+re-run glossary expansion for already-translated chapters (regenerates missed terms)
+
+    translate.py glossary expand [--project PROJECT_ACTION] --chapters SPEC
+
+| argument | default | meaning |
+|---|---|---|
+| `--project PROJECT_ACTION` | (unset) | project directory (default: current directory) |
+| `--chapters SPEC` | (unset) | chapter spec, e.g. 1,3-5,CHAPTER_0007.md (required) |
 
 ### `glossary merge`
 
@@ -283,6 +296,17 @@ regenerate the style profile for an initialized project
 | `--chapters N` | (unset) | chapters to sample (default: config style_sample_chapters) |
 | `--chars N` | (unset) | approx. source characters to include (default: config style_sample_chars) |
 
+### `recap`
+
+regenerate the rolling story-so-far recap for already-translated chapters
+
+    translate.py recap [--project PROJECT] --chapters SPEC
+
+| argument | default | meaning |
+|---|---|---|
+| `--project PROJECT` | (unset) | project directory (default: current directory) |
+| `--chapters SPEC` | (unset) | chapter spec, e.g. 1,3-5,CHAPTER_0007.md (required) |
+
 ### `retry`
 
 wipe chapter artifacts and translate from scratch
@@ -443,8 +467,8 @@ documented in its own section above.
 - **`--project`** (PROJECT) -- project directory (default: current directory). Accepted
   by every command.
 - **`--project`** (PROJECT_ACTION) -- project directory (default: current directory).
-  Accepted by `glossary count`, `glossary merge`, `glossary replace`, `glossary retire`,
-  `glossary search`, `glossary set`.
+  Accepted by `glossary count`, `glossary expand`, `glossary merge`, `glossary replace`,
+  `glossary retire`, `glossary search`, `glossary set`.
 - **`--strict`** (flag) -- exit non-zero when that check confirms drift (governs the
   exit code only; a confirmed chapter is flipped either way). Accepted by `glossary
   merge`, `glossary replace`, `glossary retire`, `glossary set`.

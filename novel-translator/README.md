@@ -261,7 +261,13 @@ refreshes a ≤ 120-word "story so far" recap in `story_state.json` (one
 `recap`-provider call after assembly — a multi-model array fans it out
 and merges via the consensus provider; the next chapter's prompts receive
 it as context — advisory only, a recap failure never fails a chapter, and
-retranslating a chapter refreshes only its own entry).
+retranslating a chapter refreshes only its own entry). A recap that was
+skipped or failed can be regenerated deliberately:
+
+    uv run scripts/translate.py recap --chapters 7-9 --project .
+
+The command rebuilds the selected entries from `translated/`, anchors each on
+the nearest earlier stored recap, and exits 1 if any chapter failed.
 
 ## Human review
 
@@ -716,6 +722,7 @@ The batch-flow subcommands:
         [--max-distance N]
     uv run scripts/translate.py glossary count --project . TERM \
         [--variants "A,B"] [--chapters SPEC] [--min N]
+    uv run scripts/translate.py glossary expand --project . --chapters SPEC
 
 `glossary set` applies any combination of `--translation`, `--definition`,
 `--category`, `--add-variant` / `--remove-variant`,
@@ -764,6 +771,14 @@ values or single words with
 no separator special-casing (`grand elder` finds `grand-elder`). Retired
 matches print `[glossary] retired match: ...` info lines. Exit 0 with
 matches, 1 none, 2 error.
+
+`glossary expand --chapters SPEC` re-runs the GLOSSARY_EXPAND pass for
+already-translated chapters — the repair path when an in-pipeline expansion
+failed (that stage only warns) or a rate-limited run skipped it. It reads the
+source + existing translation, applies the same occurrence gate and merge
+logic as the pipeline, and saves `glossary.json`; translated text is never
+rewritten. Chapters without a `translated/` file are skipped, and a provider
+outage still aborts the command (exit 4) so it can resume.
 
 `glossary count TERM` is the read-only significance check: it counts
 non-overlapping occurrences of TERM plus any `--variants` (comma-separated)
@@ -855,20 +870,26 @@ to exit`; details land in
   setup fails loudly instead of routing a paid merge somewhere you did not
   choose.
 
-  **A failed provider call stops the run.** Any call that fails after its
-  retries prints one `[FAIL]` line and exits 3, instead of falling back to a
+  **A failed provider call stops the run.** Availability failures are
+  resumable; permanent refusals are not. Any call that fails after its retries
+  prints one `[FAIL]` line and stops the run instead of falling back to a
   surviving candidate or a lone one — a chapter built from whichever model
   happened to answer is not the chapter you configured, and the old fallback
-  lost the multi-model merge silently behind a `[warn]`. A code the provider
-  itself calls irrecoverable (Z.AI auth / no balance / invalid parameter /
-  filtered content — matched by the response body's `error.code`, never by
-  message text) skips the retry ladder entirely: it fails on the first
-  response. `429` rate limits and quota *windows* (which publish a reset time a
-  multi-hour run may clear) stay on the retry ladder; an exhausted retry is
-  fatal either way, so the difference is only how many attempts are spent.
-  `ping` names the code, so a wrong URL is distinguishable from an empty
-  balance. Non-provider errors are unaffected — a missing template or unfilled
-  placeholder is still exit 2.
+  lost the multi-model merge silently behind a `[warn]`. Two exit lanes: a code
+  the provider itself calls irrecoverable (Z.AI auth / no balance / invalid
+  parameter / filtered content — matched by the response body's `error.code`,
+  never by message text) fails on the first response with **exit 3**; a
+  `429`/`5xx`/connection failure that outlasts the retry ladder is
+  *resumable* and exits **4** after saving chapter state. The ladder honors
+  `Retry-After` and `X-RateLimit-Reset` (waiting up to
+  `retry.max_wait_seconds`; a reset further out aborts at once and reports
+  `retry_after_s=N`), so a rate-limited free tier resumes where it stopped
+  instead of burning the chapter's gate attempts. Tune it with the top-level
+  `retry` object — `max_attempts`, `backoff_seconds`, `max_wait_seconds`,
+  `jitter`, `respect_retry_after` (see `references/file-formats.md` § Exit
+  codes). `ping` names the code, so a wrong URL is distinguishable from an
+  empty balance. Non-provider errors are unaffected — a missing template or
+  unfilled placeholder is still exit 2.
   Two translator models:
 
       "translator": [
@@ -946,6 +967,13 @@ to exit`; details land in
   single line too big for even that fails fast with
   feedback to split or shorten it), `style_sample_chapters` / `style_sample_chars`
   (only used by `--style auto`), `contextual_glossary_cap`.
+- `retry` (object) -- the per-call transport ladder:
+  `max_attempts` (default 4), `backoff_seconds` (default `[5, 30, 120]`),
+  `max_wait_seconds` (default 300), `jitter` (default 0.25), and
+  `respect_retry_after` (default true). Distinct from `max_attempts`, which
+  is the whole-chapter gate budget. Honors `Retry-After` /
+  `X-RateLimit-Reset`; see references/file-formats.md § Exit codes for the
+  resumable exit-4 lane.
 - `tn_keep_low_confidence` (default false) — keep notes the annotator
   self-assessed as `threshold: "low"` instead of dropping them.
 - `auto_build_epub` (default true) -- rebuild the epub in the background

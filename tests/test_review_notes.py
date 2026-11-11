@@ -142,7 +142,7 @@ def run_with_fake_chat(root: Path, rows_by_call: list, chapters: str | None = No
     prompts: list[str] = []
 
     def fake_chat(provider_cfg, prompt, json_schema=None, temperature=None,
-                  max_tokens=None, meta_hook=None):
+                  max_tokens=None, meta_hook=None, **kwargs):
         prompts.append(prompt)
         step = (rows_by_call[len(prompts) - 1]
                 if len(prompts) <= len(rows_by_call) else {"findings": []})
@@ -166,7 +166,7 @@ def run_full_with_fake_chat(root: Path, rows_by_call: list,
     prompts: list[str] = []
 
     def fake_chat(provider_cfg, prompt, json_schema=None, temperature=None,
-                  max_tokens=None, meta_hook=None):
+                  max_tokens=None, meta_hook=None, **kwargs):
         prompts.append(prompt)
         step = (rows_by_call[len(prompts) - 1]
                 if len(prompts) <= len(rows_by_call) else {"findings": []})
@@ -638,7 +638,7 @@ def case_7_cli_smoke() -> None:
         orig = review_notes.client.chat
         review_notes.client.chat = (
             lambda pc, prompt, json_schema=None, temperature=None,
-                   max_tokens=None, meta_hook=None: json.dumps(rows))
+                   max_tokens=None, meta_hook=None, **kwargs: json.dumps(rows))
         try:
             code = translate.main(["review", "notes", "--project", str(root)])
         finally:

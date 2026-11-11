@@ -4,9 +4,12 @@
 
 import json
 import os
+import random
 import re
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -18,8 +21,17 @@ from lib.errors import PipelineError as _PipelineError
 
 _MODELS_TIMEOUT = 30
 _CHAT_TIMEOUT = 600
-_BACKOFF = (2, 4, 8)
-_MAX_ATTEMPTS = 4
+# Fallback policy for a hand-built provider block passed to chat() outside a
+# loaded config. config.DEFAULTS["retry"] is the authored layer-0 policy; the
+# copy here exists so client.py has no import-time dependency on a config that
+# tests may monkeypatch after import.
+_DEFAULT_RETRY = {
+    "max_attempts": 4,
+    "backoff_seconds": [5, 30, 120],
+    "max_wait_seconds": 300,
+    "jitter": 0.25,
+    "respect_retry_after": True,
+}
 
 _OPENAI_PROTOCOL = "openai"
 _ANTHROPIC_PROTOCOL = "anthropic"
@@ -49,6 +61,33 @@ class LLMFatal(LLMError, _PipelineError):
     ZAI_FATAL_CODES member): no retry, no degrade, no chapter. Retrying these
     spends real wall-clock and produces the same refusal every time.
     """
+
+
+class LLMExhausted(LLMError, _PipelineError):
+    """The provider stayed unavailable after the full retry ladder: resumable.
+
+    Deliberately a SIBLING of LLMFatal, not a subclass. Both ride the
+    `PipelineError` channel so no stage can absorb them, but they mean opposite
+    things to the caller:
+
+    * LLMFatal: the provider refused this request; retrying anything is
+      pointless and must stop the run permanently.
+    * LLMExhausted: rate limits (429), server errors (5xx) or connection
+      failures outlasted the ladder. The request itself is fine; the work can
+      continue later from the saved state. `main()` maps it to exit 4 so the
+      orchestrator can schedule a resume instead of treating it as a permanent
+      provider failure (exit 3).
+
+    `retry_after_s` / `reset_at` carry the provider's own hint when one was
+    present, so the terminal message (and the orchestrator's parser) can
+    schedule the resume for the right moment instead of guessing.
+    """
+
+    def __init__(self, message: str, retry_after_s: float | None = None,
+                 reset_at: str | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
+        self.reset_at = reset_at
 
 
 _MODEL_CACHE: dict[tuple[str, str | None, str], str] = {}
@@ -143,6 +182,105 @@ def _oneline(text: object, limit: int = 200) -> str:
     ladder's stdout notice must stay one line. The JSONL trace keeps the
     exception's full text where one is raised."""
     return " ".join(str(text).split())[:limit]
+
+
+def _header_text(headers: object, name: str) -> str | None:
+    """One response header as stripped text, or None. Tolerant of the SDK's
+    header container being absent or raising (a synthesized test exception)."""
+    try:
+        value = headers.get(name)  # type: ignore[union-attr]
+    except Exception:
+        return None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _retry_after_seconds(exc: object) -> tuple[float | None, str | None]:
+    """The provider's own wait hint for a retryable status, as
+    (seconds_from_now, reset_at_iso) or (None, None).
+
+    Two header families are read, in order:
+
+    * `Retry-After` -- the standard. Either a number of seconds or an HTTP-date
+      (RFC 9110); both are accepted.
+    * `X-RateLimit-Reset` -- sent by OpenRouter and others. Its format is not
+      documented consistently: an epoch in milliseconds (OpenRouter's
+      key-management limit), an epoch in seconds, an ISO 8601 timestamp, or a
+      plain duration in seconds. All four are recognised by magnitude/parse.
+
+    A malformed or absent hint is not an error: the caller falls back to its
+    own backoff schedule.
+    """
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    now = datetime.now(timezone.utc)
+
+    def _from_seconds(seconds: float) -> tuple[float, str]:
+        seconds = max(0.0, float(seconds))
+        reset_at = (now + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+        return seconds, reset_at
+
+    raw = _header_text(headers, "retry-after")
+    if raw is not None:
+        try:
+            return _from_seconds(float(raw))
+        except ValueError:
+            pass
+        try:
+            when = parsedate_to_datetime(raw)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return _from_seconds((when - now).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    raw = _header_text(headers, "x-ratelimit-reset")
+    if raw is not None:
+        try:
+            numeric = float(raw)
+        except ValueError:
+            numeric = None
+        if numeric is not None:
+            if numeric > 1e12:      # epoch milliseconds
+                return _from_seconds(numeric / 1000.0 - now.timestamp())
+            if numeric > 1e9:       # epoch seconds
+                return _from_seconds(numeric - now.timestamp())
+            return _from_seconds(numeric)  # a plain duration in seconds
+        try:
+            when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return _from_seconds((when - now).total_seconds())
+        except (TypeError, ValueError):
+            pass
+    return None, None
+
+
+def _wait_seconds(policy: dict, failures: int, hint: float | None) -> float:
+    """How long to sleep before retry number `failures` (1-based).
+
+    A provider hint is authoritative (and never jittered): the wait is at least
+    the hint, so a server naming a longer reset is not hammered early. Without
+    a hint, the configured backoff repeats its last entry and receives
+    +/- `jitter` to keep many concurrent callers from retrying in lockstep.
+    Every computed wait is clamped to `max_wait_seconds`; a hint above that cap
+    is rejected by the caller BEFORE this function (it aborts instead of
+    sleeping for hours).
+    """
+    backoff = policy.get("backoff_seconds") or [5]
+    index = min(max(failures, 1) - 1, len(backoff) - 1)
+    wait = float(backoff[index])
+    respect = bool(policy.get("respect_retry_after", True))
+    if hint is not None and respect:
+        wait = max(wait, float(hint))
+    else:
+        jitter = float(policy.get("jitter") or 0.0)
+        if jitter > 0:
+            wait = max(0.0, wait * (1.0 + random.uniform(-jitter, jitter)))
+    cap = float(policy.get("max_wait_seconds") or 0.0)
+    return min(wait, cap) if cap > 0 else wait
 
 
 def _v1_url(base_url: str) -> str:
@@ -347,8 +485,11 @@ def probe(provider_cfg: dict, timeout: int = 30) -> str:
         except openai.APIStatusError as exc:
             fatal = _status_fatal_code(exc)
             detail = f"provider code {fatal} (irrecoverable)" if fatal else ""
+            hint, reset_at = _retry_after_seconds(exc)
+            wait = (f"; rate limit resets in {int(hint)}s ({reset_at})"
+                    if hint is not None else "")
             raise LLMError(f"probe HTTP {exc.status_code} from {url}"
-                           f"{': ' + detail if detail else ''}: {_error_text(exc)[:200]}")
+                           f"{': ' + detail if detail else ''}{wait}: {_error_text(exc)[:200]}")
         except Exception as exc:
             raise LLMError(f"probe request to {url} failed: {exc}") from exc
         try:
@@ -378,7 +519,10 @@ def probe(provider_cfg: dict, timeout: int = 30) -> str:
     except anthropic.APIConnectionError as exc:
         raise LLMError(f"probe request to {url} failed: {exc}") from exc
     except anthropic.APIStatusError as exc:
-        raise LLMError(f"probe HTTP {exc.status_code} from {url}: {_error_text(exc)[:200]}")
+        hint, reset_at = _retry_after_seconds(exc)
+        wait = (f"; rate limit resets in {int(hint)}s ({reset_at})"
+                if hint is not None else "")
+        raise LLMError(f"probe HTTP {exc.status_code} from {url}{wait}: {_error_text(exc)[:200]}")
     except Exception as exc:
         raise LLMError(f"probe request to {url} failed: {exc}") from exc
     try:
@@ -439,7 +583,8 @@ def _resolve_cap(provider_cfg: dict, max_tokens: int | None,
 def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
          max_tokens: int | None = None,
          meta_hook: Callable[[dict], None] | None = None,
-         enforce_ceiling: bool = True) -> str:
+         enforce_ceiling: bool = True,
+         retry: dict | None = None) -> str:
     """One chat completion over the provider block's protocol; returns the
     reply text (openai protocol: choices[0].message.content.strip();
     anthropic: the joined `type: "text"` content blocks, stripped).
@@ -458,20 +603,25 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
     keeps keys out of config.json). The header is never included in
     trace-log metadata.
 
-    Retries up to 4 attempts total (backoff 2s/4s/8s) on connection errors,
-    HTTP >= 500, 429, and a 400 received while the guided schema is set whose
-    error text does not blame guided JSON (a real failure -- bad model,
-    oversized context -- must not silently drop the schema). A 400 whose text
-    names the mechanism (response_format, json_schema, "guided json",
-    x-guided, output_config, output_format) triggers one immediate retry
-    WITHOUT the schema (the server may not support guided JSON). Other 4xx
-    raise LLMError with the status code and the first 400 chars of the
-    response text. On the openai protocol, a body carrying a
+    Retries per `retry` (config.retry_policy(): total attempts, backoff
+    schedule, jitter, and the longest honored provider hint). On connection
+    errors, HTTP >= 500 and 429 every retry honors `Retry-After` /
+    `X-RateLimit-Reset` when present (waiting at least the provider's hint, up
+    to `max_wait_seconds`); a hint beyond that cap aborts immediately with
+    LLMExhausted instead of sleeping for hours. A 400 received while the guided
+    schema is set whose error text does not blame guided JSON is retried as a
+    content failure and ends as a plain LLMError when exhausted (it is not
+    resumable). A 400 whose text names the mechanism (response_format,
+    json_schema, "guided json", x-guided, output_config, output_format)
+    triggers one immediate retry WITHOUT the schema (the server may not support
+    guided JSON). Other 4xx raise LLMError with the status code and the first
+    400 chars of the response text. On the openai protocol, a body carrying a
     ZAI_FATAL_CODES member raises LLMFatal on the FIRST response, checked
-    before the guided fallback. Every retry announces itself through
-    meta_hook BEFORE the retry goes out, so the ladder is visible in the
-    trace and on stdout instead of reading as a doubled or silently
-    repeated call.
+    before the guided fallback. Exhausting the ladder on a retryable failure
+    raises LLMExhausted (resumable, exit 4); exhausting it on a content 400
+    raises plain LLMError. Every retry announces itself through meta_hook
+    BEFORE the retry goes out, so the ladder is visible in the trace and on
+    stdout instead of reading as a doubled or silently repeated call.
 
     meta_hook, when given, is invoked with call metadata for trace logs:
     once with the request (url, model, params, full prompt) BEFORE the call,
@@ -498,15 +648,17 @@ def chat(provider_cfg: dict, prompt: str, json_schema: dict | None = None,
         base = str(provider_cfg.get("base_url", ""))
         raise LLMError(
             f'provider block {base}: protocol must be "openai" or "anthropic" (got {protocol!r})')
+    policy = retry if isinstance(retry, dict) else _DEFAULT_RETRY
     if protocol == _OPENAI_PROTOCOL:
         return _chat_openai(provider_cfg, prompt, json_schema, max_tokens,
-                            meta_hook, enforce_ceiling)
+                            meta_hook, enforce_ceiling, policy)
     return _chat_anthropic(provider_cfg, prompt, json_schema, max_tokens,
-                           meta_hook, enforce_ceiling)
+                           meta_hook, enforce_ceiling, policy)
 
 
 def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
-                 max_tokens: int | None, meta_hook, enforce_ceiling: bool) -> str:
+                 max_tokens: int | None, meta_hook, enforce_ceiling: bool,
+                 retry: dict) -> str:
     raw_base = str(provider_cfg["base_url"])
     try:
         base_url = _v1_url(raw_base)
@@ -581,11 +733,14 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
         }
 
     def _retry_meta(attempt: int, kind: str, error: str,
-                    backoff_s: float | None) -> dict[str, Any]:
+                    backoff_s: float | None,
+                    retry_after_s: float | None = None) -> dict[str, Any]:
         """One line per in-call retry, BEFORE the retry goes out: the ladder
         must be visible in the trace and on stdout, not inferred from a
-        doubled request line (or from nothing at all)."""
-        return {
+        doubled request line (or from nothing at all). `backoff_s` is the
+        wait actually about to be slept (jittered / hint-raised), and
+        retry_after_s records the provider's own hint when one drove it."""
+        meta = {
             "event": "llm_retry",
             "call_id": call_id,
             "url": url,
@@ -595,6 +750,13 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
             "error": error,
             "backoff_s": backoff_s,
         }
+        if retry_after_s is not None:
+            meta["retry_after_s"] = retry_after_s
+        return meta
+
+    max_attempts = int(retry.get("max_attempts") or 4)
+    max_wait = float(retry.get("max_wait_seconds") or 0.0)
+    respect_hint = bool(retry.get("respect_retry_after", True))
 
     if meta_hook:
         meta_hook(_request_meta())
@@ -619,16 +781,16 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
             completion = client.chat.completions.create(**kwargs)
         except openai.APIConnectionError as exc:
             failures += 1
-            if failures >= _MAX_ATTEMPTS:
+            if failures >= max_attempts:
                 err = f"request to {url} failed after {failures} attempts: {exc}"
                 if meta_hook:
                     meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
-                raise LLMError(err) from exc
+                raise LLMExhausted(err) from exc
+            wait = _wait_seconds(retry, failures, None)
             if meta_hook:
                 meta_hook(_retry_meta(attempts, "connection",
-                                      f"connection error: {_oneline(exc)}",
-                                      _BACKOFF[failures - 1]))
-            time.sleep(_BACKOFF[failures - 1])
+                                      f"connection error: {_oneline(exc)}", wait))
+            time.sleep(wait)
             continue
         except openai.APIStatusError as exc:
             fatal = _status_fatal_code(exc)
@@ -652,21 +814,39 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
                     continue
                 retryable_400 = True
 
-            if retryable_400 or exc.status_code == 429 or exc.status_code >= 500:
+            rate_limited = exc.status_code == 429 or exc.status_code >= 500
+            hint, reset_at = (_retry_after_seconds(exc) if rate_limited
+                              else (None, None))
+            if (hint is not None and respect_hint and max_wait > 0
+                    and hint > max_wait):
+                err = (f"HTTP {exc.status_code} from {url}: provider rate limit "
+                       f"resets in {int(hint)}s ({reset_at}) - beyond the "
+                       f"{int(max_wait)}s in-run wait cap; retry_after_s={int(hint)}")
+                if meta_hook:
+                    meta_hook(_response_meta(elapsed=time.monotonic() - started,
+                                             error=err))
+                raise LLMExhausted(err, retry_after_s=hint, reset_at=reset_at)
+
+            if retryable_400 or rate_limited:
                 failures += 1
-                if failures >= _MAX_ATTEMPTS:
+                if failures >= max_attempts:
                     err = (f"HTTP {exc.status_code} from {url} after {failures} "
                            f"attempts: {_error_text(exc)[:400]}")
+                    if hint is not None:
+                        err += f" (retry_after_s={int(hint)})"
                     if meta_hook:
                         meta_hook(_response_meta(elapsed=time.monotonic() - started,
                                                  error=err))
-                    raise LLMError(err)
+                    if retryable_400:
+                        raise LLMError(err)
+                    raise LLMExhausted(err, retry_after_s=hint, reset_at=reset_at)
+                wait = _wait_seconds(retry, failures, hint)
                 if meta_hook:
                     meta_hook(_retry_meta(
                         attempts, "status",
                         f"HTTP {exc.status_code}: {_oneline(_error_text(exc))}",
-                        _BACKOFF[failures - 1]))
-                time.sleep(_BACKOFF[failures - 1])
+                        wait, retry_after_s=hint))
+                time.sleep(wait)
                 continue
 
             err = f"HTTP {exc.status_code} from {url}: {_error_text(exc)[:400]}"
@@ -736,7 +916,8 @@ def _chat_openai(provider_cfg: dict, prompt: str, json_schema: dict | None,
 
 
 def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
-                    max_tokens: int | None, meta_hook, enforce_ceiling: bool) -> str:
+                    max_tokens: int | None, meta_hook, enforce_ceiling: bool,
+                    retry: dict) -> str:
     raw_base = str(provider_cfg["base_url"])
     try:
         base = raw_base.rstrip("/")
@@ -798,11 +979,12 @@ def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
         }
 
     def _retry_meta(attempt: int, kind: str, error: str,
-                    backoff_s: float | None) -> dict[str, Any]:
+                    backoff_s: float | None,
+                    retry_after_s: float | None = None) -> dict[str, Any]:
         """One line per in-call retry, BEFORE the retry goes out (see the
         openai path for the full rationale -- the ladder must be visible,
         not inferred from a doubled request line or nothing at all)."""
-        return {
+        meta = {
             "event": "llm_retry",
             "call_id": call_id,
             "url": url,
@@ -812,6 +994,13 @@ def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
             "error": error,
             "backoff_s": backoff_s,
         }
+        if retry_after_s is not None:
+            meta["retry_after_s"] = retry_after_s
+        return meta
+
+    max_attempts = int(retry.get("max_attempts") or 4)
+    max_wait = float(retry.get("max_wait_seconds") or 0.0)
+    respect_hint = bool(retry.get("respect_retry_after", True))
 
     if meta_hook:
         meta_hook(_request_meta())
@@ -836,16 +1025,16 @@ def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
             message = client.messages.create(**kwargs)
         except anthropic.APIConnectionError as exc:
             failures += 1
-            if failures >= _MAX_ATTEMPTS:
+            if failures >= max_attempts:
                 err = f"request to {url} failed after {failures} attempts: {exc}"
                 if meta_hook:
                     meta_hook(_response_meta(elapsed=time.monotonic() - started, error=err))
-                raise LLMError(err) from exc
+                raise LLMExhausted(err) from exc
+            wait = _wait_seconds(retry, failures, None)
             if meta_hook:
                 meta_hook(_retry_meta(attempts, "connection",
-                                      f"connection error: {_oneline(exc)}",
-                                      _BACKOFF[failures - 1]))
-            time.sleep(_BACKOFF[failures - 1])
+                                      f"connection error: {_oneline(exc)}", wait))
+            time.sleep(wait)
             continue
         except anthropic.APIStatusError as exc:
             retryable_400 = False
@@ -860,21 +1049,39 @@ def _chat_anthropic(provider_cfg: dict, prompt: str, json_schema: dict | None,
                     continue
                 retryable_400 = True
 
-            if retryable_400 or exc.status_code == 429 or exc.status_code >= 500:
+            rate_limited = exc.status_code == 429 or exc.status_code >= 500
+            hint, reset_at = (_retry_after_seconds(exc) if rate_limited
+                              else (None, None))
+            if (hint is not None and respect_hint and max_wait > 0
+                    and hint > max_wait):
+                err = (f"HTTP {exc.status_code} from {url}: provider rate limit "
+                       f"resets in {int(hint)}s ({reset_at}) - beyond the "
+                       f"{int(max_wait)}s in-run wait cap; retry_after_s={int(hint)}")
+                if meta_hook:
+                    meta_hook(_response_meta(elapsed=time.monotonic() - started,
+                                             error=err))
+                raise LLMExhausted(err, retry_after_s=hint, reset_at=reset_at)
+
+            if retryable_400 or rate_limited:
                 failures += 1
-                if failures >= _MAX_ATTEMPTS:
+                if failures >= max_attempts:
                     err = (f"HTTP {exc.status_code} from {url} after {failures} "
                            f"attempts: {_error_text(exc)[:400]}")
+                    if hint is not None:
+                        err += f" (retry_after_s={int(hint)})"
                     if meta_hook:
                         meta_hook(_response_meta(elapsed=time.monotonic() - started,
                                                  error=err))
-                    raise LLMError(err)
+                    if retryable_400:
+                        raise LLMError(err)
+                    raise LLMExhausted(err, retry_after_s=hint, reset_at=reset_at)
+                wait = _wait_seconds(retry, failures, hint)
                 if meta_hook:
                     meta_hook(_retry_meta(
                         attempts, "status",
                         f"HTTP {exc.status_code}: {_oneline(_error_text(exc))}",
-                        _BACKOFF[failures - 1]))
-                time.sleep(_BACKOFF[failures - 1])
+                        wait, retry_after_s=hint))
+                time.sleep(wait)
                 continue
 
             err = f"HTTP {exc.status_code} from {url}: {_error_text(exc)[:400]}"

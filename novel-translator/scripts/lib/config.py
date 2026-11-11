@@ -48,6 +48,17 @@ DEFAULTS: dict = {
     "git_commits": True,
     "review_batch_size": 40,
     "review_report_path": "review-report.md",
+    # Per-call transport retry policy (client.py's ladder). Structured as a
+    # nested object so a project or the local overlay can tune one knob
+    # without restating the rest; see retry_policy() for the resolved shape
+    # and the validation contract.
+    "retry": {
+        "max_attempts": 4,
+        "backoff_seconds": [5, 30, 120],
+        "max_wait_seconds": 300,
+        "jitter": 0.25,
+        "respect_retry_after": True,
+    },
 }
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -301,6 +312,86 @@ def _require_base_url(normalized: dict[str, list[dict]]) -> None:
                 f"project's config.json or in the skill's {LOCAL_CONFIG_NAME}")
 
 
+def _retry_number(name: str, value: object, minimum: float,
+                  maximum: float | None = None) -> float:
+    """One numeric retry knob, validated. bool is rejected explicitly: JSON
+    true/false in a numeric key is always a mistake, and Python's bool is an
+    int subclass, so `isinstance(True, int)` would otherwise let it through."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"retry.{name} must be a number (got {value!r})")
+    if value < minimum:
+        raise ValueError(f"retry.{name} must be >= {minimum} (got {value!r})")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"retry.{name} must be <= {maximum} (got {value!r})")
+    return value
+
+
+def _check_retry(raw: object) -> None:
+    """Validate an authored `retry` block (layer 1 or 2), naming the knob.
+
+    Unknown keys are tolerated (forward compatibility, and the same posture as
+    the other top-level keys), but every KNOWN key must have the documented
+    type and range: a malformed retry policy would otherwise surface only as a
+    strange wait or a silently ignored cap deep inside a provider call, after
+    the run has already spent quota. Raises ValueError, which load_config
+    surfaces as `[FAIL] cannot read config.json: ...` (exit 2).
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("retry must be a JSON object")
+    if "max_attempts" in raw:
+        attempts = _retry_number("max_attempts", raw["max_attempts"], 1, 10)
+        if attempts != int(attempts):
+            raise ValueError(f"retry.max_attempts must be an integer (got {raw['max_attempts']!r})")
+    if "backoff_seconds" in raw:
+        backoff = raw["backoff_seconds"]
+        if not isinstance(backoff, list) or not backoff:
+            raise ValueError("retry.backoff_seconds must be a non-empty array of seconds")
+        for index, wait in enumerate(backoff):
+            _retry_number(f"backoff_seconds[{index}]", wait, 0)
+    if "max_wait_seconds" in raw:
+        _retry_number("max_wait_seconds", raw["max_wait_seconds"], 0)
+    if "jitter" in raw:
+        _retry_number("jitter", raw["jitter"], 0, 1)
+    if "respect_retry_after" in raw and not isinstance(raw["respect_retry_after"], bool):
+        raise ValueError(
+            f"retry.respect_retry_after must be true or false (got {raw['respect_retry_after']!r})")
+
+
+def retry_policy(cfg: dict) -> dict:
+    """The resolved per-call retry policy: DEFAULTS["retry"] overlaid with the
+    composed `cfg["retry"]`, validated.
+
+    A project (layer 2) or the machine overlay (layer 1) may author any subset
+    of the knobs; absent knobs keep the layer-0 value, exactly like every
+    other config key. Hand-built cfg dicts in tests (which never pass through
+    load_config) get the defaults unless they author a `retry` block, so
+    client.chat's behavior with no config is the documented default and needs
+    no special-casing.
+
+    Semantics of the resolved keys:
+
+    - max_attempts: total wire attempts for one model call (including the
+      first). Exhaustion raises LLMExhausted after this many.
+    - backoff_seconds: waits between attempts; the last value repeats when
+      there are more failures than entries.
+    - max_wait_seconds: the longest single in-run wait this process will
+      honor. A provider hint above this aborts immediately with LLMExhausted
+      (and the hint in the message) instead of sleeping; the orchestrator can
+      resume later.
+    - jitter: +/- fraction applied to a computed backoff when the provider
+      gave no hint. A hint is authoritative and never jittered.
+    - respect_retry_after: honor Retry-After / X-RateLimit-Reset headers.
+    """
+    authored = cfg.get("retry") if isinstance(cfg, dict) else None
+    if authored is not None:
+        _check_retry(authored)
+    policy = dict(DEFAULTS["retry"])
+    policy["backoff_seconds"] = list(policy["backoff_seconds"])
+    if isinstance(authored, dict):
+        policy.update(authored)
+    return policy
+
+
 def _layer_base() -> dict:
     """Layer 0 as a fresh dict: DEFAULTS, and nothing else.
 
@@ -341,6 +432,10 @@ def resolve_config(user: dict, overlay: dict | None,
     providers = cfg.get("providers")
     cfg["providers"] = _normalize_providers(
         providers if isinstance(providers, dict) else {}, require_base_url)
+    # Validate and materialize the retry policy here, where every other config
+    # guard runs: a malformed block must fail at load (exit 2) instead of
+    # surfacing mid-run as an ignored cap or a strange sleep.
+    cfg["retry"] = retry_policy(cfg)
     return cfg
 
 
