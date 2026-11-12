@@ -966,7 +966,12 @@ to exit`; details land in
   block below 8192 cannot be packed into at all and warns; a
   single line too big for even that fails fast with
   feedback to split or shorten it), `style_sample_chapters` / `style_sample_chars`
-  (only used by `--style auto`), `contextual_glossary_cap`.
+  (only used by `--style auto`), `contextual_glossary_cap`, and
+  `context_prev_chapters` / `context_next_chapters` (default 1 / 1; 0 = off) —
+  how many neighboring chapters in manifest order ride the TRANSLATE and
+  FAITH prompts as `[Reference Chapters]` (source body, plus the translated
+  body whenever one exists) so the model sees the prose at the chapter seam
+  and what comes next; neighbors are reference only and never translated.
 - `retry` (object) -- the per-call transport ladder:
   `max_attempts` (default 4), `backoff_seconds` (default `[5, 30, 120]`),
   `max_wait_seconds` (default 300), `jitter` (default 0.25), and

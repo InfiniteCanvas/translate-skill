@@ -33,6 +33,8 @@ DEFAULTS: dict = {
     "tn_keep_low_confidence": False,
     "max_attempts": 3,
     "contextual_glossary_cap": 200,
+    "context_prev_chapters": 1,
+    "context_next_chapters": 1,
     "max_new_terms_per_chapter": 15,
     "max_notes_per_chapter": 10,
     "translate_max_output_tokens": 65536,

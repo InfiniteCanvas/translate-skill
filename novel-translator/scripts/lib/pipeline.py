@@ -387,6 +387,63 @@ def background_section(*parts: str) -> str:
     return "[Background Information]\n" + "\n".join(kept) + "\n"
 
 
+def _neighbor_body(paths: dict, name: str, side: str) -> str | None:
+    """A neighbor chapter's body from `paths[side]`, frontmatter dropped so
+    neighbors ship as bare prose; None when the file is missing, unreadable
+    or empty -- reference context must never fail a chapter."""
+    try:
+        _, body = project.read_chapter(Path(paths[side]) / name)
+    except Exception:
+        return None
+    return body.strip() or None
+
+
+def build_neighbor_section(paths: dict, manifest: list[dict], file: str,
+                           cfg: dict) -> str:
+    """The [Reference Chapters] block: the nearest configured neighbors of
+    `file` in manifest order (context_prev_chapters predecessors,
+    context_next_chapters successors), each carrying its source body and,
+    when a translation exists, its translated body alongside it. A part of
+    the [Background Information] frame on the TRANSLATE and FAITH prompts;
+    "" when both counts are 0, when `file` is absent from the manifest, or
+    when no neighbor qualifies. Translations may be missing mid-pass (the
+    range runs sequentially, so only chapter 1 and force-reverted runs hit
+    that on the previous side); every miss degrades to the source side or
+    drops out silently."""
+    prev_n = max(0, int(_cfg_value(cfg, "context_prev_chapters")))
+    next_n = max(0, int(_cfg_value(cfg, "context_next_chapters")))
+    if not prev_n and not next_n:
+        return ""
+    ordered = sorted(manifest, key=lambda e: int(e.get("order", 0)))
+    idx = next((i for i, e in enumerate(ordered) if e.get("file") == file), None)
+    if idx is None:
+        return ""
+    parts: list[str] = [
+        "[Reference Chapters]\n"
+        "The neighboring chapters below are reference context ONLY - do NOT "
+        "translate or retranslate them; translate only the numbered lines in "
+        "the Source Data section."
+    ]
+    for label, entries in (
+        ("Previous", reversed(ordered[max(0, idx - prev_n):idx])),
+        ("Next", ordered[idx + 1:idx + 1 + next_n]),
+    ):
+        for entry in entries:
+            name = entry.get("file")
+            if not isinstance(name, str) or not name:
+                continue
+            body = _neighbor_body(paths, name, "source")
+            if body is None:
+                continue
+            parts.append(f"--- {label} chapter (source) ---\n{body}")
+            translated = _neighbor_body(paths, name, "translated")
+            if translated is not None:
+                parts.append(f"--- {label} chapter (translation) ---\n{translated}")
+    if len(parts) == 1:
+        return ""
+    return "\n".join(parts)
+
+
 _SKILL_TEMPLATES = Path(__file__).resolve().parent.parent.parent / "assets" / "templates"
 
 HISTORY_FILE = ".history.json"
@@ -1283,6 +1340,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
 
     prev_recap = story.ensure_recap(project_dir, cfg, manifest, file, tag)
     recap_section = story.story_part(prev_recap)
+    neighbor_section = build_neighbor_section(paths, manifest, file, cfg)
 
     def advance(next_stage: str) -> None:
         state["stage"] = next_stage
@@ -1436,7 +1494,9 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                         print(f"{tag} [init] translating part {k + 1}/{n_chunks} (lines {lo + 1}-{hi})")
                     numbered = [{"i": lo + j + 1, "t": ln} for j, ln in enumerate(chunk)]
                     if k == 0 or not tlines:
-                        chunk_background = background_section(novel_background, recap_section)
+                        chunk_background = background_section(
+                            novel_background, recap_section, neighbor_section
+                        )
                     else:
                         tail = [ln for ln in tlines if ln.strip()][-2:]
                         continuity = (
@@ -1445,7 +1505,8 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                             + "\n".join(tail)
                         )
                         chunk_background = background_section(
-                            novel_background, recap_section, continuity.strip()
+                            novel_background, recap_section, neighbor_section,
+                            continuity.strip()
                         )
                     chunk_ctx = build_ctx(
                         [],
@@ -1644,7 +1705,15 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
             try:
                 prompt = fill(
                     tpl_faithfulness,
-                    build_ctx(lines, extra={"balance_signals_section": balance_signals_section()}),
+                    build_ctx(
+                        lines,
+                        extra={
+                            "balance_signals_section": balance_signals_section(),
+                            "background_section": background_section(
+                                novel_background, recap_section, neighbor_section
+                            ),
+                        },
+                    ),
                     "faithfulness.md",
                 )
                 resp = _chat(project_dir, cfg, "reviewer", prompt,

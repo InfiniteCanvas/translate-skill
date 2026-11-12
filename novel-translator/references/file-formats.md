@@ -321,6 +321,8 @@ stamp; `init` copies no defaults and no overlay values into it.
     "respect_retry_after": true  // honor Retry-After / X-RateLimit-Reset
   },
   "contextual_glossary_cap": 200, // safety valve only — every glossary term present in the chapter goes in
+  "context_prev_chapters": 1,    // preceding chapters shipped as [Reference Chapters] on the TRANSLATE/FAITH prompts (source body, plus the translated body when one exists); 0 = off
+  "context_next_chapters": 1,    // following chapters shipped as [Reference Chapters], same rule; 0 = off
   "max_new_terms_per_chapter": 15,
   "max_notes_per_chapter": 10,
   "translate_max_output_tokens": 65536, // per-call OUTPUT CEILING + packing budget for splitting: parts close past floor(0.8*pack_cap)-256 of per-line estimated cost, where pack_cap = min(this, the smallest providers.translator block's EFFECTIVE cap); input context is never limited. This is a CEILING, not an override — a block's own max_tokens is a hard provider limit the pipeline may lower but never raise, so a block below this value simply wins and this number is not the cap in force. 64k, raised in v009 from 8192 so a reasoning model drawing from the same budget (measured ~10.5k on GLM-5.3's translator's-notes pass) does not truncate the answer. A translator block whose effective cap is below 8192 cannot be packed into at all.
