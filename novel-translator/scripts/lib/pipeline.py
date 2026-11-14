@@ -1923,6 +1923,10 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                         "event": "term_whipsaw", "chapter": file,
                         "term": contested, "pinned": pinned,
                         "decline_history": list(state["term_declines"])})
+                    # The stop supersedes any fix-retry grant this attempt
+                    # set: a stale flag would hand a resumed chapter a free
+                    # attempt at its first cap check.
+                    state.pop("glossary_fix_retry", None)
                     save_state(paths["draft"], file, state)
                     print(f"{tag} [FAIL] FAITH failed "
                           f"(attempt {int(state['attempt']) + 1}/{max_attempts})")
