@@ -306,7 +306,11 @@ sorted by frequency):
    `glossary`-provider call, `templates/glossary_cleanup.md`): KEEP named
    entities and named actions (people/places/sects/techniques/named
    artifacts/named realms, plus titles bound to a name — "Empress Dowager
-   Zhao", "Steward Li"; "Empress Dowager" alone never qualifies), REMOVE
+   Zhao", "Steward Li"; "Empress Dowager" alone never qualifies) AND the
+   recurring story terms of GLOSSARY_EXPAND (2026-11-14): a term whose
+   drift is a VARIATION rather than noise is kept, because the entry is
+   what holds the rendering steady from here — retirement is for terms
+   with no fixed referent in this story. REMOVE
    class nouns (everyday words, common nouns/verbs, generic objects,
    transient phrases, standalone titles, kinship terms, and other ways one
    character addresses another — "great grandmother", "big brother").
@@ -325,7 +329,7 @@ sorted by frequency):
    legitimate counting false positives (nested compounds,
    inflections/hyphenations, generic words). FAILURE reasons become
    feedback.
-5. **GLOSSARY_EXPAND** — the model proposes new terms that are named
+5. **GLOSSARY_EXPAND** — the model proposes new terms of TWO kinds: named
    entities or named actions (personal names and their aliases, places,
    orgs, named artifacts, technique & skill names, named realms/states,
    plus titles bound to a name — "Empress Dowager Zhao" qualifies,
@@ -333,7 +337,17 @@ sorted by frequency):
    referent, and what one character calls another — kinship terms and
    other ways of address such as "great grandmother", "big brother",
    "my lord" — never qualifies, even for one specific person, any more
-   than class nouns like 麦穗 "wheat stalks"); identical duplicates are
+   than class nouns like 麦穗 "wheat stalks"); AND recurring story terms
+   (2026-11-14, added back after the named-entity-only tightening lost
+   them): an expression the story keeps using for one specific recurring
+   thing whose words are ordinary vocabulary — a place the characters
+   return to, a recurring object, a plot mechanism, a role the story
+   keeps casting, a fixed idiom ("the side room", "the supermarket", "the
+   original owner", "the little world"). Kind 2 must pass TWO extra
+   tests — a translator could have chosen differently (so it can drift),
+   and the story will keep using it — which is what keeps the category
+   from becoming a noise channel; the novel-wide significance gate below
+   is its backstop. Identical duplicates are
    skipped, conflicting
    ones are merged by the model into the existing entry. A brand-new
    proposal must also clear a significance gate: it is counted across the
