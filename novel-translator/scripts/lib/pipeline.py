@@ -1192,6 +1192,57 @@ def _investigate_glossary_rejection(project_dir: Path, cfg: dict, g: dict,
     return result
 
 
+def _glossary_terms_snapshot(g: dict) -> dict[str, dict]:
+    """The terms of a glossary as they stand BEFORE a stage mutates them,
+    keyed by source. It is the baseline _save_glossary_changes diffs
+    against, so "what this stage changed" is a fact about the file rather
+    than an assumption about which proposals were applied."""
+    return {str(t.get("source", "")): t
+            for t in (g.get("terms") or []) if isinstance(t, dict)}
+
+
+def _save_glossary_changes(project_dir: Path, g: dict,
+                           before: dict[str, dict]) -> None:
+    """Persist THIS stage's glossary changes onto the CURRENT on-disk file.
+
+    The pipeline holds an in-memory glossary loaded when the chapter
+    started; writing that copy back wholesale reverts every edit made to
+    glossary.json while the chapter was in flight (a human fixing a term
+    from the orchestrator's glossary page, a review fix retiring a mundane
+    entry, another tool's cleanup) -- silently, because the write succeeds.
+
+    So the write is a DIFF: only the entries this stage changed are carried
+    onto a freshly loaded copy, plus the removals it made (a retirement must
+    not be resurrected). Everything else on disk is left exactly as it is,
+    and the stage's own changes still land.
+
+    The in-memory `g` stays authoritative for the CHAPTER that is running:
+    the translation itself was produced against it, and the glossary the
+    next chapter reads is the file this writes.
+    """
+    fresh = glossary.load(project_dir)
+    changed = False
+    live = {str(t.get("source", "")): t
+            for t in (g.get("terms") or []) if isinstance(t, dict)}
+    for source, term in live.items():
+        if not source or before.get(source) == term:
+            continue
+        glossary.upsert(fresh, term)
+        changed = True
+    for source in before:
+        if source and source not in live:
+            # this stage removed the entry (a retirement): drop it from the
+            # fresh copy too, so a concurrent write cannot resurrect it.
+            terms = fresh.get("terms") or []
+            for idx, item in enumerate(terms):
+                if isinstance(item, dict) and item.get("source") == source:
+                    del terms[idx]
+                    changed = True
+                    break
+    if changed:
+        glossary.save(project_dir, fresh)
+
+
 def _record_term_declines(project_dir: Path, cfg: dict, g: dict, state: dict,
                           file: str, source_body: str,
                           lines: list[str], tag: str) -> list[str]:
@@ -1945,6 +1996,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 if _apply_pending_cleanup(project_dir, pending_cleanup, file, tag):
                     g = glossary.load(project_dir)
                 pending_cleanup = None
+            before = _glossary_terms_snapshot(g)
             try:
                 expand_glossary_terms(
                     project_dir, cfg, file, chapter_order, tag, g,
@@ -1959,7 +2011,16 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 # aborted the stage: re-running GLOSSARY_EXPAND re-proposes
                 # (merges are idempotent), but terms already applied must not
                 # vanish with the in-memory `g`.
-                glossary.save(project_dir, g)
+                #
+                # The write is a DIFF, not a snapshot of `g`: the pipeline
+                # loaded the glossary when the chapter started, so writing
+                # that copy back wholesale reverts any edit made to
+                # glossary.json WHILE the chapter was in flight -- a human
+                # fixing a term from the orchestrator's glossary page, or a
+                # review fix retiring a mundane entry. Only the entries this
+                # stage actually changed are carried onto the CURRENT file;
+                # everything else on disk is left as it is.
+                _save_glossary_changes(project_dir, g, before)
             stage_exit("GLOSSARY_EXPAND", _t0)
 
         if failed_stage is None and start_idx <= _STAGE_IDX["TN_GENERATE"]:
