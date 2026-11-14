@@ -14,6 +14,25 @@ append to the state's "chunks" list as they complete (deterministic
 token-budget packing keeps the bounds stable across resumes), so a crash or
 Ctrl-C loses at most the in-flight part.
 
+Two FAITH-rejection findings are structural -- no retranslation can satisfy
+them, because the constraint they collide with travels with the glossary
+entry, not with the attempt -- and the retry loop treats them differently
+from an ordinary rejection (_handle_overbind):
+
+- Glossary over-binding, confirmed by the stage-2 investigation
+  (lib/verify.investigate_faith on the glossary_overbind.md rubric) with a
+  "retire" action: the entry is retired on the spot and the retry translates
+  against the corrected glossary. One fix-retry is granted past
+  max_attempts per chapter, so a fix applied on the last attempt still gets
+  a fair test.
+- A compliance oscillation ("term whipsaw"): the review demanded a term's
+  canonical rendering, then failed the attempt that rendered it, then
+  failed the attempt that declined it again. The attempt history in
+  state["term_declines"] makes that sawtooth free to detect; the chapter
+  stops immediately and goes to needs-review with the adjudication
+  diagnosis, because two authorities disagree about the referent and only
+  a human (or a glossary edit) can settle it.
+
 Cross-chapter context beyond the glossary: a rolling story-so-far recap
 (story_state.json, one <= 120-word entry per chapter maintained by lib/story)
 rides the [Background Information] frame into every prompt that fills
@@ -1110,15 +1129,15 @@ def _log_chapter_start(project_dir: Path, file: str, entry: dict,
 def _investigate_glossary_rejection(project_dir: Path, cfg: dict, g: dict,
                                     file: str, source_lines: list[str],
                                     lines: list[str], tag: str,
-                                    enabled: bool) -> None:
+                                    enabled: bool) -> dict | None:
     """On a FAITH rejection, ask whether the glossary over-bound this chapter.
 
-    The rejection already happened and the retry loop already owns the
-    outcome, so this reports rather than decides: it never flips a status and
-    never rewrites the rejected lines. What it adds is the question the
-    rejection cannot answer for itself -- whether forcing a pinned term is
-    what made the translation unfaithful, which is a different fault from the
-    translator's and is fixed in glossary.json rather than by another attempt.
+    Returns the investigation result for the caller's remediation policy
+    (_handle_overbind), or None when the pre-filter declined the chapter, the
+    investigation is disabled, or every call failed. The stdout report stays
+    the same; the deciding has moved to the policy, which is what turns the
+    old report-only diagnosis into the retire auto-fix and the whipsaw
+    stop.
 
     The free deterministic pre-filter is what makes this affordable: a
     rejection only reaches the model when this same chapter also declined a
@@ -1135,7 +1154,7 @@ def _investigate_glossary_rejection(project_dir: Path, cfg: dict, g: dict,
     because a provider that will never answer is not a one-batch problem.
     """
     if not enabled:
-        return
+        return None
     from lib import verify as verify_mod
     try:
         result = verify_mod.investigate_faith(
@@ -1145,9 +1164,9 @@ def _investigate_glossary_rejection(project_dir: Path, cfg: dict, g: dict,
     except Exception as exc:
         print(f"{tag} [warn] glossary investigation skipped: "
               f"{type(exc).__name__}: {exc}")
-        return
+        return None
     if not result["considered"] and not result["errors"]:
-        return
+        return None
     logger.log_event(project_dir, {
         "event": "faith_glossary_investigation", "chapter": file,
         "considered": result["considered"],
@@ -1161,7 +1180,7 @@ def _investigate_glossary_rejection(project_dir: Path, cfg: dict, g: dict,
     if not result["considered"]:
         for error in result["errors"]:
             print(f"{tag} [warn] {error}")
-        return
+        return None
     for term in result["contaminated_terms"]:
         reason = term["reason"].strip()
         print(f"{tag} [warn] glossary over-binding: forcing {term['source']!r} "
@@ -1170,6 +1189,129 @@ def _investigate_glossary_rejection(project_dir: Path, cfg: dict, g: dict,
               + "; fix the glossary entry, not the translation")
     for error in result["errors"]:
         print(f"{tag} [warn] glossary investigation: {error}")
+    return result
+
+
+def _record_term_declines(project_dir: Path, cfg: dict, g: dict, state: dict,
+                          file: str, source_body: str,
+                          lines: list[str], tag: str) -> list[str]:
+    """Append this attempt's declined pinned terms to state["term_declines"].
+
+    Free arithmetic (lib/verify.declined_terms -- the same rows the balance
+    advisory and the investigation's pre-filter classify on), recorded once
+    per FAITH failure. The history is what _contested_term reads for the
+    whipsaw pattern, so it must survive resumes like every other piece of
+    chapter state; a None entry would mean the counting itself failed, which
+    is not a shape this caller can produce (VALIDATE has already guaranteed
+    the line counts match by the time FAITH runs) but the detector treats
+    defensively anyway.
+    """
+    from lib import verify as verify_mod
+    declined = verify_mod.declined_terms(cfg, g, source_body, lines)
+    state.setdefault("term_declines", []).append(declined)
+    logger.log_event(project_dir, {"event": "term_declines", "chapter": file,
+                                   "attempt": int(state.get("attempt", 0)) + 1,
+                                   "declined": declined})
+    return declined
+
+
+def _contested_term(history: list[list[str] | None]) -> str | None:
+    """The term a FAITH retry loop is whipsawing on, or None.
+
+    The pattern, across attempts that all FAILED faithfulness: the term was
+    declined (its canonical rendering below floor or absent), then an attempt
+    RENDERED it adequately -- and was still rejected -- then an attempt
+    declined it again. The reviewer punished the decline, punished the
+    compliance, and punished the reversion; no attempt 4 can satisfy both
+    instructions, because they come from two authorities (the balance drift
+    signal's verbatim demand and the reviewer's own reading of the referent)
+    disagreeing about the same lines. That is the structural fault: the fix
+    is adjudicating the glossary entry, not another translation.
+
+    None entries are unknown attempts (counting failed) and break no chain:
+    a sawtooth needs an observed decline, an observed compliance, and an
+    observed re-decline in that order. The LATEST term wins, so with several
+    contested terms the report names the one still alive at the end.
+    """
+    for k in range(len(history) - 1, -1, -1):
+        current = history[k]
+        if not current:
+            continue
+        for source in current:
+            for j in range(k):
+                middle = history[j]
+                if middle is None or source in middle:
+                    continue
+                if any(h is not None and source in h
+                       for h in history[:j]):
+                    return source
+    return None
+
+
+def _handle_overbind(project_dir: Path, cfg: dict, state: dict,
+                     file: str, tag: str, result: dict | None,
+                     max_attempts: int) -> list[str]:
+    """The FAITH-rejection remediation policy: what the retry loop does about
+    a rejection the evidence says retranslation cannot fix.
+
+    Returns the sources retired THIS rejection (empty when none). Three
+    outcomes, in the order the caller applies them:
+
+    - The investigation confirmed over-bound terms with a "retire" action
+      (every confirming verdict called the entry itself the fault): retire
+      them on the spot via glossary.retire (reason logged, event recorded),
+      so the retry translates against the corrected glossary. When that
+      retirement lands on the attempt the cap is about to enforce, a single
+      fix-retry is granted past max_attempts -- the corrected constraint
+      never got a fair test otherwise. Per chapter the grant is capped at
+      one (state["glossary_fix_retries"]) so fix-retry cannot become its own
+      loop.
+    - Confirmed terms with a "keep" action: the fault is narrower than the
+      entry, and deletion is a human decision. Warn only; the loop continues
+      normally.
+    - A contested term (the whipsaw) is the CALLER's stop decision, and it
+      must be taken after the retirement above has had its effect: a retired
+      term's constraint is gone and with it the contradiction, so a whipsaw
+      term that was just retired gets the same fix-retry as any other fix
+      instead of the stop.
+
+    glossary_overbind_autofix gates ONLY the retirement: the whipsaw stop is
+    the loop refusing to burn attempts on a proven contradiction, not a
+    mutation, and needs no flag.
+    """
+    retired: list[str] = []
+    terms = (result or {}).get("contaminated_terms") or []
+    if terms and bool(_cfg_value(cfg, "glossary_overbind_autofix")):
+        already = set(state.setdefault("glossary_fixed", []))
+        todo = [t for t in terms
+                if t.get("action") == "retire" and t["source"] not in already]
+        if todo:
+            removed = glossary.retire(project_dir, [t["source"] for t in todo])
+            retired = [t["source"] for t in todo if t["source"] in removed]
+            if retired:
+                removed_set = set(retired)
+                state["glossary_fixed"].extend(retired)
+                logger.log_event(project_dir, {
+                    "event": "glossary_overbind_fix", "chapter": file,
+                    "removed": [{"source": t["source"],
+                                 "reason": (t.get("reason") or "").strip()}
+                                for t in todo if t["source"] in removed_set],
+                })
+                for t in todo:
+                    if t["source"] in removed_set:
+                        print(f"{tag} [glossary] retired over-bound term "
+                              f"'{t['source']}' ({(t.get('reason') or '').strip()})")
+                print(f"{tag} [ok] glossary auto-fix applied - the retry "
+                      "translates against the corrected glossary")
+                if int(state.get("attempt", 0)) + 1 >= max_attempts and (
+                        int(state.get("glossary_fix_retries", 0)) < 1):
+                    state["glossary_fix_retry"] = True
+    for t in terms:
+        if t.get("action") != "retire":
+            print(f"{tag} [warn] glossary over-binding needs a human decision: "
+                  f"forcing {t['source']!r} as {t['pinned']!r} mistranslates "
+                  f"this chapter - {(t.get('reason') or '').strip()}")
+    return retired
 
 
 def _log_chapter_end(project_dir: Path, file: str, entry: dict, outcome: str,
@@ -1270,6 +1412,8 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
             "chunks": None,
             "notes": None,
             "rejected": None,
+            "term_declines": [],
+            "glossary_fixed": [],
             "updated_at": "",
             "pipeline": STATE_VERSION,
         }
@@ -1281,6 +1425,8 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
     state.setdefault("chunks", None)
     state.setdefault("notes", None)
     state.setdefault("rejected", None)
+    state.setdefault("term_declines", [])
+    state.setdefault("glossary_fixed", [])
 
     if state["stage"] not in STAGES:
         state["stage"] = "TRANSLATE"
@@ -1699,6 +1845,8 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 })
             stage_exit("BALANCE", _t0)
 
+        investigation = None
+        faith_rejected = False
         if failed_stage is None and start_idx <= _STAGE_IDX["FAITH"]:
             _t0 = stage_enter("FAITH")
             advance("FAITH")
@@ -1734,7 +1882,10 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                     log_result("faithfulness", verdict=verdict,
                                reasons=fb, accepted=False)
                     failed_stage = "FAITH"
-                    _investigate_glossary_rejection(
+                    faith_rejected = True
+                    _record_term_declines(project_dir, cfg, g, state, file,
+                                          body_for_counts, lines, tag)
+                    investigation = _investigate_glossary_rejection(
                         project_dir, cfg, g, file, source_lines, lines, tag,
                         verify_on_faith)
                 else:
@@ -1748,6 +1899,40 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                 log_gate("FAITH", "error", [f"{type(exc).__name__}: {exc}"])
                 failed_stage = "FAITH"
             stage_exit("FAITH", _t0)
+            if faith_rejected:
+                retired = _handle_overbind(project_dir, cfg, state, file, tag,
+                                           investigation, max_attempts)
+                if retired:
+                    # glossary.retire rewrote glossary.json; the in-memory
+                    # copy must not outlive it or a later GLOSSARY_EXPAND
+                    # save would resurrect the retired terms.
+                    g = glossary.load(project_dir)
+                contested = _contested_term(state.get("term_declines") or [])
+                if contested is not None and contested not in retired:
+                    entry = glossary.find(g, contested)
+                    pinned = str((entry or {}).get("translation") or "?")
+                    diagnosis = (
+                        f"glossary pin contested: '{contested}' -> '{pinned}' - "
+                        "the review demanded the canonical rendering, failed "
+                        "the attempt that rendered it, and failed the attempt "
+                        "that declined it again; no retranslation can satisfy "
+                        "both. Adjudicate the glossary entry, then re-run the "
+                        "chapter.")
+                    state["feedback"].append(diagnosis)
+                    logger.log_event(project_dir, {
+                        "event": "term_whipsaw", "chapter": file,
+                        "term": contested, "pinned": pinned,
+                        "decline_history": list(state["term_declines"])})
+                    save_state(paths["draft"], file, state)
+                    print(f"{tag} [FAIL] FAITH failed "
+                          f"(attempt {int(state['attempt']) + 1}/{max_attempts})")
+                    for item in state["feedback"]:
+                        print(f"{tag} [FAIL] feedback: {item}")
+                    print(f"{tag} [FAIL] {diagnosis}")
+                    print(f"{tag} [FAIL] stopped retranslation - marked needs-review")
+                    project.set_status(manifest, file, "needs-review")
+                    project.save_manifest(project_dir, manifest)
+                    return "needs-review", state, stages_run, attempts_run
 
         if failed_stage is None and start_idx <= _STAGE_IDX["GLOSSARY_EXPAND"]:
             _t0 = stage_enter("GLOSSARY_EXPAND")
@@ -1856,7 +2041,12 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                                     "attempt": state["attempt"], "stage": failed_stage,
                                     "feedback": list(state["feedback"][-3:])})
         print(f"{tag} [FAIL] {failed_stage} failed (attempt {state['attempt']}/{max_attempts})")
-        if int(state["attempt"]) >= max_attempts:
+        if state.pop("glossary_fix_retry", False):
+            state["glossary_fix_retries"] = int(state.get("glossary_fix_retries", 0)) + 1
+            save_state(paths["draft"], file, state)
+            print(f"{tag} [init] glossary auto-fix landed on the final attempt "
+                  "- retrying once with the corrected glossary")
+        elif int(state["attempt"]) >= max_attempts:
             project.set_status(manifest, file, "needs-review")
             project.save_manifest(project_dir, manifest)
             for item in state["feedback"]:

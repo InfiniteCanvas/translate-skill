@@ -426,13 +426,43 @@ not at all — so the many rejections with nothing to do with the glossary cost
 no model call at all. Both shapes count here, and a chapter that refused every
 pinned form outright is the strongest over-binding candidate of all: it is the
 shape a translator produces when the entry does not fit the sense, and no retry
-can fix it while the entry stays pinned. Survivors go through the same stage 2,
-on the same `verify` job, and are reported as `[warn] [CHAPTER_NNNN] glossary
-over-binding: forcing '<term>' as '<pinned>' mistranslates this chapter;
-fix the glossary entry, not the translation`, plus a
-`faith_glossary_investigation` trace event. The investigation never rewrites
-the rejected lines and never flips a status — the FAITH gate already owns the
-chapter's outcome. Skip it with `--no-verify` on `translate` / `retry`.
+can fix it while the entry stays pinned.
+
+Survivors go through stage 2 on the `verify` job, but against the
+`glossary_overbind.md` rubric rather than the book-scan's: it asks whether
+FORCING the pin would mistranslate and whether the ENTRY is the fault, and a
+confirmation carries a remedy — `retire` (the pinned sense covers no
+occurrence in this chapter; only a unanimous retire across a term's batches
+counts) or `keep` (the fault is narrower than the entry). The diagnosis still
+reports as `[warn] [CHAPTER_NNNN] glossary over-binding: forcing '<term>' as
+'<pinned>' mistranslates this chapter`, plus a `faith_glossary_investigation`
+trace event, and the rejected lines are never rewritten.
+
+What the retry loop then does with a confirmation is policy, not report:
+
+- **`retire`** — the entry is deleted on the spot (`[glossary] retired
+  over-bound term ...`, a `glossary_overbind_fix` trace event, recorded under
+  `retired` so expansion can never re-add it), and the retry translates
+  against the corrected glossary. Gated by `glossary_overbind_autofix`
+  (default on). When the retirement lands on the attempt `max_attempts` is
+  about to enforce, ONE fix-retry is granted past the cap
+  (`[init] glossary auto-fix landed on the final attempt ...`), so the
+  corrected constraint gets a fair test; the grant is capped at one per
+  chapter.
+- **`keep`** — `[warn] ... needs a human decision` and nothing else: the
+  entry stands, the loop gives up at the cap as before.
+- **A compliance oscillation ("term whipsaw")** — independent of the
+  investigation and free to detect: every FAITH failure records the terms
+  the attempt declined (`term_declines` trace event, kept in chapter state).
+  A term declined, then complied-with under a failing review, then declined
+  again means two authorities disagree about the referent and no attempt can
+  win. The chapter stops immediately — `[FAIL] glossary pin contested:
+  '<term>' -> '<pinned>' ...` — as needs-review, with the adjudication
+  diagnosis in the feedback. A whipsaw term that the same rejection just
+  retired is exempt (its constraint is gone; the fix-retry owns the outcome).
+
+Skip the model investigation with `--no-verify` on `translate` / `retry`
+(the whipsaw stop needs no model call and stays active).
 
 ## Bulk review fixes
 

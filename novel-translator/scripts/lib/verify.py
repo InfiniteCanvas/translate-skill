@@ -150,6 +150,29 @@ VERIFY_SCHEMA: dict[str, Any] = {
     "required": ["verdicts"],
 }
 
+OVERBIND_TEMPLATE = "glossary_overbind.md"
+
+OVERBIND_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "chapter": {"type": "string"},
+                    "mistranslates": {"type": "boolean"},
+                    "action": {"type": "string", "enum": ["retire", "keep"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["source", "chapter", "mistranslates", "reason"],
+            },
+        }
+    },
+    "required": ["verdicts"],
+}
+
 
 def _hit_lines(source_lines: list[str], entry: dict) -> list[int]:
     """Indexes of the chapter's source lines that contain the entry's own
@@ -325,7 +348,7 @@ def scan_chapter(cfg: dict, g: dict, source_lines: list[str],
 
 
 def _prompt(project_dir: Path, cfg: dict, term: dict,
-            blocks: list[dict]) -> str:
+            blocks: list[dict], *, template: str = TEMPLATE) -> str:
     """One term's judging prompt: the rubric plus the term and the blocks it is
     judged on. The data is IN the prompt -- the rubric alone answers nothing.
 
@@ -335,7 +358,7 @@ def _prompt(project_dir: Path, cfg: dict, term: dict,
     is, and calling the unit a block in one place and a context in the rest
     would make it map between two names for the same thing."""
     return fill(
-        pipeline._load_template(project.paths(project_dir)["templates"], TEMPLATE),
+        pipeline._load_template(project.paths(project_dir)["templates"], template),
         {
             "source_lang": _lang_name(cfg.get("source_lang")),
             "target_lang": _lang_name(cfg.get("target_lang")),
@@ -344,12 +367,13 @@ def _prompt(project_dir: Path, cfg: dict, term: dict,
             "context_count": str(len(blocks)),
             "hit_count": str(sum(block["hits"] for block in blocks)),
         },
-        TEMPLATE,
+        template,
     )
 
 
 def _verdicts(project_dir: Path, cfg: dict, term: dict,
-              blocks: list[dict]) -> tuple[list[dict], str | None]:
+              blocks: list[dict], *, template: str = TEMPLATE,
+              schema: dict[str, Any] = VERIFY_SCHEMA) -> tuple[list[dict], str | None]:
     """Stage 2 for one term's batch: the confirmed-or-not verdicts keyed by
     chapter, plus an error string when the batch could not be judged.
 
@@ -370,13 +394,21 @@ def _verdicts(project_dir: Path, cfg: dict, term: dict,
     one, and letting it through would confirm a chapter on evidence about a
     different one. Contexts the model omits are NOT confirmed, so a truncated
     or partial reply cannot confirm anything.
+
+    The rubric is chosen by the caller: the book scan judges "is the chapter
+    mistranslated under the pinning as it stands" (glossary_verify.md), while
+    the FAITH-rejection investigation judges "would FORCING the pin here be a
+    mistranslation, and is the entry the fault" (glossary_overbind.md, whose
+    verdicts also carry a retire/keep action). The book scan's schema stays
+    action-free so its status-flip contract does not move.
     """
     label = (f"{term['source']} ({len(blocks)} context(s), "
              f"{', '.join(sorted({b['chapter'] for b in blocks}))})")
     try:
         resp = consensus.chat(project_dir, cfg, JOB,
-                              _prompt(project_dir, cfg, term, blocks),
-                              json_schema=VERIFY_SCHEMA,
+                              _prompt(project_dir, cfg, term, blocks,
+                                      template=template),
+                              json_schema=schema,
                               chapter=Path(blocks[0]["chapter"]).stem)
         data = client.extract_json(resp)
     except (client.LLMFatal, client.LLMExhausted):
@@ -397,6 +429,7 @@ def _verdicts(project_dir: Path, cfg: dict, term: dict,
         if not isinstance(chapter, str) or chapter not in offered:
             continue
         reason = row.get("reason")
+        action = row.get("action")
         out.append({
             "source": name,
             "pinned": term["pinned"],
@@ -405,6 +438,9 @@ def _verdicts(project_dir: Path, cfg: dict, term: dict,
             "rendered_count": offered[chapter]["rendered_count"],
             "floor": offered[chapter]["floor"],
             "mistranslates": row.get("mistranslates") is True,
+            # An absent or off-vocabulary action keeps the conservative
+            # default: only an explicit "retire" ever counts as one.
+            "action": action if action in ("retire", "keep") else "keep",
             "reason": reason if isinstance(reason, str) and reason.strip() else "",
         })
     return out, None
@@ -475,6 +511,13 @@ def _merge(into: dict[tuple[str, str], dict], verdicts: list[dict]) -> None:
             continue
         current["mistranslates"] = (current["mistranslates"]
                                     or verdict["mistranslates"])
+        # Keep-wins: a retire action is destructive and needs every verdict
+        # for this (term, chapter) to call for it, the same unanimity-or-no
+        # shape as the confirmation itself across batches.
+        current["action"] = ("retire"
+                             if current.get("action") == "retire"
+                             and verdict.get("action") == "retire"
+                             else "keep")
         if verdict["mistranslates"] and not current["reason"]:
             current["reason"] = verdict["reason"]
 
@@ -482,7 +525,12 @@ def _merge(into: dict[tuple[str, str], dict], verdicts: list[dict]) -> None:
 def _contamination(findings: list[dict]) -> list[dict]:
     """One record per term the model confirmed, naming every chapter it
     confirmed in. The glossary entry is the thing that propagates, so it is
-    flagged on its own rather than only through the chapters it hurt."""
+    flagged on its own rather than only through the chapters it hurt.
+
+    "action" aggregates the per-chapter remedies keep-wins: "retire" only
+    when every confirming verdict said the entry itself is the fault. The
+    book scan's verdicts carry no action at all, so its records stay "keep"
+    and its callers (the cascade) are unaffected."""
     out: list[dict] = []
     for source in sorted({f["source"] for f in findings if f["mistranslates"]}):
         hits = [f for f in findings
@@ -491,6 +539,8 @@ def _contamination(findings: list[dict]) -> list[dict]:
             "source": source,
             "pinned": hits[0]["pinned"],
             "chapters": sorted({f["chapter"] for f in hits}),
+            "action": ("retire" if all(f.get("action") == "retire"
+                                       for f in hits) else "keep"),
             "reason": next((f["reason"] for f in hits if f["reason"]), ""),
         })
     return out
@@ -624,6 +674,26 @@ def verify_project(project_dir: Path, cfg: dict,
     }
 
 
+def declined_terms(cfg: dict, g: dict, source_body: str,
+                   translated_lines: list[str]) -> list[str]:
+    """The chapter's pinned terms whose canonical rendering the translation
+    declined -- rendered it below the usage floor or not at all, both balance
+    shapes. Sorted sources of exactly the rows investigate_faith's pre-filter
+    keeps, exposed so the pipeline can track per-attempt declines across a
+    retry loop and detect a compliance oscillation without paying for any
+    stage-2 call. Free: counting only, no model call."""
+    pairs = [(entry, count) for entry, count in glossary.contextual(
+        g, source_body,
+        int(config.get_number(cfg, "contextual_glossary_cap")))]
+    min_coverage = float(config.get_number(cfg, "min_term_coverage"))
+    fuzzy_max = int(config.get_number(cfg, "fuzzy_max_distance"))
+    rows = (balance.underused(pairs, translated_lines,
+                              min_coverage=min_coverage, fuzzy_max=fuzzy_max)
+            + balance.drifted(pairs, translated_lines,
+                              min_coverage=min_coverage, fuzzy_max=fuzzy_max))
+    return sorted({row["source"] for row in rows})
+
+
 def investigate_faith(project_dir: Path, cfg: dict, g: dict, chapter: str,
                       source_lines: list[str],
                       translated_lines: list[str]) -> dict:
@@ -651,12 +721,18 @@ def investigate_faith(project_dir: Path, cfg: dict, g: dict, chapter: str,
     differ. It is still free: both classifications are arithmetic over counts
     already computed.
 
-    The surviving rows go through the same stage 2 as a book scan -- same
-    rubric, same per-term batching, same context windows -- because it is the
-    same question, asked about one chapter instead of all of them. Confirmed
-    terms are returned as findings; this function writes nothing and flips no
-    status, because the caller is mid-translate and the chapter is already
-    headed for needs-review by the FAITH gate itself.
+    The surviving rows go through the same stage 2 machinery as a book scan --
+    same evidence blocks, same per-term batching, same context windows -- but
+    a different rubric (glossary_overbind.md, via the OVERBIND schema): the
+    book scan asks whether the chapter is mistranslated under the pinning AS
+    IT STANDS, while the investigation asks whether FORCING the pin would be a
+    mistranslation and whether the ENTRY is the fault, because the caller is
+    mid-translate and needs the remedy, not just the audit. Confirmed terms
+    are returned as findings with that action attached; this function writes
+    nothing and flips no status, because the caller is mid-translate and the
+    chapter is already headed for needs-review by the FAITH gate itself --
+    what the caller does with a confirmed action is pipeline policy
+    (lib.pipeline._handle_overbind), not this function's.
     """
     root = Path(project_dir)
     empty = {"considered": False, "candidates": [], "findings": [],
@@ -704,7 +780,9 @@ def investigate_faith(project_dir: Path, cfg: dict, g: dict, chapter: str,
         term = by_term[source]
         for batch in _batches(term["blocks"]):
             calls += 1
-            verdicts, error = _verdicts(root, cfg, term, batch)
+            verdicts, error = _verdicts(root, cfg, term, batch,
+                                        template=OVERBIND_TEMPLATE,
+                                        schema=OVERBIND_SCHEMA)
             if error:
                 errors.append(error)
             _merge(findings, verdicts)

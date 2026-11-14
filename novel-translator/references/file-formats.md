@@ -308,6 +308,7 @@ stamp; `init` copies no defaults and no overlay values into it.
   "min_term_coverage": 0.25,     // ADVISORY usage floor: below ceil(coverage*src) warns; 0 renderings with src>=2 is a drift signal handed to the FAITH reviewer
   "fuzzy_max_distance": 2,       // Levenshtein tolerance for single-word targets of >= 5 letters; multi-word phrases match case-insensitively with hyphen/space equivalence plus an optional inflection on the final word
   "glossary_auto_cleanup": true, // balance drift signals: retire mundane terms via a cleanup judgment; kept signals go to the FAITH reviewer; false = skip the judgment
+  "glossary_overbind_autofix": true, // FAITH-rejection investigation confirms over-binding with a retire action: delete the entry and retry against the corrected glossary; false = warn only, never mutate on a rejected attempt (the whipsaw stop is unaffected)
   "git_commits": true,           // commit every mutating action to the project's git repository (created by `init`, backfilled by migrate v003; lib/vcs.commit is the single gate); false = keep the project un-versioned
   "tn_gap_chapters": 10,         // re-annotate a term only after > N chapters of distance
   "tn_keep_low_confidence": false, // keep threshold:"low" notes instead of dropping them (default drops)
@@ -2083,7 +2084,7 @@ For `CHAPTER_0001.md` the pipeline creates:
 |---|---|
 | `CHAPTER_0001.md` | human-readable current translation draft (frontmatter + lines) |
 | `CHAPTER_0001.lines.json` | `{"title": "...", "lines": [...]}` — written per attempt as a debug artifact; nothing reads it back |
-| `CHAPTER_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "chunks": [[...], ...] or null, "feedback": [...], "notes": [...], "rejected": [...], "updated_at", "pipeline"}` — `pipeline` is the state-schema version; `title`/`lines` hold the draft translation (crash-resume past TRANSLATE); `chunks` holds per-part TRANSLATE progress (below) |
+| `CHAPTER_0001.state.json` | pipeline state: `{"stage", "attempt", "title", "lines", "chunks": [[...], ...] or null, "feedback": [...], "notes": [...], "rejected": [...], "term_declines": [[...], ...], "glossary_fixed": [...], "updated_at", "pipeline"}` — `pipeline` is the state-schema version; `title`/`lines` hold the draft translation (crash-resume past TRANSLATE); `chunks` holds per-part TRANSLATE progress (below); `term_declines` is the per-FAITH-failure history of declined pinned terms the whipsaw detector reads; `glossary_fixed` lists the sources already auto-retired so a resumed chapter cannot retire twice |
 
 `stage` is one of `TRANSLATE, VALIDATE, BALANCE, FAITH, GLOSSARY_EXPAND,
 TN_GENERATE, TN_DEDUP, ASSEMBLE`. `feedback` accumulates everything the gates

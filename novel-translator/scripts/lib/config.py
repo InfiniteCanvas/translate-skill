@@ -47,6 +47,7 @@ DEFAULTS: dict = {
     "log_chapter_keep_runs": 3,
     "auto_build_epub": True,
     "glossary_auto_cleanup": True,
+    "glossary_overbind_autofix": True,
     "git_commits": True,
     "review_batch_size": 40,
     "review_report_path": "review-report.md",
