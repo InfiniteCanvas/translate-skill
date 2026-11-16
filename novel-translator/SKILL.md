@@ -124,11 +124,17 @@ anything rather than leaving a half-built project. See `sync-config` below to
 inspect the resolution.
 
 Downloading more chapters later? Drop them in `source/` and run
-`uv run "$SCRIPT" sync --project .` - it re-scans `source/`, backfills
-their frontmatter, and rebuilds `chapters.json` (added/removed chapters
-reported; statuses and titles preserved) without touching glossary.json
-or tn_history.json. Exit 0, no LLM calls; a sync that changed anything
-commits `sync: rescan source`; run it after every download batch.
+`uv run "$SCRIPT" sync --project .` - it re-scans `source/`, repairs the
+source chapters that carry a site's fused heading or a duplicated opening
+block (never a chapter that already has a translation - that one is
+reported), backfills their frontmatter, and rebuilds `chapters.json`
+(added/removed chapters reported; statuses and titles preserved) without
+touching glossary.json or tn_history.json. It also writes what the book
+is missing to `logs/completeness.json` and prints it: how many chapters
+the source says the book has against how many the project holds, which
+positions the source has not published, and which chapters look cut
+short. Exit 0, no LLM calls; a sync that changed anything commits
+`sync: rescan source`; run it after every download batch.
 
 ### Sharing settings across projects (`sync-config`)
 

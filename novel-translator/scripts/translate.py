@@ -422,6 +422,9 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
         print(line)
     vcs.commit(project_dir, "init: reinitialize project" if was_repo else "init: scaffold project")
 
+    repairs = project.repair_source_chapters(project_dir, chapters)
+    _report_repairs(repairs)
+
     backfilled = project.backfill_frontmatter(chapters, args.title, args.author, args.source_url)
     if backfilled:
         print(f"[init] backfilled frontmatter on {backfilled} bare chapter(s)")
@@ -429,6 +432,7 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
     manifest = project.sync_manifest(project_dir)
     print(f"[init] manifest: {len(manifest)} chapter(s)")
     _report_ignored_chapters(project_dir)
+    _report_completeness(project_dir)
 
     total_added = 0
     total_skipped = 0
@@ -495,7 +499,13 @@ def cmd_init(args: argparse.Namespace, project_dir: Path) -> int:
 
 
 def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
-    """Re-scan source/ and rebuild the manifest after new chapters land."""
+    """Re-scan source/ and rebuild the manifest after new chapters land.
+
+    Also the ingestion pass: it repairs the source chapters that carry a
+    site's heading or a duplicated opening (never a chapter that already
+    has a translation - that one is reported), and it writes what the
+    book is missing to logs/completeness.json.
+    """
     paths = project.paths(project_dir)
     if not paths["manifest"].is_file():
         raise CliError(f"manifest not found in {project_dir} - run 'init' first")
@@ -503,6 +513,7 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
     info = project.load_novel_info(project_dir)
     try:
         chapters = project.discover(project_dir)
+        repairs = project.repair_source_chapters(project_dir, chapters)
         backfilled = project.backfill_frontmatter(
             chapters,
             str(info.get("title") or ""),
@@ -514,6 +525,9 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
         raise CliError(f"cannot sync - {exc}") from exc
     if backfilled:
         print(f"[sync] backfilled frontmatter on {backfilled} chapter(s)")
+
+    _report_repairs(repairs)
+    _report_completeness(project_dir)
 
     _report_ignored_chapters(project_dir)
 
@@ -528,6 +542,51 @@ def cmd_sync(args: argparse.Namespace, project_dir: Path) -> int:
     print(f"[ok] manifest: {len(manifest)} chapter(s)")
     vcs.commit(project_dir, "sync: rescan source")
     return 0
+
+
+def _report_repairs(repairs: list[dict]) -> None:
+    """What the ingestion pass changed, and what it left alone."""
+    for record in repairs:
+        for note in record["notes"]:
+            if record["translated"]:
+                print(f"[warn] {record['file']}: {note} - the chapter has a "
+                      f"translation, so the source was left alone; re-translate "
+                      f"it to pick the change up")
+            else:
+                print(f"[ok] {record['file']}: {note}")
+
+
+def _report_completeness(project_dir: Path) -> None:
+    """What the book is missing, and which chapters look cut short.
+
+    The config is read leniently: a project with no config.json (or a
+    broken one) still gets its completeness report, with the code
+    defaults for the thresholds.
+    """
+    try:
+        cfg = config.load_config(project_dir, SKILL_ROOT, require_base_url=False)
+    except (CliError, ValueError, OSError):
+        cfg = {}
+    report = project.completeness_report(project_dir, cfg)
+    project.write_completeness_report(project_dir, report)
+    expected = report.get("expected")
+    if expected:
+        print(f"[ok] completeness: {report['present']} of {expected} chapter(s) "
+              f"present (median {report['median_paragraphs']} paragraphs)")
+    if report["missing_from_toc"]:
+        print(f"[warn] completeness: {len(report['missing_from_toc'])} position(s) "
+              f"the source's table of contents does not list: "
+              f"{', '.join(str(n) for n in report['missing_from_toc'][:20])}"
+              + (" ..." if len(report["missing_from_toc"]) > 20 else ""))
+    if report["missing_from_project"]:
+        print(f"[warn] completeness: {len(report['missing_from_project'])} position(s) "
+              f"the source lists but the project does not hold: "
+              f"{', '.join(str(n) for n in report['missing_from_project'][:20])}"
+              + (" ..." if len(report["missing_from_project"]) > 20 else ""))
+    for outlier in report["outliers"]:
+        print(f"[warn] completeness: {outlier['chapter']} holds "
+              f"{outlier['paragraphs']} paragraph(s) against the book's median "
+              f"of {outlier['median']} - it looks cut short")
 
 
 def cmd_sync_config(args: argparse.Namespace, project_dir: Path) -> int:

@@ -51,6 +51,13 @@ DEFAULTS: dict = {
     "git_commits": True,
     "review_batch_size": 40,
     "review_report_path": "review-report.md",
+    # Completeness: how many chapters the source says the book has, when the
+    # project carries no table of contents of its own (None = nobody has
+    # said, and no shortfall can be measured); and the fraction of the
+    # book's median chapter length below which a chapter is reported as
+    # suspiciously short. See lib/project.py's completeness_report.
+    "expected_chapters": None,
+    "completeness_outlier_ratio": 0.3,
     # Per-call transport retry policy (client.py's ladder). Structured as a
     # nested object so a project or the local overlay can tune one knob
     # without restating the rest; see retry_policy() for the resolved shape

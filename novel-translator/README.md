@@ -51,7 +51,14 @@ through uv automatically):
    walks through scraping a novel: TOC discovery, converting pages to
    chapter files, and the naming pitfalls. After init, newly downloaded
    chapters are picked up with `uv run scripts/translate.py sync`, which
-   rebuilds `chapters.json` and preserves existing statuses.
+   rebuilds `chapters.json` and preserves existing statuses. Both `init`
+   and `sync` also repair the source (a site's chapter heading fused
+   into the first paragraph, a duplicated opening block -- never a chapter
+   that already has a translation, which is reported instead) and write
+   what the book is missing to `logs/completeness.json`: how many
+   chapters the source says the book has against how many the project
+   holds, the positions the source has not published, and the chapters
+   that look cut short.
 
 2. Initialize the project:
 

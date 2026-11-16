@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import statistics
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,21 @@ from pathlib import Path
 import yaml
 
 CHAPTER_RE = re.compile(r"^CHAPTER_([0-9]{4})\.md$")
+
+# The source's own table of contents, when the project carries one. The
+# acquisition skill (zh-source-downloader) writes it next to the raw cache
+# and leaves it in place; it is where the source states how many chapters
+# the book has, which is the only number a completeness check can be
+# measured against.
+SOURCE_TOC_FILE = "zh-toc.json"
+
+# A chapter heading, in the two scripts the mirrors serve: 第N章 … and
+# Chapter N …
+_HEADING_RE = re.compile(
+    r"^\s*(?:第\s*[0-9０-９零一二三四五六七八九十百千两]+\s*[章節节回卷篇]"
+    r"|chapter\s+[0-9ivxlcdmIVXLCDM]+\b)",
+    re.IGNORECASE,
+)
 
 _CHAPTERISH_RE = re.compile(r"^chapter[\s_.-]*\d", re.IGNORECASE)
 _BARE_NUMBER_RE = re.compile(r"^\d+$")
@@ -42,6 +58,8 @@ def paths(project_dir: Path) -> dict:
         "tn_history": root / "tn_history.json",
         "story_state": root / "story_state.json",
         "notes": root / "notes",
+        "logs": root / "logs",
+        "source_toc": root / SOURCE_TOC_FILE,
     }
 
 
@@ -337,3 +355,251 @@ def set_status(manifest: list[dict], file: str, status: str) -> None:
     if entry is None:
         raise KeyError(f"chapter {file!r} not found in manifest")
     entry["status"] = status
+
+
+# ---------------------------------------------------------------------------
+# Source hygiene: the repairs ingestion makes, and what it reports about them
+# ---------------------------------------------------------------------------
+
+
+def heading_shaped(title: str) -> bool:
+    """Whether a recorded chapter title looks like a chapter heading.
+
+    The test matters because the skill's own frontmatter backfill derives
+    a missing chapter_title from the chapter's WHOLE first body line, so a
+    line of prose can arrive wearing a title. A title-driven repair must
+    not trust such a title.
+    """
+    return bool(_HEADING_RE.match(str(title or "").strip()))
+
+
+def find_duplicated_opening(paragraphs: list[str]) -> tuple[int, int] | None:
+    """The (start, length) of a repeated opening block, or None.
+
+    A duplicated opening block is a run of three or more consecutive
+    paragraphs that repeats an earlier run of the same paragraphs - the
+    shape a mirror's preview produces when it serves its excerpt and then
+    the whole chapter. The later occurrence is the one to go.
+    """
+    total = len(paragraphs)
+    best: tuple[int, int] | None = None
+    for start in range(total - 2):
+        for earlier in range(start):
+            length = 0
+            while (start + length < total and earlier + length < start
+                   and paragraphs[start + length] == paragraphs[earlier + length]):
+                length += 1
+            if length < 3:
+                continue
+            if best is None or start < best[0] or (start == best[0] and length > best[1]):
+                best = (start, length)
+    return best
+
+
+def repair_source_body(frontmatter: dict, body: str) -> tuple[str, list[str]]:
+    """Apply the source repairs to one chapter's body.
+
+    Returns (body, notes) where notes name what changed, in the order it
+    changed. Both repairs are idempotent: a second run over the repaired
+    body finds nothing and returns the body unchanged.
+    """
+    notes: list[str] = []
+    lines = body.split("\n")
+
+    title = str(frontmatter.get("chapter_title") or "").strip()
+    if heading_shaped(title):
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith(title) and len(stripped) > len(title):
+                remainder = stripped[len(title):].strip()
+                if remainder:
+                    lines[index] = remainder
+                else:
+                    del lines[index]
+                notes.append(
+                    f"stripped the chapter heading ({title}) from the first paragraph")
+            break
+
+    duplicated = find_duplicated_opening(lines)
+    if duplicated is not None:
+        start, length = duplicated
+        del lines[start:start + length]
+        notes.append(
+            f"removed a duplicated opening block: {length} paragraph(s) "
+            f"repeated from paragraph {start + 1 - length}")
+
+    return "\n".join(lines), notes
+
+
+def repair_source_chapters(project_dir: Path, chapters: list[Chapter]) -> list[dict]:
+    """Repair the source chapters, and report the ones it did not touch.
+
+    A chapter that already has a translation is never rewritten: its
+    source and its translation are paired line for line, so removing a
+    line from the source would leave the pair broken - and the pipeline
+    compares a chapter against the source snapshot it took when the
+    chapter started, so it cannot see the drift. Such a chapter is
+    reported instead, because it needs re-translating and that is the
+    operator's decision.
+
+    Returns one record per chapter that needed attention:
+      {"file", "repaired": bool, "translated": bool, "notes": [...]}
+    """
+    translated_dir = paths(project_dir)["translated"]
+    records: list[dict] = []
+    for chapter in chapters:
+        frontmatter, body = read_chapter(chapter.path)
+        repaired, notes = repair_source_body(frontmatter, body)
+        if not notes:
+            continue
+        if (translated_dir / chapter.file).is_file():
+            records.append({"file": chapter.file, "repaired": False,
+                            "translated": True, "notes": notes})
+            continue
+        write_chapter(chapter.path, frontmatter, repaired)
+        records.append({"file": chapter.file, "repaired": True,
+                        "translated": False, "notes": notes})
+    return records
+
+
+# ---------------------------------------------------------------------------
+# Completeness: what the book is missing, and what looks cut short
+# ---------------------------------------------------------------------------
+
+
+def load_source_toc(project_dir: Path) -> dict:
+    """The source's own table of contents, when the project carries one.
+
+    Lenient like every other silent reader: {} when the file is missing,
+    unreadable or not a JSON object.
+    """
+    path = paths(project_dir)["source_toc"]
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _toc_positions(toc: dict) -> set[int]:
+    positions: set[int] = set()
+    for entry in toc.get("chapters") or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            positions.add(int(entry.get("position")))
+        except (TypeError, ValueError):
+            continue
+    return positions
+
+
+def _expected_chapters(toc: dict, cfg: dict) -> int | None:
+    """How many chapters the source says the book has.
+
+    The source's own table of contents states it; an operator-entered
+    value (the config key `expected_chapters`) stands in when the project
+    carries no table of contents. None means nobody has said, and no
+    shortfall can be measured.
+    """
+    raw = toc.get("chapter_count")
+    if raw is None:
+        raw = toc.get("official_chapter_count")
+    try:
+        if raw is not None:
+            return int(raw)
+    except (TypeError, ValueError):
+        pass
+    try:
+        entered = cfg.get("expected_chapters")
+    except AttributeError:
+        entered = None
+    if entered is None:
+        return None
+    try:
+        return int(entered)
+    except (TypeError, ValueError):
+        return None
+
+
+def completeness_report(project_dir: Path, cfg: dict | None = None) -> dict:
+    """What the book is missing, and which chapters look cut short.
+
+    Two independent signals, because they catch different failures:
+
+    - the EXPECTED COUNT: how many chapters the source says the book has
+      (its table of contents, or an operator-entered value), against the
+      chapters the project holds. The positions missing from the source's
+      table of contents are the ones the SOURCE has not published; the
+      positions the table lists but the project lacks are the ones the
+      ACQUISITION did not fetch. The two are different facts and the
+      report keeps them apart.
+    - the LENGTH OUTLIER: a chapter whose source text is far shorter than
+      the rest of the book, compared against the book's own median. A
+      truncated acquisition looks like this.
+
+    The report never blocks anything: it is a fact about the book, and
+    what to do about it is the operator's decision.
+    """
+    cfg = cfg or {}
+    chapters = discover(project_dir)
+    paragraph_counts: dict[str, int] = {}
+    for chapter in chapters:
+        _, body = read_chapter(chapter.path)
+        paragraph_counts[chapter.file] = len(
+            [line for line in body.split("\n") if line.strip()])
+
+    median = int(statistics.median(paragraph_counts.values())) if paragraph_counts else 0
+    try:
+        ratio = float(cfg.get("completeness_outlier_ratio", 0.3))
+    except (TypeError, ValueError):
+        ratio = 0.3
+    threshold = ratio * median
+    outliers = [
+        {"chapter": name, "paragraphs": count, "median": median}
+        for name, count in sorted(paragraph_counts.items())
+        if threshold > 0 and count < threshold
+    ]
+
+    toc = load_source_toc(project_dir)
+    expected = _expected_chapters(toc, cfg)
+    held = {chapter.number for chapter in chapters}
+    listed = _toc_positions(toc)
+
+    missing_from_toc: list[int] = []
+    missing_from_project: list[int] = []
+    if expected is not None:
+        if listed:
+            missing_from_toc = sorted(set(range(1, expected + 1)) - listed)
+            missing_from_project = sorted(listed - held)
+        else:
+            missing_from_project = sorted(set(range(1, expected + 1)) - held)
+
+    return {
+        "expected": expected,
+        "present": len(chapters),
+        "missing_from_toc": missing_from_toc,
+        "missing_from_project": missing_from_project,
+        "median_paragraphs": median,
+        "outlier_ratio": ratio,
+        "outliers": outliers,
+    }
+
+
+def write_completeness_report(project_dir: Path, report: dict) -> Path:
+    """Write the completeness findings where the operator's tools read them.
+
+    logs/completeness.json, written atomically: a run killed mid-write
+    cannot leave a torn file behind, and the reader treats an unreadable
+    one as "no findings" rather than a broken page.
+    """
+    path = paths(project_dir)["logs"] / "completeness.json"
+    atomic_write_text(
+        path,
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        newline="\n",
+    )
+    return path

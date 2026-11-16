@@ -47,6 +47,7 @@ drift comparison.
     │       ├── run-<run_id>.jsonl   tier 2: this chapter's model IO
     │       ├── index.jsonl          append-only open/close markers
     │       └── report.md            human-readable summary (metadata-only)
+    ├── completeness.json    what the book is missing (written by `init` and `sync`; see § completeness.json)
     └── epub-build.log       background epub-build output
 ```
 
@@ -336,6 +337,8 @@ stamp; `init` copies no defaults and no overlay values into it.
   "log_chapter_keep_runs": 3,    // retention per chapter directory, independent of every other chapter
   "review_batch_size": 40,       // entries per `review glossary` / `review notes` model review call; `--batch-size` overrides per run
   "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary` / `review notes`, read back by `review fix`)
+  "expected_chapters": null,    // how many chapters the source says the book has, when the project carries no table of contents of its own (zh-toc.json); null = nobody has said, and no shortfall is measured
+  "completeness_outlier_ratio": 0.3, // a chapter whose source is shorter than this fraction of the book's median paragraph count is reported as suspiciously short
   "version": 16                  // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
@@ -1924,6 +1927,46 @@ Flags are resolved once per invocation, not per event.
 
 Pre-v11 `llm-*.jsonl` files are never listed, never matched and never pruned;
 they are simply left alone.
+
+## `completeness.json` (what the book is missing)
+
+`init` and `sync` write it at `logs/completeness.json`. It is a **result
+artifact**, not a trace log: rewritten whole on every run, never indexed,
+never pruned. The operator's tools read it; no other command depends on
+it.
+
+```json
+{
+  "expected": 288,
+  "present": 255,
+  "missing_from_toc": [119, 159, 161],
+  "missing_from_project": [],
+  "median_paragraphs": 90,
+  "outlier_ratio": 0.3,
+  "outliers": [{"chapter": "CHAPTER_0123", "paragraphs": 33, "median": 90}]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `expected` | how many chapters the source says the book has — the source's own table of contents (`zh-toc.json`) when the project carries one, the config key `expected_chapters` otherwise; `null` when nobody has said, and no shortfall is measured |
+| `present` | how many chapters the project holds |
+| `missing_from_toc` | positions the source's table of contents does not list — **the source has not published them** |
+| `missing_from_project` | positions the source's table of contents lists but the project does not hold — **the acquisition did not fetch them** |
+| `median_paragraphs` | the book's median chapter length in paragraphs — the figure every outlier is compared against |
+| `outlier_ratio` | the configured fraction (config key `completeness_outlier_ratio`) |
+| `outliers` | chapters shorter than that fraction of the median |
+
+The two kinds of missing are kept apart because they are different facts
+and need different answers: a position the source never published cannot
+be fetched, and one the acquisition missed can.
+
+Positions are the **table of contents' own** positions (which are also the
+source files' numbers) — not the chapter numbers inside the text, which
+drift from the positions on a mirror that lists a book with gaps.
+
+Nothing here blocks anything. A completeness finding is a fact about the
+book, and what to do about it is the operator's decision.
 
 ## `verify.jsonl` (whole-book glossary-drift scan)
 
