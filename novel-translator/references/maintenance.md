@@ -464,6 +464,67 @@ What the retry loop then does with a confirmation is policy, not report:
 Skip the model investigation with `--no-verify` on `translate` / `retry`
 (the whipsaw stop needs no model call and stays active).
 
+## Speech and emphasis fidelity
+
+A mirror marks a speech on its first and last pieces; the pieces in
+between carry no quotation marks. The TRANSLATE prompt tells the
+translator which lines those are (`{{speech_section}}`), and the VALIDATE
+gate compares the translation's speech structure with the source's.
+
+**What refuses a chapter.** Only one check refuses: the source opens a
+speech and the translation does not open a quotation. The reader sees
+narration where the book has someone talking. The gate's feedback names
+the paragraph and both texts, so the next attempt has something to fix:
+
+```
+[FAIL] VALIDATE failed (attempt 1/3)
+[FAIL] feedback: Line 1: the source opens a speech here and the translation
+        does not open one - source: “你听我说。 | translation: You listen to me.
+```
+
+**What is recorded.** The other three checks mix real damage with
+legitimate renderings — a possessive rendered as a stray quote, a title
+the English quotes, the source's own emphasis quotes dropped on purpose —
+so they are reported, not refused. The findings land in
+`logs/findings.jsonl`, one JSON object per line, and a chapter translated
+again replaces its own entries (a finding that no longer fires is gone).
+
+**Reading the record.** Every line names the chapter, the source line, the
+check, and both texts:
+
+```bash
+cat logs/findings.jsonl | head
+```
+
+**Calibrating the refusal tier.** The refusal tier is measured against a
+book the workflow has actually produced, never assumed:
+
+```bash
+uv run "$SKILL_ROOT/scripts/calibrate_speech.py" --project <book-dir>
+```
+
+It prints each check's firing rate, the stricter variants of the two
+ambiguous checks, and every firing **by reference** — chapter, line,
+check, tier — never by quotation, so the report can be filed in a round
+brief without carrying the text.
+
+**When the run stops.** A chapter whose refusal rate exceeds
+`refusal_rate_bound` (5 % by default, and at least 4 refusals in one
+chapter) aborts the run rather than re-translating the book:
+
+```
+[FAIL] CHAPTER_0123.md: the speech check refused 6 of 90 paragraph(s)
+        (6.7%), above the bound of 5.0% - the run stops here instead of
+        re-translating the book. ...
+```
+
+That is the check misfiring, or the translator never being told the
+structure it has to reproduce — a project whose `templates/translation.md`
+overrides the shipped one without the `{{speech_section}}` block. The
+chapter's state is saved, so the run resumes where it stopped once the
+cause is fixed. Loosen `refusal_rate_bound` (or set it to 0) to turn the
+stop off.
+
 ## Bulk review fixes
 
 `review glossary` may leave dozens of machine-determinable findings behind

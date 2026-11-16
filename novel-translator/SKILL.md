@@ -286,7 +286,21 @@ sorted by frequency):
    source or config changed — discards them with a `[warn]` and restarts
    from scratch).
 2. **VALIDATE** — line count must match the source exactly; empty lines stay
-   empty. Structural violations go back as feedback.
+   empty. Structural violations go back as feedback. The **speech
+   structure** is checked here too: a mirror marks a speech on its first
+   and last pieces, the pieces in between carry no quotation marks, and the
+   translation has to reproduce that. The TRANSLATE prompt tells the
+   translator which lines those are (`{{speech_section}}`). One check
+   refuses — the source opens a speech and the translation does not open
+   one, so the reader would see narration where the book has someone
+   talking — and the feedback names the paragraph and both texts. The
+   other three are recorded in `logs/findings.jsonl` and the chapter is
+   delivered: a stray quote can be real damage (a possessive rendered as
+   a quote) or a correct rendering (a title the English quotes), and the
+   check cannot tell them apart. The refusal tier is calibrated against a
+   real book (`scripts/calibrate_speech.py`) and a run whose refusal rate
+   is out of bounds stops instead of re-translating the book — see
+   `references/maintenance.md` § Speech and emphasis fidelity.
 3. **BALANCE** — for every contextual glossary term: count occurrences in
    source vs translation (Levenshtein tolerance ≤ 2 on single-word targets
    of ≥ 5 letters; multi-word phrases match case-insensitively with

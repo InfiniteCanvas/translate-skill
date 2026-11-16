@@ -48,6 +48,7 @@ drift comparison.
     │       ├── index.jsonl          append-only open/close markers
     │       └── report.md            human-readable summary (metadata-only)
     ├── completeness.json    what the book is missing (written by `init` and `sync`; see § completeness.json)
+    ├── findings.jsonl       the speech check's report-tier findings (see § findings.jsonl)
     └── epub-build.log       background epub-build output
 ```
 
@@ -339,6 +340,7 @@ stamp; `init` copies no defaults and no overlay values into it.
   "review_report_path": "review-report.md", // advisory review report filename, relative to the project dir (written by `review glossary` / `review notes`, read back by `review fix`)
   "expected_chapters": null,    // how many chapters the source says the book has, when the project carries no table of contents of its own (zh-toc.json); null = nobody has said, and no shortfall is measured
   "completeness_outlier_ratio": 0.3, // a chapter whose source is shorter than this fraction of the book's median paragraph count is reported as suspiciously short
+  "refusal_rate_bound": 0.05,   // the speech check's refusal tier stops the run when it fires on more than this fraction of a chapter's paragraphs (a check that fires on everything is misfiring); at least 4 refusals in one chapter always stop it, so a short chapter is never stopped by one legitimate firing; 0 = off
   "version": 16                  // project version (see Migrations) — written by `init` (fresh projects are born current) and `migrate` (stamped after each successfully applied step) ONLY, never merged from DEFAULTS — the raw on-disk value is the source of truth; a config.json without the key is version 0
 }
 ```
@@ -1968,6 +1970,76 @@ drift from the positions on a mirror that lists a book with gaps.
 Nothing here blocks anything. A completeness finding is a fact about the
 book, and what to do about it is the operator's decision.
 
+## The speech check
+
+A mirror marks a speech on its **first and last** pieces; the pieces in
+between carry no quotation marks at all. That is the source's shape, and
+the translation has to reproduce it — a speech split into per-paragraph
+quotes reads wrong, and a speech rendered as narration reads worse.
+
+The check reads the source's structure as a state machine over its
+paragraphs (a paragraph that opens with `“` and does not close it inside
+the paragraph opens a speech; a speech stays open until a paragraph ends
+with `”`) and compares it with the translation's:
+
+| Check | The source | The translation | Tier |
+|---|---|---|---|
+| **C1** | opens a speech | does not open a quotation | **refuse** — the reader sees narration where the book has someone talking |
+| **C2** | continues an open speech | starts a new speech | report — the one speech was split into several |
+| **C3** | closes a speech | carries no mark at all | report — mostly the source's own emphasis quotes, dropped on purpose |
+| **C4** | has no mark at all | gained one | report — a possessive rendered as a stray quote, or a title the English quotes |
+
+Only C1 refuses. C3 and C4 mix real damage with legitimate renderings,
+and no mark-shape rule separates the two: a quoted title, a quoted term
+and a speech that opened in an earlier paragraph all look like C4. The
+report tier exists because the workflow cannot tell them apart; the
+operator can.
+
+**The refusal tier is calibrated, not assumed.** `scripts/calibrate_speech.py`
+measures the checks against a book the workflow has actually produced and
+reports each check's firing rate, the stricter variants of the two
+ambiguous checks, and every firing **by reference** (chapter, line, check)
+— never by quotation, because the report has to be filed in a round brief
+and a brief lives in a repository.
+
+**The run stops when the check is misfiring.** A chapter whose refusal
+rate exceeds `refusal_rate_bound` (5 % by default, and at least 4
+refusals in one chapter) aborts the run instead of re-translating the
+book: a check that fires on everything is either misfiring or the
+translator was never told the structure it has to reproduce, and neither
+is worth a whole book's quota. The chapter's state is saved, so the run
+resumes where it stopped.
+
+## `findings.jsonl` (the speech check's report-tier findings)
+
+The speech check compares the source's speech structure with the
+translation's, paragraph by paragraph. The findings it can establish with
+certainty **block** the chapter; the ones it cannot are recorded here and
+the chapter is delivered.
+
+One JSON object per line, rewritten whole on every chapter that is
+translated:
+
+```json
+{"chapter": "CHAPTER_0123", "paragraph": 45, "check": "C2", "tier": "report",
+ "what": "the source continues an open speech here and the translation starts a new one",
+ "source": "……", "translation": "……"}
+```
+
+| Key | Meaning |
+|---|---|
+| `chapter` | the chapter file the finding belongs to |
+| `paragraph` | the 1-based SOURCE line number — the number the translator sees |
+| `check` | `C1`–`C4`; see § the speech check |
+| `tier` | `refuse` or `report`. Only `C1` is ever `refuse`, and a refused chapter never reaches this file |
+| `what` | the check in words |
+| `source` / `translation` | the two texts, truncated to 120 characters |
+
+A chapter translated again **replaces** its own entries: a finding that no
+longer fires is gone, which is what the operator's list has to show. The
+file is written atomically, so a run killed mid-write cannot leave a torn
+record; a torn line is skipped by the reader rather than failing it.
+
 ## `verify.jsonl` (whole-book glossary-drift scan)
 
 `translate verify` writes its own report at `logs/verify.jsonl` (`--out PATH`
@@ -2252,7 +2324,7 @@ after filling — typos fail fast.
 
 | Template | Filled for | Placeholders |
 |---|---|---|
-| `translation.md` | TRANSLATE (per chunk) | `target_lang glossary feedback_section chapter_title chunk_info style background_section source_lines line_count` |
+| `translation.md` | TRANSLATE (per chunk) | `target_lang glossary feedback_section chapter_title chunk_info speech_section style background_section source_lines line_count` |
 | `glossary_expand.md` | GLOSSARY_EXPAND | `source_lang target_lang glossary source_lines translation_lines max_terms` |
 | `faithfulness.md` | FAITH | `source_lang target_lang source_lines translation_lines background_section balance_signals_section` |
 | `tn_generate.md` | TN_GENERATE | `source_lang target_lang source_lines translation_lines background_section glossary max_notes` |

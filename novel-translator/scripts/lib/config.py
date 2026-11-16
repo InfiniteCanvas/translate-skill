@@ -58,6 +58,12 @@ DEFAULTS: dict = {
     # suspiciously short. See lib/project.py's completeness_report.
     "expected_chapters": None,
     "completeness_outlier_ratio": 0.3,
+    # The refusal tier of the speech check stops the run when it fires on
+    # more than this fraction of a chapter's paragraphs - a check that
+    # fires on everything is misfiring, and re-translating the book would
+    # burn the quota and deliver nothing. The floor is 3 refusals, so a
+    # short chapter is never stopped by one legitimate firing. 0 = off.
+    "refusal_rate_bound": 0.05,
     # Per-call transport retry policy (client.py's ladder). Structured as a
     # nested object so a project or the local overlay can tune one knob
     # without restating the rest; see retry_policy() for the resolved shape

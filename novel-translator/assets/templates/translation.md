@@ -11,6 +11,7 @@ Translate the user-facing text within the following JSON data into {{target_lang
 The chapter title to translate: "{{chapter_title}}"
 
 {{chunk_info}}
+{{speech_section}}
 {{background_section}}
 ### Strict Rules
 
@@ -20,7 +21,8 @@ The chapter title to translate: "{{chapter_title}}"
 4. Style: the translation style must strictly conform to [{{style}}].
 5. Delimiters: retain the exact same number of separator lines (……), bracketed notes (【...】), and standalone punctuation — each on its own line, rendered equivalently. Strictly do not omit, escape, or translate these symbols, and pay close attention to their placement.
 6. Inline markdown formatting (**bold**, *italic*, `code`) is preserved on the translated words.
-7. Output ONLY the JSON object {"title": "<translated chapter title>", "lines": [{"i": <the SAME i as the input line>, "t": "<translation>"}]} — no text before or after it, no code fences, no explanations.
+7. Speech marks: reproduce the source's quotation marks exactly as the speech structure above describes — open a quotation where the source opens one, close it where the source closes one, and give a piece in between no quotation of its own. A piece the source leaves bare is narration, not speech.
+8. Output ONLY the JSON object {"title": "<translated chapter title>", "lines": [{"i": <the SAME i as the input line>, "t": "<translation>"}]} — no text before or after it, no code fences, no explanations.
 
 {{feedback_section}}
 ### Source Data

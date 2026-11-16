@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from lib import assemble, autobuild, balance, client, config, consensus, glossary, logger, project, story, styles, tn, vcs
+from lib import assemble, autobuild, balance, client, config, consensus, findings, glossary, logger, project, story, styles, tn, vcs
 from lib.errors import PipelineError as _PipelineError
 
 STAGES = (
@@ -355,6 +355,46 @@ def _cfg_value(cfg: dict, key: str) -> Any:
         return config._as_number(key, value)
     except ValueError as exc:
         raise PipelineError(str(exc)) from exc
+
+
+# A chapter's refusal count below this never stops the run, whatever the
+# rate says: a short chapter would otherwise trip a rate bound on a single
+# legitimate firing, and one legitimate firing is what the calibration
+# measured across a whole book.
+_REFUSAL_FLOOR = 3
+
+
+def _check_refusal_rate(cfg: dict, file: str, refusals: list[dict],
+                        paragraphs: int) -> None:
+    """Stop the run when the speech check is firing on everything.
+
+    The refusal tier is calibrated on a real book, and it is meant to be
+    rare. A check that fires on most of a chapter is not finding defects
+    - it is misfiring, or the translator was never told the structure it
+    has to reproduce. Either way, re-translating the book would burn the
+    quota and deliver nothing, so the run stops here with the reason.
+
+    Raises PipelineError, which aborts the range: the chapter's state is
+    saved, so the run resumes where it stopped once the cause is fixed.
+    """
+    try:
+        bound = float(_cfg_value(cfg, "refusal_rate_bound"))
+    except (TypeError, ValueError):
+        bound = 0.05
+    if bound <= 0:
+        return
+    limit = max(_REFUSAL_FLOOR, int(bound * max(1, paragraphs)))
+    if len(refusals) <= limit:
+        return
+    rate = len(refusals) / max(1, paragraphs)
+    raise PipelineError(
+        f"{file}: the speech check refused {len(refusals)} of {paragraphs} "
+        f"paragraph(s) ({rate:.1%}), above the bound of {bound:.1%} - the run "
+        f"stops here instead of re-translating the book. Check that the "
+        f"translation template carries the {{speech_section}} block (a "
+        f"template that overrides it leaves the translator untold), or loosen "
+        f"'refusal_rate_bound'."
+    )
 
 
 def _feedback_section(feedback: list[str], rejected_lines: list[str] | None,
@@ -1632,6 +1672,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
             "glossary": glossary_str,
             "feedback_section": feedback,
             "balance_signals_section": "",
+            "speech_section": "",
             "style": style_summary,
             "background_section": background_section(novel_background, recap_section),
         }
@@ -1712,6 +1753,7 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                             "source_lines": json.dumps(numbered, ensure_ascii=False),
                             "line_count": str(len(chunk)),
                             "background_section": chunk_background,
+                            "speech_section": findings.speech_structure(chunk, lo + 1),
                             "chunk_info": (
                                 f"You are translating part {k + 1} of {n_chunks} of one chapter "
                                 f"(source lines {lo + 1}-{hi} of {src_total}). Other parts are "
@@ -1850,6 +1892,13 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
                         issues.append(f"Line {i}: source line is empty but translation is not")
                     elif src.strip() and not dst.strip():
                         issues.append(f"Line {i}: translation line is empty but source is not")
+                speech = findings.check_speech(source_lines, lines)
+                refusals = findings.refusal_findings(speech)
+                state["findings"] = findings.report_findings(speech)
+                if refusals:
+                    issues.extend(
+                        findings.feedback_lines(refusals, source_lines, lines))
+                    _check_refusal_rate(cfg, file, refusals, len(source_lines))
             if issues:
                 state["feedback"].extend(issues)
                 log_gate("VALIDATE", "fail", issues)
@@ -2076,6 +2125,15 @@ def _run_chapter(project_dir: Path, file: str, cfg: dict, force: bool,
             out_path = paths["translated"] / file
             assemble.assemble(out_path, fm, state["title"] or "", list(lines))
             tn.save_notes(project_dir, file, list(lines), list(state["notes"] or []))
+            # The findings that could not be established with certainty are
+            # recorded against the chapter, and the record outlives the
+            # chapter's state file (deleted on the next line).
+            try:
+                findings.write_findings(
+                    project_dir, file, list(state.get("findings") or []),
+                    source_lines, list(lines))
+            except OSError as exc:
+                print(f"{tag} [warn] could not write the findings record: {exc}")
             (paths["draft"] / f"{stem}.state.json").unlink(missing_ok=True)
             project.set_status(manifest, file, "translated")
             try:
