@@ -42,6 +42,7 @@ does not, and both resolve the same directory.
 |---|---|
 | `build-epub` | assemble translated chapters into an EPUB |
 | `glossary` | glossary upkeep (replace \| set \| merge \| retire \| search \| count \| expand) |
+| `glossary context` | write a story context for the glossary terms that lack one |
 | `glossary count` | count a term's occurrences across the source chapters (significance check) |
 | `glossary expand` | re-run glossary expansion for already-translated chapters (regenerates missed terms) |
 | `glossary merge` | merge --remove into --keep; retire --remove |
@@ -94,7 +95,18 @@ glossary upkeep (replace | set | merge | retire | search | count | expand)
 | argument | default | meaning |
 |---|---|---|
 | `--project PROJECT` | (unset) | project directory (default: current directory) |
-| `action` | (unset) | one of: `count`, `expand`, `merge`, `replace`, `retire`, `search`, `set` -- each has its own section below |
+| `action` | (unset) | one of: `context`, `count`, `expand`, `merge`, `replace`, `retire`, `search`, `set` -- each has its own section below |
+
+### `glossary context`
+
+write a story context for the glossary terms that lack one
+
+    translate.py glossary context [--project PROJECT_ACTION] --chapters SPEC
+
+| argument | default | meaning |
+|---|---|---|
+| `--project PROJECT_ACTION` | (unset) | project directory (default: current directory) |
+| `--chapters SPEC` | (unset) | chapter spec, e.g. 1,3-5,CHAPTER_0007.md (required) |
 
 ### `glossary count`
 
@@ -185,7 +197,7 @@ find entries by source or translation (substring + fuzzy)
 edit metadata fields on a single entry (atomic, idempotent)
 
     translate.py glossary set [--project PROJECT_ACTION] [--no-verify] [--strict] --source TERM
-        [--translation TEXT] [--definition TEXT] [--category CAT] [--add-variant V]
+        [--translation TEXT] [--definition TEXT] [--context TEXT] [--category CAT] [--add-variant V]
         [--remove-variant V] [--alt-translations LIST] [--add-alt A] [--remove-alt A]
 
 | argument | default | meaning |
@@ -196,6 +208,7 @@ edit metadata fields on a single entry (atomic, idempotent)
 | `--source TERM` | (unset) | glossary source term (matched by source or variants) (required) |
 | `--translation TEXT` | (unset) | new translation (CJK-checked against the source like apply_fixes) |
 | `--definition TEXT` | (unset) | new definition (stored as-is; may quote source-language terms) |
+| `--context TEXT` | (unset) | new story context: how this story uses the term, who uses it, and what it is not to be confused with (empty string clears it) |
 | `--category CAT` | (unset) | new category (one of: place, person, org, skill, technique, level, state, item, honorific, unit, other) |
 | `--add-variant V` | [] | append V to the entry's variants (repeatable) |
 | `--remove-variant V` | [] | remove V from the entry's variants (repeatable, no-op when absent) |
@@ -467,8 +480,8 @@ documented in its own section above.
 - **`--project`** (PROJECT) -- project directory (default: current directory). Accepted
   by every command.
 - **`--project`** (PROJECT_ACTION) -- project directory (default: current directory).
-  Accepted by `glossary count`, `glossary expand`, `glossary merge`, `glossary replace`,
-  `glossary retire`, `glossary search`, `glossary set`.
+  Accepted by `glossary context`, `glossary count`, `glossary expand`, `glossary merge`,
+  `glossary replace`, `glossary retire`, `glossary search`, `glossary set`.
 - **`--strict`** (flag) -- exit non-zero when that check confirms drift (governs the
   exit code only; a confirmed chapter is flipped either way). Accepted by `glossary
   merge`, `glossary replace`, `glossary retire`, `glossary set`.

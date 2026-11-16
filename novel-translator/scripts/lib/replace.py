@@ -103,6 +103,10 @@ def replace_chapters(
     collects each file's name as its rewrite lands -- glossary_replace uses
     it to report how far an interrupted run got. Returns
     {scanned, changed, occurrences, per_chapter: [(file, count)], missing}.
+
+    This is the RAW-PHRASE replacement: it matches the phrase wherever it
+    sits. `glossary replace` uses scoped_replace_chapters instead, which
+    only rewrites the paragraphs whose SOURCE paragraph carries the term.
     """
     translated = project.paths(project_dir)["translated"]
     entries = sorted(
@@ -143,12 +147,178 @@ def replace_chapters(
     }
 
 
+# The Translator's Notes heading a legacy chapter may carry baked into its
+# markdown. The pipeline moved the notes into a sidecar, but an older
+# project still has them at the end of the body - and they are NOT part of
+# the line-for-line pairing with the source.
+_TN_HEADING = "## Translator's Notes"
+
+
+def _body_end(lines: list[str]) -> int:
+    """The index where a chapter's baked-in notes begin, or the whole body."""
+    for index, line in enumerate(lines):
+        if line.strip() == _TN_HEADING:
+            return index
+    return len(lines)
+
+
+def _content_range(lines: list[str]) -> tuple[int, int]:
+    """The (start, end) of a body's content lines, exclusive.
+
+    The same rule project.read_chapter applies: the blank lines between
+    the frontmatter and the first content line, and the ones at the end,
+    are not part of the body."""
+    start = 0
+    end = len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return start, end
+
+
+def _term_matchers(terms: list[str]) -> list[tuple[str, Any]]:
+    """Matchers for the source-side spellings of a term."""
+    matchers: list[tuple[str, Any]] = []
+    for term in terms:
+        text = str(term or "").strip()
+        if not text:
+            continue
+        matchers.append(build_matcher(text))
+    return matchers
+
+
+def _carries_term(line: str, matchers: list[tuple[str, Any]]) -> bool:
+    """Whether a source paragraph carries one of the term's spellings."""
+    for kind, matcher in matchers:
+        if kind == "literal":
+            if matcher in line:
+                return True
+        elif matcher.search(line):
+            return True
+    return False
+
+
+def scoped_replace_chapters(
+    project_dir: Path, manifest: list[dict], phrase: str, new: str,
+    terms: list[str], dry_run: bool = False, progress: list[str] | None = None,
+) -> dict[str, Any]:
+    """Rewrite `phrase` -> `new` ONLY in the paragraphs that carry the term.
+
+    A glossary entry's rendering can be shared by two terms whose source
+    words are one character apart (姜妍妍 and 姜艳艳, a step-sister and
+    the protagonist), and a rewrite that matches the English string alone
+    renames every one of them - it happened once, and it renamed a
+    protagonist in 128 chapters and 1,905 occurrences. The scope is
+    therefore the SOURCE: a translated paragraph may be rewritten only
+    when the source paragraph it is paired with carries the term (or one of
+    its variants).
+
+    The pairing is the pipeline's own: the source's body lines with the
+    leading chapter-title line dropped, paired with the translation's body
+    lines by index. A chapter whose two sides do not have the same number
+    of lines is UNPAIRABLE - the pipeline refuses such a chapter anyway -
+    and is reported rather than guessed at.
+
+    Returns {scanned, changed, occurrences, paragraphs, per_chapter,
+    missing, unpairable}.
+    """
+    paths = project.paths(project_dir)
+    translated = paths["translated"]
+    source_dir = paths["source"]
+    entries = sorted(
+        (e for e in manifest if e.get("status") == "translated"),
+        key=lambda e: int(e.get("order", 0)),
+    )
+    matchers = _term_matchers(terms)
+    per_chapter: list[tuple[str, int, int]] = []
+    missing: list[str] = []
+    unpairable: list[str] = []
+    occurrences = 0
+    paragraphs = 0
+    changed = 0
+    scanned = 0
+    for entry in entries:
+        file = entry["file"]
+        path = translated / file
+        source_path = source_dir / file
+        if not path.is_file() or not source_path.is_file():
+            missing.append(file)
+            continue
+        scanned += 1
+        source_fm, source_body = project.read_chapter(source_path)
+        source_lines = source_body.split("\n")
+        source_lines, _dropped = project.drop_leading_chapter_title(
+            source_lines, source_fm)
+        text = path.read_text(encoding="utf-8-sig")
+        head, tail = _split_frontmatter(text)
+        tail_lines = tail.split("\n")
+        # the body is what pairs with the source; a baked-in notes
+        # section at the end is not part of it
+        notes_at = _body_end(tail_lines)
+        start, end = _content_range(tail_lines[:notes_at])
+        body_lines = tail_lines[start:end]
+        if len(body_lines) != len(source_lines):
+            unpairable.append(file)
+            continue
+        in_scope = any(_carries_term(line, matchers) for line in source_lines)
+        chapter_occurrences = 0
+        chapter_paragraphs = 0
+        for index, source_line in enumerate(source_lines):
+            if not _carries_term(source_line, matchers):
+                continue
+            replaced, count = replace_text(body_lines[index], phrase, new)
+            if not count:
+                continue
+            body_lines[index] = replaced
+            chapter_occurrences += count
+            chapter_paragraphs += 1
+        if not chapter_occurrences and not in_scope:
+            continue
+        # A chapter that carries the term also carries its notes, and a
+        # note ABOUT the term that still shows the old rendering is the
+        # stale text this command exists to remove.
+        notes_replaced = 0
+        if in_scope and notes_at < len(tail_lines):
+            notes_text = "\n".join(tail_lines[notes_at:])
+            replaced, notes_replaced = replace_text(notes_text, phrase, new)
+            if notes_replaced:
+                tail_lines[notes_at:] = replaced.split("\n")
+                chapter_occurrences += notes_replaced
+        if not chapter_occurrences:
+            continue
+        per_chapter.append((file, chapter_occurrences))
+        occurrences += chapter_occurrences
+        paragraphs += chapter_paragraphs
+        changed += 1
+        if not dry_run:
+            tail_lines[start:end] = body_lines
+            out = head + "\n" + "\n".join(tail_lines)
+            project.atomic_write_text(path, out, newline="\n")
+            if progress is not None:
+                progress.append(file)
+    return {
+        "scanned": scanned,
+        "changed": changed,
+        "occurrences": occurrences,
+        "paragraphs": paragraphs,
+        "per_chapter": per_chapter,
+        "missing": missing,
+        "unpairable": unpairable,
+    }
+
+
 def glossary_replace(
     project_dir: Path, source_term: str, new_translation: str,
     dry_run: bool = False, keep_alt: bool = False,
 ) -> dict[str, Any]:
     """Change a glossary entry's translation (keyed by source or variant)
-    and rewrite the old rendering in every translated chapter.
+    and rewrite the old rendering in the paragraphs that carry the term.
+
+    The rewrite is SCOPED by the source: a translated paragraph is only
+    touched when the source paragraph it is paired with carries the term
+    or one of its spellings. A rendering shared by two terms whose source
+    words are one character apart used to rename both of them.
 
     By default the old rendering is pruned from alt_translations -- a stale
     alt would let balance.count_in_target keep counting it as a valid hit,
@@ -178,7 +348,8 @@ def glossary_replace(
             f"glossary entry '{entry.get('source')}' has no translation to replace"
         )
     empty_chapters = {
-        "scanned": 0, "changed": 0, "occurrences": 0, "per_chapter": [], "missing": [],
+        "scanned": 0, "changed": 0, "occurrences": 0, "paragraphs": 0,
+        "per_chapter": [], "missing": [], "unpairable": [],
     }
     result: dict[str, Any] = {
         "glossary": {
@@ -208,10 +379,17 @@ def glossary_replace(
             entry["alt_translations"] = [a for a in alts if a not in pruned]
             result["glossary"]["pruned_alt"] = pruned
 
+    # The scope is the SOURCE: only the paragraphs whose source paragraph
+    # carries the term (or one of its spellings) may be rewritten. A
+    # rendering shared by two terms one character apart used to rename both
+    # of them, and every occurrence of the protagonist with it.
+    terms = [str(entry.get("source") or "")]
+    terms += [v for v in (entry.get("variants") or []) if isinstance(v, str) and v]
+
     rewritten: list[str] = []
     try:
-        result["chapters"] = replace_chapters(
-            project_dir, manifest, old, new_translation, dry_run,
+        result["chapters"] = scoped_replace_chapters(
+            project_dir, manifest, old, new_translation, terms, dry_run,
             progress=rewritten,
         )
     except Exception:

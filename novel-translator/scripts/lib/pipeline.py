@@ -93,6 +93,7 @@ TERMS_SCHEMA: dict[str, Any] = {
                     "variants": {"type": "array", "items": {"type": "string"}},
                     "translation": {"type": "string"},
                     "definition": {"type": "string"},
+                    "context": {"type": "string"},
                     "category": {"type": "string"},
                 },
                 "required": ["source", "variants", "translation", "definition", "category"],
@@ -143,9 +144,30 @@ MERGE_SCHEMA: dict[str, Any] = {
         "source": {"type": "string"},
         "translation": {"type": "string"},
         "definition": {"type": "string"},
+        "context": {"type": "string"},
         "category": {"type": "string"},
     },
     "required": ["source", "translation", "definition", "category"],
+    "additionalProperties": False,
+}
+
+CONTEXTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "contexts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "context": {"type": "string"},
+                },
+                "required": ["source", "context"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["contexts"],
     "additionalProperties": False,
 }
 
@@ -605,6 +627,8 @@ def _apply_glossary_proposal(
     for value in (src, tr, df, cat):
         if not isinstance(value, str) or not value.strip():
             raise ValueError("proposal fields source/translation/definition/category must be non-empty strings")
+    ctx_text = proposal.get("context")
+    context = ctx_text.strip() if isinstance(ctx_text, str) else ""
     raw_variants = proposal.get("variants")
     variants = (
         [v.strip() for v in raw_variants if isinstance(v, str) and v.strip()]
@@ -650,6 +674,7 @@ def _apply_glossary_proposal(
                 "variants": variants,
                 "translation": tr,
                 "definition": df,
+                "context": context,
                 "category": cat,
                 "origin": "model",
                 "first_seen_chapter": chapter_order,
@@ -682,7 +707,7 @@ def _apply_glossary_proposal(
         merge_template,
         {
             "existing_json": json.dumps(
-                {k: existing.get(k) for k in ("source", "translation", "definition", "category")},
+                {k: existing.get(k) for k in ("source", "translation", "definition", "context", "category")},
                 ensure_ascii=False,
             ),
             "proposed_json": json.dumps(proposal, ensure_ascii=False),
@@ -692,6 +717,7 @@ def _apply_glossary_proposal(
             "category": cat,
             "current_translation": str(existing.get("translation", "")),
             "current_definition": str(existing.get("definition", "")),
+            "current_context": str(existing.get("context", "")),
             "current_category": str(existing.get("category", "")),
         },
         "glossary_merge.md",
@@ -703,7 +729,7 @@ def _apply_glossary_proposal(
         raise ValueError("merge response is not a JSON object")
 
     updated = dict(existing)
-    for key in ("translation", "definition", "category"):
+    for key in ("translation", "definition", "context", "category"):
         new_value = merged.get(key)
         if isinstance(new_value, str) and new_value.strip():
             if key == "category" and new_value not in glossary.CATEGORIES:
@@ -724,6 +750,105 @@ def _apply_glossary_proposal(
             print(f"{tag} [ok] glossary ~ '{src}' -> '{updated.get('translation', '')}'")
             return
     glossary.upsert(g, updated)
+
+
+def pending_context_terms(g: dict) -> list[dict]:
+    """The glossary entries that carry no story context yet."""
+    pending = []
+    for entry in g.get("terms", []):
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("context") or "").strip():
+            continue
+        pending.append(entry)
+    return pending
+
+
+def glossary_context_context(
+    project_dir: Path, cfg: dict, file: str, g: dict, pending: list[dict],
+) -> dict[str, str]:
+    """The prompt context for the story-context backfill.
+
+    Mirrors glossary_expand_context: the same source lines (leading
+    chapter-title line dropped), the same translated body, the same
+    chapter title. What is different is the subject: the terms that
+    already exist and still have no context, with the lines they appear
+    in, so the model can say how THIS story uses them.
+    """
+    paths = project.paths(project_dir)
+    src_fm, src_body = project.read_chapter(paths["source"] / file)
+    source_lines = src_body.split("\n")
+    source_lines, _ = project.drop_leading_chapter_title(source_lines, src_fm)
+    tr_fm, tr_body = project.read_chapter(paths["translated"] / file)
+    title = str(tr_fm.get("title") or tr_fm.get("chapter_title")
+                or src_fm.get("chapter_title") or "")
+    return {
+        "source_lang": _lang_name(cfg.get("source_lang", "")),
+        "target_lang": _lang_name(cfg.get("target_lang", "")),
+        "chapter_title": title,
+        "chapter_file": file,
+        "line_count": str(len(source_lines)),
+        "source_lines": json.dumps(source_lines, ensure_ascii=False),
+        "translation_lines": json.dumps(tr_body.split("\n"), ensure_ascii=False),
+        "terms": _pending_terms_block(source_lines, pending),
+        "feedback_section": "",
+    }
+
+
+def _pending_terms_block(source_lines: list[str], pending: list[dict]) -> str:
+    """The terms that occur in these lines, each with the lines it is in."""
+    blocks: list[str] = []
+    for entry in pending:
+        source = str(entry.get("source") or "")
+        if not source:
+            continue
+        hits = [i for i, line in enumerate(source_lines) if source in line]
+        if not hits:
+            continue
+        shown: list[str] = []
+        for index in hits[:3]:
+            start = max(0, index - 1)
+            end = min(len(source_lines), index + 2)
+            for number in range(start, end):
+                shown.append(f"  line {number + 1}: {source_lines[number]}")
+        definition = str(entry.get("definition") or "").strip()
+        blocks.append(
+            f"- {source} ({entry.get('translation', '')})"
+            + (f" - {definition}" if definition else "")
+            + "\n" + "\n".join(shown)
+        )
+    return "\n".join(blocks) if blocks else "(no term without a context occurs in this chapter)"
+
+
+def apply_contexts(g: dict, contexts: list[dict]) -> tuple[int, list[str]]:
+    """Write the model's story contexts onto the entries that lack one.
+
+    An entry that already carries a context keeps it, and a context for a
+    term that is not in the glossary is ignored. Returns (written,
+    skipped).
+    """
+    written = 0
+    skipped: list[str] = []
+    by_source = {
+        str(entry.get("source") or ""): entry
+        for entry in g.get("terms", []) if isinstance(entry, dict)
+    }
+    for item in contexts:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "").strip()
+        context = str(item.get("context") or "").strip()
+        entry = by_source.get(source)
+        if entry is None:
+            skipped.append(source)
+            continue
+        if str(entry.get("context") or "").strip():
+            continue
+        if not context:
+            continue
+        entry["context"] = context
+        written += 1
+    return written, skipped
 
 
 def expand_glossary_terms(

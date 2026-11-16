@@ -165,9 +165,30 @@ rendering — fix them with `glossary replace`, not expensive retranslation
 (`retry --chapters N`): `uv run "$SCRIPT" glossary replace --project .
 --source 灵根 --translation "spiritual root" [--keep-alt] [--no-build]
 [--dry-run]` finds the entry by source or variants (exit 2 when unknown),
-rewrites the old rendering across chapters first and saves the new
-`translation` to glossary.json last — a friendly no-op (exit 0) when the
-translation already equals the new one. That ordering is the crash
+rewrites the old rendering in the chapters that carry the term and saves
+the new `translation` to glossary.json last — a friendly no-op (exit 0)
+when the translation already equals the new one.
+
+**The rewrite is scoped by the SOURCE.** A translated paragraph is only
+touched when the source paragraph it is paired with carries the term (or
+one of its spellings); the pairing is the pipeline's own (the source's
+body lines, paired with the translation's by index). A rendering shared by
+two terms whose source words are one character apart — 姜妍妍 and 姜艳艳,
+a protagonist and a step-sister — used to rename both of them, and every
+occurrence of the protagonist with it (1,905 occurrences across 128
+chapters). The scope is the term's SOURCE-SIDE SPELLINGS — its source plus its
+variants — so a book that spells the same term differently in different
+chapters needs that spelling listed as a variant before the rewrite can
+reach it (`glossary set --source TERM --add-variant SPELLING`); a
+paragraph whose source spells the term another way is out of scope, and
+the operator sees it in the paragraph count. A chapter whose source and
+translation do not have the same
+number of lines cannot be paired: it is reported (`[warn] CHAPTER_NNNN.md:
+source and translation have different line counts - the paragraphs cannot
+be paired, so nothing was rewritten in it`) and left alone rather than
+guessed at. A chapter that carries the term also carries its notes, and a
+note ABOUT the term that still shows the old rendering is the stale text
+this command exists to remove. That ordering is the crash
 recovery story: a run that dies mid-rewrite (e.g. a chapter file held
 open by another process) prints `[warn] replace incomplete: k/N
 chapters rewritten; glossary.json not updated - re-run the same command
@@ -184,7 +205,9 @@ epub build when running many replaces in a batch (e.g. from
 epub build at the end).
 `uv run "$SCRIPT" util replace --project . --source "spirit root"
 --target "spiritual root"` is the raw-phrase variant for arbitrary term
-fixes. Both are offline (no LLM calls) and match smartly, mirroring the
+fixes. It matches the phrase wherever it sits and is NOT scoped by the
+source — that difference is the point: `glossary replace` knows which
+paragraphs carry a term, `util replace` only knows the phrase. Both are offline (no LLM calls) and match smartly, mirroring the
 balance checker's phrase semantics minus the fuzzy tier: case-insensitive,
 words may be joined by whitespace or hyphens, optional inflection
 (es/s/ed/ing) on the last word — each match's capitalization is
@@ -221,6 +244,26 @@ mutating action in this section commits — `review: glossary audit` (suffixed
 `review: glossary audit (N fix(es) applied)` when `--fix` landed fixes),
 `glossary replace` / `util replace: '<src>' -> '<dst>'` — while
 read-only `glossary search` / `glossary count` commit nothing.
+
+### The story context of a term
+
+The `context` of a glossary entry is one sentence about how THIS story
+uses the term, who uses it, and what it must not be confused with. The
+translation prompt carries it with the term, so a term that drifts in a
+later chapter drifts for a reason the reader can see.
+
+- **One entry:** `uv run "$SCRIPT" glossary set --project . --source 厢房
+  --context "the room she sleeps in, not the storeroom"` — metadata only;
+  the term's pin, variants and alternative renderings are not touched, and
+  an empty `--context` clears it.
+- **Every entry that lacks one:** `uv run "$SCRIPT" glossary context
+  --project . --chapters 1-255` walks the chapters, asks the model for a
+  context for the terms that occur in them and still have none, and writes
+  what it gets. It only ever ADDS a context: a term that already has one
+  keeps it. Console: `[CHAPTER_NNNN] [ok] wrote N context(s)` per chapter
+  and `[ok] glossary context: wrote N context(s); M term(s) still carry
+  none` at the end. It makes model calls — one per chapter that shows a
+  term without a context.
 
 ## Translator's-note re-evaluation
 

@@ -289,13 +289,21 @@ def _blocks(chapter_file: str, source_lines: list[str],
 
 
 def _term_block(term: dict) -> dict:
-    """The glossary entry under judgement, as the JSON object the prompt reads."""
-    return {
+    """The glossary entry under judgement, as the JSON object the prompt reads.
+
+    The story context travels with it when the entry carries one: it is
+    what tells the judge which of two things this term means in this book.
+    """
+    block = {
         "source": term["source"],
         "pinned": term["pinned"],
         "definition": term["definition"],
         "category": term["category"],
     }
+    context = term.get("context")
+    if isinstance(context, str) and context.strip():
+        block["context"] = context.strip()
+    return block
 
 
 _BLOCK_SEPARATOR = "\n\n"
@@ -628,6 +636,7 @@ def verify_project(project_dir: Path, cfg: dict,
                     "source": row["source"],
                     "pinned": row["translation"],
                     "definition": entry.get("definition", ""),
+                    "context": entry.get("context", ""),
                     "category": entry.get("category", ""),
                     "blocks": [],
                 })
@@ -766,6 +775,7 @@ def investigate_faith(project_dir: Path, cfg: dict, g: dict, chapter: str,
             "source": row["source"],
             "pinned": row["translation"],
             "definition": entry.get("definition", ""),
+            "context": entry.get("context", ""),
             "category": entry.get("category", ""),
             "blocks": [],
         })

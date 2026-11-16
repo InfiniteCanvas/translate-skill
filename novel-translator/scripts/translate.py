@@ -243,12 +243,19 @@ def _print_replacement(result: dict, dry_run: bool, old: str) -> None:
         print(f"{prefix}[replace] {file}: {count} occurrence(s)")
     for file in result["missing"]:
         print(f"[warn] translated/{file} listed as translated but missing")
+    for file in result.get("unpairable", []):
+        print(f"[warn] {file}: source and translation have different line "
+              f"counts - the paragraphs cannot be paired, so nothing was "
+              f"rewritten in it")
     if result["occurrences"] == 0:
         print(f"{prefix}[warn] no occurrences of '{old}' found "
               f"({result['scanned']} chapter(s) scanned)")
     else:
         print(f"{prefix}[ok] replaced {result['occurrences']} occurrence(s) in "
               f"{result['changed']} chapter(s) ({result['scanned']} scanned)")
+    paragraphs = result.get("paragraphs")
+    if paragraphs:
+        print(f"{prefix}[ok] {paragraphs} paragraph(s) rewritten")
 
 
 def _report_ignored_chapters(project_dir: Path) -> None:
@@ -1570,6 +1577,8 @@ def cmd_glossary(args: argparse.Namespace, project_dir: Path) -> int:
         return _cmd_glossary_search(args, project_dir)
     if args.action == "count":
         return _cmd_glossary_count(args, project_dir)
+    if args.action == "context":
+        return cmd_glossary_context(args, project_dir)
     raise CliError(f"unknown glossary action: {args.action}")
 
 
@@ -1639,6 +1648,86 @@ def cmd_glossary_expand(args: argparse.Namespace, project_dir: Path) -> int:
         return 1
     if not applied:
         _fail("glossary expand: no eligible translated chapters in range")
+        return 1
+    return 0
+
+
+def cmd_glossary_context(args: argparse.Namespace, project_dir: Path) -> int:
+    """Write a story context for the glossary terms that lack one.
+
+    The terms pinned before the context field existed carry none, and the
+    translator never sees one - the context is the sentence that tells a
+    later chapter how this story uses a term, which is what stops it
+    rendering that term a second way.
+
+    This command walks the chapters, asks the model for a context for the
+    terms that occur in them and still have none, and writes what it
+    gets. It only ever ADDS a context: a term that already has one keeps
+    it, and the term's pin, variants and alternative renderings are never
+    touched.
+    """
+    cfg = _load_config(project_dir)
+    manifest = _load_manifest(project_dir)
+    paths = project.paths(project_dir)
+    g = glossary.load(project_dir)
+    pending = pipeline.pending_context_terms(g)
+    if not pending:
+        print("[ok] every glossary term already carries a context")
+        return 0
+    files = pipeline.parse_range(args.chapters, manifest)
+    if not files:
+        raise CliError("no chapters in range")
+    template = pipeline._load_template(paths["templates"], "glossary_context.md")
+    _run_start(project_dir, cfg, manifest, "glossary context",
+               chapters=len(files))
+    written = 0
+    failed: list[str] = []
+    for file in files:
+        entry = project.find_entry(manifest, file)
+        if entry is None:
+            print(f"[glossary] {file}: [warn] skipped - not in the manifest")
+            continue
+        if not (paths["source"] / file).is_file():
+            print(f"[glossary] {file}: [warn] skipped - source chapter missing")
+            continue
+        if not (paths["translated"] / file).is_file():
+            print(f"[glossary] {file}: [warn] skipped - not translated yet")
+            continue
+        still_pending = pipeline.pending_context_terms(g)
+        if not still_pending:
+            break
+        tag = f"[CHAPTER_{int(entry.get('number', 0)):04d}]"
+        try:
+            ctx = pipeline.glossary_context_context(
+                project_dir, cfg, file, g, still_pending)
+            prompt = pipeline.fill(template, ctx, "glossary_context.md")
+            resp = pipeline._chat(project_dir, cfg, "glossary", prompt,
+                                  json_schema=pipeline.CONTEXTS_SCHEMA,
+                                  chapter=file)
+            data = client.extract_json(resp)
+            contexts = data.get("contexts") if isinstance(data, dict) else None
+            if not isinstance(contexts, list):
+                raise ValueError("contexts is not a list")
+            applied, _skipped = pipeline.apply_contexts(g, contexts)
+            glossary.save(project_dir, g)
+        except pipeline.PipelineError:
+            glossary.save(project_dir, g)
+            _run_end(project_dir, "glossary context", "failed")
+            raise
+        except Exception as exc:
+            print(f"[glossary] {file}: [warn] context failed: "
+                  f"{type(exc).__name__}: {exc}")
+            failed.append(file)
+            continue
+        written += applied
+        print(f"{tag} [ok] wrote {applied} context(s)")
+    left = pipeline.pending_context_terms(g)
+    _run_end(project_dir, "glossary context", "completed",
+             {"written": written, "failed": failed})
+    print(f"[ok] glossary context: wrote {written} context(s); "
+          f"{len(left)} term(s) still carry none")
+    if failed:
+        _fail("glossary context: failed for " + ", ".join(failed))
         return 1
     return 0
 
@@ -1827,6 +1916,7 @@ def _cmd_glossary_set(args: argparse.Namespace, project_dir: Path) -> int:
     if not any([
         args.translation is not None,
         args.definition is not None,
+        args.context is not None,
         args.category is not None,
         args.add_variant,
         args.remove_variant,
@@ -1836,14 +1926,15 @@ def _cmd_glossary_set(args: argparse.Namespace, project_dir: Path) -> int:
     ]):
         raise CliError(
             "glossary set requires at least one of "
-            "--translation/--definition/--category/--add-variant/--remove-variant/"
-            "--alt-translations/--add-alt/--remove-alt"
+            "--translation/--definition/--context/--category/--add-variant/"
+            "--remove-variant/--alt-translations/--add-alt/--remove-alt"
         )
     try:
         new_entry, changes = glossary.set_fields(
             entry,
             translation=args.translation,
             definition=args.definition,
+            context=args.context,
             category=args.category,
             add_variant=args.add_variant,
             remove_variant=args.remove_variant,
@@ -2275,6 +2366,9 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="new translation (CJK-checked against the source like apply_fixes)")
     ps.add_argument("--definition", metavar="TEXT",
                     help="new definition (stored as-is; may quote source-language terms)")
+    ps.add_argument("--context", metavar="TEXT",
+                    help="new story context: how this story uses the term, who uses it, "
+                         "and what it is not to be confused with (empty string clears it)")
     ps.add_argument("--category", metavar="CAT",
                     help=f"new category (one of: {', '.join(glossary.CATEGORIES)})")
     ps.add_argument("--add-variant", action="append", default=[], metavar="V",
@@ -2322,6 +2416,13 @@ def _build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--min", type=int, default=None, metavar="N",
                     help="significance threshold override (default: config min_term_occurrences)")
     pc.set_defaults(func=cmd_glossary)
+
+    pctx = gloss_sub.add_parser(
+        "context", parents=[nested], allow_abbrev=False,
+        help="write a story context for the glossary terms that lack one")
+    pctx.add_argument("--chapters", metavar="SPEC", required=True,
+                       help="chapter spec, e.g. 1,3-5,CHAPTER_0007.md")
+    pctx.set_defaults(func=cmd_glossary_context)
 
     pex = gloss_sub.add_parser(
         "expand", parents=[nested], allow_abbrev=False,

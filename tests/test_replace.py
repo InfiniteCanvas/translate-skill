@@ -121,11 +121,46 @@ REPORT_3 = {
 }
 
 
+# The SOURCE chapters the scoped rewrite pairs with. The scope of a
+# glossary rewrite is the source: a translated paragraph is only touched
+# when the source paragraph it is paired with carries the term.
+SRC1 = (
+    "---\n"
+    "chapter_title: 第一章 灵根\n"
+    "---\n"
+    "\n"
+    "林风把手按在水晶上，他的灵根骤然亮起。\n"
+    "\n"
+    "长老什么也没说，只是记下了灵根的颜色。\n"
+)
+SRC2 = (
+    "---\n"
+    "chapter_title: 第二章 外门\n"
+    "---\n"
+    "\n"
+    "穆雅拥有品阶不佳的灵根。\n"
+    "\n"
+    "没人对她抱有什么期望。\n"
+)
+SRC4 = (
+    "---\n"
+    "chapter_title: 第四章 山雨\n"
+    "---\n"
+    "\n"
+    "风暴笼罩着宗门的群峰。\n"
+)
+
+
 def make_chapters_project(td: str) -> tuple[Path, dict[str, bytes]]:
     """Temp project with translated chapters + manifest; returns (root, bytes-before)."""
     root = Path(td)
     translated = root / "translated"
     translated.mkdir()
+    source = root / "source"
+    source.mkdir()
+    write_lf(source / "CHAPTER_0001.md", SRC1)
+    write_lf(source / "CHAPTER_0002.md", SRC2)
+    write_lf(source / "CHAPTER_0004.md", SRC4)
     write_lf(translated / "CHAPTER_0001.md", CH1)
     write_lf(translated / "CHAPTER_0002.md", CH2)
     write_lf(translated / "CHAPTER_0004.md", CH4)
@@ -148,6 +183,19 @@ GLO_CHAPTER = (
     "His spirit root was graded poorly.\n"
     "\n"
     "The elder examined Spirit roots with an old mirror.\n"
+)
+
+
+# The source chapter the GLO fixture's rewrite is scoped by: the term
+# appears in the first paragraph and not in the second.
+GLO_SOURCE = (
+    "---\n"
+    "chapter_title: 第一章 灵根\n"
+    "---\n"
+    "\n"
+    "他的灵根品阶不佳。\n"
+    "\n"
+    "长老拿着一面旧镜子查看灵根。\n"
 )
 
 
@@ -180,6 +228,9 @@ def make_glossary_project(td: str) -> tuple[Path, dict[str, bytes]]:
         {"file": "CHAPTER_0001.md", "number": 1, "order": 0,
          "status": "translated", "title": "The Testing"},
     ], ensure_ascii=False, indent=2) + "\n")
+    source = root / "source"
+    source.mkdir()
+    write_lf(source / "CHAPTER_0001.md", GLO_SOURCE)
     write_lf(translated / "CHAPTER_0001.md", GLO_CHAPTER)
     before = {
         "glossary": (root / "glossary.json").read_bytes(),
@@ -207,6 +258,17 @@ def rec_chapter(n: int) -> str:
     )
 
 
+def rec_source(n: int) -> str:
+    """The source chapter the recovery fixture's rewrite is scoped by."""
+    return (
+        "---\n"
+        f"chapter_title: 第{['一', '二', '三'][n - 1]}章 试炼\n"
+        "---\n"
+        "\n"
+        f"灵根第{n}次亮起。\n"
+    )
+
+
 REC_MANIFEST = [
     {"file": name, "number": i + 1, "order": i, "status": "translated",
      "title": f"Trial {i + 1}"}
@@ -228,8 +290,11 @@ def make_recovery_project(td: str) -> tuple[Path, dict[str, bytes]]:
         }]}, ensure_ascii=False, indent=2) + "\n")
     write_lf(root / "chapters.json",
              json.dumps(REC_MANIFEST, ensure_ascii=False, indent=2) + "\n")
+    source = root / "source"
+    source.mkdir()
     for i, name in enumerate(REC_FILES, 1):
         write_lf(translated / name, rec_chapter(i))
+        write_lf(source / name, rec_source(i))
     before: dict[str, bytes] = {
         "glossary": (root / "glossary.json").read_bytes(),
     }
@@ -253,12 +318,16 @@ BOM_NO_MATCH = (
 )
 
 
-def make_bom_project(td: str, chapter_text: str) -> tuple[Path, bytes]:
+def make_bom_project(td: str, chapter_text: str,
+                     source_text: str = SRC1) -> tuple[Path, bytes]:
     """Temp project with ONE BOM'd translated chapter (CHAPTER_0001.md);
     returns (root, chapter bytes-before)."""
     root = Path(td)
     translated = root / "translated"
     translated.mkdir()
+    source = root / "source"
+    source.mkdir()
+    write_lf(source / "CHAPTER_0001.md", source_text)
     write_bom(translated / "CHAPTER_0001.md", chapter_text)
     return root, (translated / "CHAPTER_0001.md").read_bytes()
 

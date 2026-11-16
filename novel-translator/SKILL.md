@@ -369,7 +369,11 @@ sorted by frequency):
    from becoming a noise channel; the novel-wide significance gate below
    is its backstop. Identical duplicates are
    skipped, conflicting
-   ones are merged by the model into the existing entry. A brand-new
+   ones are merged by the model into the existing entry. Each proposed term
+   carries a one-sentence CONTEXT — how this story uses the term, who uses
+   it, and what it must not be confused with — and the translation prompt
+   carries it with the term; the terms pinned before the field existed get
+   theirs from `glossary context --chapters SPEC`. A brand-new
    proposal must also clear a significance gate: it is counted across the
    whole source corpus and added only at >= `min_term_occurrences`
    occurrences (default 3; 0 disables the gate, and an unreadable source
@@ -496,6 +500,9 @@ Read the feedback, then choose:
   English translation is awkward to use verbatim — add an `alt_translations`
   entry; to propagate a changed translation to chapters already translated,
   `glossary replace` beats retranslating — see `references/maintenance.md`),
+  and it is SCOPED BY THE SOURCE: it rewrites the old rendering only in the
+  paragraphs whose source paragraph carries the term, so a rendering shared
+  by two terms one character apart cannot rename both of them,
   or tweak `templates/`, then
   `uv run "$SCRIPT" retry --project . --chapters 7` — or
   `retry --failed` to retry every needs-review chapter at once (selection is

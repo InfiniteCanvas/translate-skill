@@ -718,6 +718,7 @@ written; status stays in-progress`, leaving the status `in-progress`.
       "variants": ["築基"],              // alternative source-script forms AND nicknames/short forms rendered identically (e.g. 小丫 for 裴小丫); counted longest-first so overlaps don't double-count
       "alt_translations": ["Foundation Establishment stage"],
       "definition": "Second realm of cultivation; the cultivator's body is rebuilt.",
+      "context": "the stage a cultivator reaches by rebuilding their body; not the state itself",  // optional; one sentence: how THIS story uses the term, who uses it, and what it is not to be confused with. Written by the model that proposes the term, carried into the translation prompt and into the verifier's prompt. Entries written before the field existed stay valid.
       "category": "level",               // place|person|org|skill|technique|level|state|item|honorific|unit|other — `unit` is guide-only: injected into the translation prompt as a rendering guide, ignored by the balance checker (see below)
       "origin": "seeded",                // seeded (catalogue) | model (proposed during translation)
       "first_seen_chapter": 12           // order index where a model-proposed term first appeared
@@ -727,6 +728,17 @@ written; status stays in-progress`, leaving the status `in-progress`.
 }
 ```
 
+- The **`context`** is the story context: how THIS story uses the term, who
+  uses it, and what it must not be confused with. It is the one piece of
+  glossary knowledge the translation prompt carries besides the term and
+  its rendering — the definition and the category stay in the JSON for the
+  other stages. It is optional everywhere: an entry without one is valid,
+  `glossary set --source TERM --context "..."` adds one to an existing
+  entry without touching its pin, and `glossary context --chapters SPEC`
+  writes the contexts of the entries that lack one, from the chapters
+  themselves (the model sees each term's lines and says how this story
+  uses it). A proposal that carries no context never erases the one an
+  entry already has.
 - The balance check counts `source`+`variants` occurrences in the source text
   and `translation`+`alt_translations` occurrences in the translated text
   (stemmed, case-insensitive word/phrase matching with Levenshtein tolerance 2

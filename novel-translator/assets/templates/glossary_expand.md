@@ -40,4 +40,6 @@ Constraints:
 - At most {{max_terms}} terms.
 - An empty list is only correct when the chapter contains NO named entity or named action beyond those already in the glossary AND no recurring story term that passes both extra tests.
 
-Return ONE JSON object: {"terms": [{"source": "...", "variants": ["..."], "translation": "...", "definition": "<one-sentence {{target_lang}} explanation>", "category": "<one of: place|person|org|skill|technique|level|state|item|honorific|other>"}]} ("variants" may be an empty array); return {"terms": []} if nothing qualifies.
+Return ONE JSON object: {"terms": [{"source": "...", "variants": ["..."], "translation": "...", "definition": "<one-sentence {{target_lang}} explanation>", "context": "<one sentence: how THIS story uses this term, who uses it, and what it is not to be confused with>", "category": "<one of: place|person|org|skill|technique|level|state|item|honorific|other>"}]} ("variants" may be an empty array); return {"terms": []} if nothing qualifies.
+
+The "context" is what keeps the term rendering the same way in every later chapter, so write it from what THIS chapter shows: who uses the term here, for what, and what else in the story it must not be confused with. If the chapter does not show enough to say that, leave the field empty.

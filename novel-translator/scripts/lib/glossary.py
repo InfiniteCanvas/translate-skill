@@ -14,6 +14,11 @@ Entry schema:
                                      (e.g. traditional Chinese)
     alt_translations    [str]        alternative accepted translations
     definition          str          one sentence, target language
+    context             str          one sentence: how THIS story uses the
+                                     term, who uses it, and what it is not to
+                                     be confused with (optional; entries
+                                     written before the field existed stay
+                                     valid)
     category            str          one of CATEGORIES
     origin              str          "seeded" | "model"
     first_seen_chapter  int | None
@@ -226,6 +231,7 @@ def set_fields(
     entry: dict, *,
     translation: str | None = None,
     definition: str | None = None,
+    context: str | None = None,
     category: str | None = None,
     add_variant: list[str] | None = None,
     remove_variant: list[str] | None = None,
@@ -276,6 +282,16 @@ def set_fields(
         if old != definition:
             new["definition"] = definition
             changes.append(("definition", old, definition))
+
+    if context is not None:
+        # an empty --context clears the story context; anything else sets
+        # it. The term's pin, variants and alternative renderings are not
+        # touched by this - a context is metadata, not a rendering.
+        new_context = context.strip()
+        old = entry.get("context")
+        if old != new_context:
+            new["context"] = new_context
+            changes.append(("context", old, new_context))
 
     if category is not None:
         if category not in CATEGORIES:
@@ -399,6 +415,19 @@ def merge_entries(
             f"discarded ('{keep.get('source')}' already has one)"
         )
 
+    # the story context merges the same way the definition does: the kept
+    # entry's wording wins, and the removed entry's fills an empty one.
+    keep_ctx = (keep.get("context") or "").strip()
+    remove_ctx = (remove.get("context") or "").strip()
+    if not keep_ctx and remove_ctx:
+        keep["context"] = remove.get("context")
+    elif keep_ctx and remove_ctx:
+        print(
+            f"[warn] glossary: context from "
+            f"'{remove_key if isinstance(remove_key, str) else remove_source}' "
+            f"discarded ('{keep.get('source')}' already has one)"
+        )
+
     keep["variants"] = keep_variants
     keep["alt_translations"] = keep_alts
 
@@ -440,6 +469,11 @@ def upsert(g: dict, entry: dict) -> bool:
             norm["alt_translations"] = existing.get("alt_translations") or []
         elif norm["alt_translations"] is None:
             norm["alt_translations"] = []
+        # a proposal that carries no story context must not erase the one
+        # the entry already has
+        if not str(norm.get("context") or "").strip():
+            if str(existing.get("context") or "").strip():
+                norm["context"] = existing.get("context")
         for i, item in enumerate(terms):
             if item is existing:
                 terms[i] = norm
@@ -543,13 +577,22 @@ def render_contextual(pairs: list[tuple[dict, int]]) -> str:
     Uses the Hy-MT2 trained terminology pattern: one line per entry, exactly
     '<source> translates to "<translation>"'. No categories, definitions, or
     counts here -- they stay in the JSON data for the other stages.
+
+    An entry's CONTEXT is the one exception: the story context - how this
+    story uses the term, who uses it, what it must not be confused with -
+    is exactly what stops the translator from rendering it a second way, so
+    it travels with the term into the prompt.
     """
     if not pairs:
         return "(no glossary terms appear in this chapter)"
-    return "\n".join(
-        f"{entry.get('source', '')} translates to \"{entry.get('translation', '')}\""
-        for entry, _count in pairs
-    )
+    lines = []
+    for entry, _count in pairs:
+        line = f"{entry.get('source', '')} translates to \"{entry.get('translation', '')}\""
+        context = entry.get("context")
+        if isinstance(context, str) and context.strip():
+            line += f" - in this story: {context.strip()}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def load_catalogue(path: Path) -> dict:
